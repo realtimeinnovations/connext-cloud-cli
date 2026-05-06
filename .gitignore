@@ -1,0 +1,29 @@
+# Build outputs
+dist/
+bin/
+/rticloud
+*.exe
+*.test
+
+# Go local state
+.gocache/
+.gomodcache/
+coverage.out
+coverage.html
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+.connext

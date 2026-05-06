@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: connext-cloud-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rticloud
+    main: ./cmd/rticloud
+    binary: rticloud
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/realtimeinnovations/connext-cloud-cli/app.version={{ .Version }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/app.commit={{ .Commit }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/app.date={{ .Date }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/config.defaultClientID={{ .Env.AUTH0_CLIENT_ID }}
+
+archives:
+  - id: rticloud
+    ids:
+      - rticloud
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: realtimeinnovations
+    name: connext-cloud-cli
+
+brews:
+  - name: rticloud
+    ids:
+      - rticloud
+    repository:
+      owner: realtimeinnovations
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: goreleaserbot@users.noreply.github.com
+    directory: Formula
+    homepage: https://github.com/realtimeinnovations/connext-cloud-cli
+    description: Command-line interface for RTI Connext Cloud
+    license: Proprietary
+    test: |
+      system "#{bin}/rticloud", "--help"
