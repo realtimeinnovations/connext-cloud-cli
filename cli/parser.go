@@ -1,46 +1,30 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"strconv"
+	"io"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
-func Usage() string {
-	return strings.TrimSpace(`
-RTI Connext Cloud CLI. First-time setup: run 'rticloud configure'.
+var ErrHelp = errors.New("help requested")
 
-Usage:
-  rticloud [--disable-ssl-verify] <resource> <command> [flags]
-  rticloud --version
+const commandGroupAnnotation = "rticloud.commandGroup"
 
-Resources:
-  gateway         Connect your applications to Connext Cloud
-  databus         Manage Databuses
-  observability   Manage Observability Services
-  client          Manage Databus client configurations
-  app-client      Manage application template clients
-  network         Manage networks
-  license         Download your RTI license file
-  configure       Configure CLI region settings
-  login           Login to the RTI Cloud service
-  logout          Logout of the RTI Cloud service
-  version         Print version and build metadata
-
-Gateway commands:
-  rticloud gateway          Start or configure a gateway in the current directory
-  rticloud gateway status   Show the status of the gateway in the current directory
-  rticloud gateway reset    Reset the gateway in the current directory
-  rticloud gateway obs      Open the observability dashboard
-`) + "\n"
+var rootCommandGroups = []string{
+	"Connect to Connext Cloud",
+	"Manage Connext Cloud",
+	"Setup",
 }
 
 type Args struct {
 	DisableSSLVerify     bool
-	Help                 bool
 	Resource             string
 	Command              string
 	GatewayCommand       string
+	SpyCommand           string
 	Name                 string
 	Replicas             int
 	ObservabilityService string
@@ -63,237 +47,442 @@ type Args struct {
 	ExpirationDays       int
 	HasExpirationDays    bool
 	Output               string
+	Format               string
 	Region               string
 	GetRegion            bool
 }
 
 func ParseArgs(argv []string) (Args, error) {
-	args := Args{Replicas: 2, Port: 7777, Kind: "app", Output: "rti_license.dat"}
-	if len(argv) == 0 {
-		args.Help = true
-		return args, nil
-	}
-	index := 0
-	for index < len(argv) && strings.HasPrefix(argv[index], "-") {
-		switch argv[index] {
-		case "-h", "--help":
-			args.Help = true
-			return args, nil
-		case "--version":
-			args.Resource = "version"
-			index++
-		case "--disable-ssl-verify":
-			args.DisableSSLVerify = true
-			index++
-		default:
-			return Args{}, fmt.Errorf("unknown global flag: %s", argv[index])
-		}
-	}
-	if index >= len(argv) {
-		if args.Resource == "version" {
-			return args, nil
-		}
-		return Args{}, fmt.Errorf("resource is required")
-	}
-	args.Resource = argv[index]
-	index++
-	if index < len(argv) && (argv[index] == "-h" || argv[index] == "--help") {
-		args.Help = true
-		return args, nil
-	}
-	switch args.Resource {
-	case "gateway":
-		if index < len(argv) {
-			args.GatewayCommand = argv[index]
-			index++
-		}
-		if index != len(argv) {
-			return Args{}, fmt.Errorf("unknown gateway argument: %s", argv[index])
-		}
-		return args, validate(args)
-	case "configure":
-		for index < len(argv) {
-			switch argv[index] {
-			case "--region":
-				index++
-				value, err := valueAt(argv, index, "--region")
-				if err != nil {
-					return Args{}, err
-				}
-				args.Region = value
-			case "--get-region":
-				args.GetRegion = true
-			default:
-				return Args{}, fmt.Errorf("unknown configure flag: %s", argv[index])
-			}
-			index++
-		}
-		return args, validate(args)
-	case "login", "logout", "version":
-		if index != len(argv) {
-			return Args{}, fmt.Errorf("unexpected argument for %s: %s", args.Resource, argv[index])
-		}
-		return args, nil
-	}
-	if index >= len(argv) {
-		if !isSupportedResource(args.Resource) {
-			return Args{}, fmt.Errorf("unsupported resource: %s", args.Resource)
-		}
-		args.Help = true
-		return args, nil
-	}
-	args.Command = argv[index]
-	index++
-	if index < len(argv) && (argv[index] == "-h" || argv[index] == "--help") {
-		args.Help = true
-		return args, nil
-	}
-	for index < len(argv) {
-		token := argv[index]
-		switch token {
-		case "--name":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Name = value
-		case "--replicas":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			replicas, err := strconv.Atoi(value)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Replicas = replicas
-		case "--observability-service":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.ObservabilityService = value
-		case "--system-designer":
-			args.SystemDesigner = true
-		case "--network-name":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.NetworkName = value
-		case "--short":
-			args.Short = true
-		case "--service":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Service = value
-		case "--unlink":
-			args.Unlink = true
-		case "--filters":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Filters = value
-		case "--email":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Email = value
-		case "--client-name":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.ClientName = value
-		case "--port":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Port = port
-		case "--kind":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Kind = value
-		case "--example":
-			args.Example = true
-		case "-f", "--force":
-			args.Force = true
-		case "--app-name":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.AppName = value
-		case "--client-id":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.ClientID = value
-		case "--csr-file":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.CSRFile = value
-		case "--gen-private-key":
-			args.GenPrivateKey = true
-		case "--expiration-days":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			days, err := strconv.Atoi(value)
-			if err != nil {
-				return Args{}, err
-			}
-			args.ExpirationDays = days
-			args.HasExpirationDays = true
-		case "-o", "--output":
-			index++
-			value, err := valueAt(argv, index, token)
-			if err != nil {
-				return Args{}, err
-			}
-			args.Output = value
-		default:
-			return Args{}, fmt.Errorf("unknown flag: %s", token)
-		}
-		index++
-	}
-	return args, validate(args)
+	return ParseArgsWithOutput(argv, io.Discard, io.Discard)
 }
 
-func valueAt(argv []string, index int, flag string) (string, error) {
-	if index >= len(argv) || strings.HasPrefix(argv[index], "-") {
-		return "", fmt.Errorf("missing value for %s", flag)
+func ParseArgsWithOutput(argv []string, out io.Writer, errOut io.Writer) (Args, error) {
+	args := defaultArgs()
+	ran := false
+	root := newRootCommand(&args, &ran)
+	root.SetArgs(argv)
+	root.SetOut(out)
+	root.SetErr(errOut)
+	if err := root.Execute(); err != nil {
+		return Args{}, err
 	}
-	return argv[index], nil
+	if !ran {
+		return Args{}, ErrHelp
+	}
+	return args, nil
+}
+
+func defaultArgs() Args {
+	return Args{Replicas: 2, Port: 7777, Kind: "app", Output: "rti_license.dat"}
+}
+
+func newRootCommand(args *Args, ran *bool) *cobra.Command {
+	versionFlag := false
+	root := &cobra.Command{
+		Use:           "rticloud [command]",
+		Short:         "RTI Connext Cloud CLI",
+		Long:          "RTI Connext Cloud CLI. First-time setup: run 'rticloud configure'.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			if versionFlag {
+				args.Resource = "version"
+				*ran = true
+				return nil
+			}
+			return cmd.Help()
+		},
+	}
+	root.PersistentFlags().BoolVar(&args.DisableSSLVerify, "disable-ssl-verify", false, "Disable SSL certificate verification")
+	root.Flags().BoolVar(&versionFlag, "version", false, "Print version and build metadata")
+	root.SetHelpFunc(groupedRootHelp)
+
+	root.AddCommand(
+		groupCommand(newConfigureCommand(args, ran), "Setup"),
+		groupCommand(runnableCommand("login", "Login to Connext Cloud", args, ran, func() {
+			args.Resource = "login"
+		}), "Setup"),
+		groupCommand(runnableCommand("logout", "Logout from Connext Cloud", args, ran, func() {
+			args.Resource = "logout"
+		}), "Setup"),
+		groupCommand(newDatabusCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newObservabilityCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newClientCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newAppClientCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newNetworkCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newLicenseCommand(args, ran), "Manage Connext Cloud"),
+		groupCommand(newGatewayCommand(args, ran), "Connect to Connext Cloud"),
+		groupCommand(newSpyCommand(args, ran), "Connect to Connext Cloud"),
+	)
+	return root
+}
+
+func groupCommand(cmd *cobra.Command, group string) *cobra.Command {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[commandGroupAnnotation] = group
+	return cmd
+}
+
+func groupedRootHelp(cmd *cobra.Command, _ []string) {
+	if cmd.HasParent() {
+		defaultHelp(cmd)
+		return
+	}
+	out := cmd.OutOrStdout()
+	if cmd.Long != "" {
+		_, _ = fmt.Fprintln(out, cmd.Long)
+	} else if cmd.Short != "" {
+		_, _ = fmt.Fprintln(out, cmd.Short)
+	}
+	_, _ = fmt.Fprintf(out, "\nUsage:\n  %s\n", cmd.UseLine())
+	for _, group := range rootCommandGroups {
+		commands := visibleCommandsInGroup(cmd.Commands(), group)
+		if len(commands) == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "\n%s:\n", group)
+		printCommandList(out, commands)
+	}
+	if flags := strings.TrimRight(cmd.NonInheritedFlags().FlagUsages(), "\n"); flags != "" {
+		_, _ = fmt.Fprintf(out, "\nFlags:\n%s\n", flags)
+	}
+	if flags := strings.TrimRight(cmd.InheritedFlags().FlagUsages(), "\n"); flags != "" {
+		_, _ = fmt.Fprintf(out, "\nGlobal Flags:\n%s\n", flags)
+	}
+	_, _ = fmt.Fprintf(out, "\nUse \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
+}
+
+func visibleCommandsInGroup(commands []*cobra.Command, group string) []*cobra.Command {
+	matches := make([]*cobra.Command, 0)
+	for _, cmd := range commands {
+		if cmd.IsAvailableCommand() && cmd.Annotations[commandGroupAnnotation] == group {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
+}
+
+func defaultHelp(cmd *cobra.Command) {
+	out := cmd.OutOrStdout()
+	if cmd.Long != "" {
+		_, _ = fmt.Fprintln(out, cmd.Long)
+	} else if cmd.Short != "" {
+		_, _ = fmt.Fprintln(out, cmd.Short)
+	}
+	_, _ = fmt.Fprintf(out, "\nUsage:\n  %s\n", cmd.UseLine())
+	if cmd.HasAvailableSubCommands() {
+		_, _ = fmt.Fprintln(out, "\nAvailable Commands:")
+		printCommandList(out, visibleCommands(cmd.Commands()))
+	}
+	if flags := strings.TrimRight(cmd.NonInheritedFlags().FlagUsages(), "\n"); flags != "" {
+		_, _ = fmt.Fprintf(out, "\nFlags:\n%s\n", flags)
+	}
+	if flags := strings.TrimRight(cmd.InheritedFlags().FlagUsages(), "\n"); flags != "" {
+		_, _ = fmt.Fprintf(out, "\nGlobal Flags:\n%s\n", flags)
+	}
+	if cmd.HasAvailableSubCommands() {
+		_, _ = fmt.Fprintf(out, "\nUse \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
+	}
+}
+
+func visibleCommands(commands []*cobra.Command) []*cobra.Command {
+	visible := make([]*cobra.Command, 0)
+	for _, cmd := range commands {
+		if cmd.IsAvailableCommand() {
+			visible = append(visible, cmd)
+		}
+	}
+	return visible
+}
+
+func printCommandList(out io.Writer, commands []*cobra.Command) {
+	width := 0
+	for _, cmd := range commands {
+		if len(cmd.Name()) > width {
+			width = len(cmd.Name())
+		}
+	}
+	for _, cmd := range commands {
+		_, _ = fmt.Fprintf(out, "  %-*s  %s\n", width, cmd.Name(), cmd.Short)
+	}
+}
+
+func newConfigureCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := runnableCommand("configure", "Configure CLI region settings", args, ran, func() {
+		args.Resource = "configure"
+	})
+	cmd.Flags().StringVar(&args.Region, "region", "", "Region to configure")
+	cmd.Flags().BoolVar(&args.GetRegion, "get-region", false, "Print the configured region")
+	return cmd
+}
+
+func newDatabusCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("databus", "Manage Databuses")
+	cmd.AddCommand(
+		databusCommand("create", "Create a Databus", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().IntVar(&args.Replicas, "replicas", args.Replicas, "Number of replicas")
+			c.Flags().StringVar(&args.ObservabilityService, "observability-service", "", "Observability Service to link")
+			c.Flags().BoolVar(&args.SystemDesigner, "system-designer", false, "Enable System Designer support")
+			c.Flags().StringVar(&args.NetworkName, "network-name", "", "Network name")
+		}),
+		databusCommand("list", "List Databuses", args, ran, func(c *cobra.Command) {
+			c.Flags().BoolVar(&args.Short, "short", false, "Print compact output")
+		}),
+		databusCommand("query", "Show Databus details", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		databusCommand("delete", "Delete a Databus", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		databusCommand("disable", "Disable a Databus", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		databusCommand("resume", "Resume a Databus", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		databusCommand("set-observability", "Link or unlink an Observability Service", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().StringVar(&args.Service, "service", "", "Observability Service to link")
+			c.Flags().BoolVar(&args.Unlink, "unlink", false, "Unlink the current Observability Service")
+		}),
+		databusCommand("update-filters", "Update Databus filters", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().StringVar(&args.Filters, "filters", "", "Databus filters")
+		}),
+		databusCommand("add-user", "Add a Databus user", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().StringVar(&args.Email, "email", "", "User email")
+		}),
+		databusCommand("remove-user", "Remove a Databus user", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().StringVar(&args.Email, "email", "", "User email")
+		}),
+	)
+	return cmd
+}
+
+func databusCommand(use string, short string, args *Args, ran *bool, flags func(*cobra.Command)) *cobra.Command {
+	return resourceCommand(use, short, "databus", use, args, ran, flags)
+}
+
+func newObservabilityCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("observability", "Manage Observability Services")
+	cmd.AddCommand(
+		observabilityCommand("create", "Create an Observability Service", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			c.Flags().StringVar(&args.NetworkName, "network-name", "", "Network name")
+		}),
+		observabilityCommand("list", "List Observability Services", args, ran, func(c *cobra.Command) {
+			c.Flags().BoolVar(&args.Short, "short", false, "Print compact output")
+		}),
+		observabilityCommand("query", "Show Observability Service details", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		observabilityCommand("delete", "Delete an Observability Service", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		observabilityCommand("disable", "Disable an Observability Service", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+		observabilityCommand("resume", "Resume an Observability Service", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+	)
+	return cmd
+}
+
+func observabilityCommand(use string, short string, args *Args, ran *bool, flags func(*cobra.Command)) *cobra.Command {
+	return resourceCommand(use, short, "observability", use, args, ran, flags)
+}
+
+func newClientCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("client", "Manage Databus client configurations")
+	cmd.AddCommand(
+		clientCommand("create", "Create a Databus client configuration", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addClientNameFlag(c, args)
+			c.Flags().IntVar(&args.Port, "port", args.Port, "Local port")
+			c.Flags().StringVar(&args.Kind, "kind", args.Kind, "Client kind: app, gateway, or observability-collector")
+		}),
+		clientCommand("get", "Get a Databus client configuration", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addClientNameFlag(c, args)
+			c.Flags().BoolVar(&args.Example, "example", false, "Include example configuration")
+			c.Flags().BoolVarP(&args.Force, "force", "f", false, "Overwrite existing files")
+		}),
+		clientCommand("delete", "Delete a Databus client configuration", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addClientNameFlag(c, args)
+		}),
+	)
+	return cmd
+}
+
+func clientCommand(use string, short string, args *Args, ran *bool, flags func(*cobra.Command)) *cobra.Command {
+	return resourceCommand(use, short, "client", use, args, ran, flags)
+}
+
+func newAppClientCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("app-client", "Manage application template clients")
+	cmd.AddCommand(
+		appClientCommand("list", "List application template clients", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addAppNameFlag(c, args)
+		}),
+		appClientCommand("register", "Register an application template client", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addAppNameFlag(c, args)
+			c.Flags().StringVar(&args.ClientID, "client-id", "", "Client ID")
+			c.Flags().StringVar(&args.CSRFile, "csr-file", "", "CSR file")
+			c.Flags().BoolVar(&args.GenPrivateKey, "gen-private-key", false, "Generate a private key")
+			c.Flags().BoolVarP(&args.Force, "force", "f", false, "Overwrite existing files")
+		}),
+		appClientCommand("revoke", "Revoke an application template client", args, ran, func(c *cobra.Command) {
+			addNameFlag(c, args)
+			addAppNameFlag(c, args)
+			c.Flags().StringVar(&args.ClientID, "client-id", "", "Client ID")
+		}),
+	)
+	return cmd
+}
+
+func appClientCommand(use string, short string, args *Args, ran *bool, flags func(*cobra.Command)) *cobra.Command {
+	return resourceCommand(use, short, "app-client", use, args, ran, flags)
+}
+
+func newNetworkCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("network", "Manage networks")
+	cmd.AddCommand(
+		resourceCommand("list", "List networks", "network", "list", args, ran, nil),
+		resourceCommand("delete", "Delete a network", "network", "delete", args, ran, func(c *cobra.Command) { addNameFlag(c, args) }),
+	)
+	return cmd
+}
+
+func newLicenseCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := parentCommand("license", "Download your RTI license file")
+	get := resourceCommand("get", "Download your RTI license file", "license", "get", args, ran, func(c *cobra.Command) {
+		c.Flags().IntVar(&args.ExpirationDays, "expiration-days", 0, "License expiration days")
+		c.Flags().StringVarP(&args.Output, "output", "o", args.Output, "Output file")
+	})
+	get.PreRun = func(cmd *cobra.Command, cmdArgs []string) {
+		args.HasExpirationDays = cmd.Flags().Changed("expiration-days")
+	}
+	cmd.AddCommand(get)
+	return cmd
+}
+
+func newGatewayCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "gateway",
+		Short: "Connect your applications to Connext Cloud",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			args.Resource = "gateway"
+			*ran = true
+			return validate(*args)
+		},
+	}
+	cmd.Flags().StringVar(&args.Format, "format", "", "Output format: text")
+	cmd.AddCommand(
+		gatewayCommand("status", "Show the status of the gateway in the current directory", args, ran),
+		gatewayCommand("reset", "Reset the gateway in the current directory", args, ran),
+		gatewayCommand("obs", "Open the observability dashboard", args, ran),
+	)
+	return cmd
+}
+
+func gatewayCommand(use string, short string, args *Args, ran *bool) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			args.Resource = "gateway"
+			args.GatewayCommand = use
+			*ran = true
+			return validate(*args)
+		},
+	}
+	cmd.Flags().StringVar(&args.Format, "format", "", "Output format: text")
+	return cmd
+}
+
+func newSpyCommand(args *Args, ran *bool) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "spy",
+		Short: "Inspect Databus topics and samples with RTI DDS Spy",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			args.Resource = "spy"
+			*ran = true
+			return validate(*args)
+		},
+	}
+	cmd.Flags().StringVar(&args.Format, "format", "", "Output format: text")
+	cmd.AddCommand(
+		spyCommand("status", "Show the status of the spy in the current directory", args, ran),
+		spyCommand("reset", "Reset the spy in the current directory", args, ran),
+	)
+	return cmd
+}
+
+func spyCommand(use string, short string, args *Args, ran *bool) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			args.Resource = "spy"
+			args.SpyCommand = use
+			*ran = true
+			return validate(*args)
+		},
+	}
+	cmd.Flags().StringVar(&args.Format, "format", "", "Output format: text")
+	return cmd
+}
+
+func parentCommand(use string, short string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			return cmd.Help()
+		},
+	}
+}
+
+func runnableCommand(use string, short string, args *Args, ran *bool, assign func()) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			assign()
+			*ran = true
+			return validate(*args)
+		},
+	}
+}
+
+func resourceCommand(use string, short string, resource string, command string, args *Args, ran *bool, flags func(*cobra.Command)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+			args.Resource = resource
+			args.Command = command
+			*ran = true
+			return validate(*args)
+		},
+	}
+	if flags != nil {
+		flags(cmd)
+	}
+	return cmd
+}
+
+func addNameFlag(cmd *cobra.Command, args *Args) {
+	cmd.Flags().StringVar(&args.Name, "name", "", "Resource name")
+}
+
+func addClientNameFlag(cmd *cobra.Command, args *Args) {
+	cmd.Flags().StringVar(&args.ClientName, "client-name", "", "Client configuration name")
+}
+
+func addAppNameFlag(cmd *cobra.Command, args *Args) {
+	cmd.Flags().StringVar(&args.AppName, "app-name", "", "Application template name")
 }
 
 func validate(args Args) error {
@@ -307,43 +496,34 @@ func validate(args Args) error {
 	case "app-client":
 		return validateAppClient(args)
 	case "network":
-		if args.Command != "list" && args.Command != "delete" {
-			return fmt.Errorf("unsupported network command: %s", args.Command)
-		}
 		return requireName(args, args.Command == "delete")
 	case "license":
-		if args.Command != "get" {
-			return fmt.Errorf("unsupported license command: %s", args.Command)
-		}
 		if args.HasExpirationDays && args.ExpirationDays < 0 {
 			return fmt.Errorf("expiration-days must be greater than or equal to 0")
 		}
 	case "gateway":
-		if args.GatewayCommand != "" && args.GatewayCommand != "status" && args.GatewayCommand != "reset" && args.GatewayCommand != "obs" {
-			return fmt.Errorf("unsupported gateway command: %s", args.GatewayCommand)
+		return validateLiveFormat(args)
+	case "spy":
+		return validateLiveFormat(args)
+	case "configure":
+		if args.Region != "" && args.GetRegion {
+			return fmt.Errorf("exactly one of --region or --get-region is allowed")
 		}
-	case "configure", "login", "logout", "version":
+	case "login", "logout", "version":
 	default:
 		return fmt.Errorf("unsupported resource: %s", args.Resource)
 	}
 	return nil
 }
 
-func isSupportedResource(resource string) bool {
-	switch resource {
-	case "databus", "observability", "client", "app-client", "network", "license", "gateway", "configure", "login", "logout", "version":
-		return true
-	default:
-		return false
+func validateLiveFormat(args Args) error {
+	if args.Format == "" || args.Format == "text" {
+		return nil
 	}
+	return fmt.Errorf("invalid --format %q; expected text", args.Format)
 }
 
 func validateDatabus(args Args) error {
-	switch args.Command {
-	case "create", "list", "query", "delete", "disable", "resume", "set-observability", "update-filters", "add-user", "remove-user":
-	default:
-		return fmt.Errorf("unsupported databus command: %s", args.Command)
-	}
 	if err := requireName(args, args.Command != "list"); err != nil {
 		return err
 	}
@@ -362,20 +542,10 @@ func validateDatabus(args Args) error {
 }
 
 func validateObservability(args Args) error {
-	switch args.Command {
-	case "create", "list", "query", "delete", "disable", "resume":
-	default:
-		return fmt.Errorf("unsupported observability command: %s", args.Command)
-	}
 	return requireName(args, args.Command != "list")
 }
 
 func validateClient(args Args) error {
-	switch args.Command {
-	case "create", "get", "delete":
-	default:
-		return fmt.Errorf("unsupported client command: %s", args.Command)
-	}
 	if err := requireName(args, true); err != nil {
 		return err
 	}
@@ -389,11 +559,6 @@ func validateClient(args Args) error {
 }
 
 func validateAppClient(args Args) error {
-	switch args.Command {
-	case "list", "register", "revoke":
-	default:
-		return fmt.Errorf("unsupported app-client command: %s", args.Command)
-	}
 	if err := requireName(args, true); err != nil {
 		return err
 	}

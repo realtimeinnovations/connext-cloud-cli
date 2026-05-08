@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,8 +11,11 @@ import (
 )
 
 func main() {
-	args, err := cli.ParseArgs(os.Args[1:])
+	args, err := cli.ParseArgsWithOutput(os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
+		if errors.Is(err, cli.ErrHelp) {
+			return
+		}
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

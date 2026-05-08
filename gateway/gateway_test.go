@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 )
 
 func TestRoutingStateTracksWildcardRouteInstances(t *testing.T) {
@@ -48,6 +50,28 @@ func TestRoutingStateTracksWildcardRouteInstances(t *testing.T) {
 	}
 	if rows["Circle"].EdgeToCloud != "live" {
 		t.Fatalf("unexpected Circle row: %#v", rows["Circle"])
+	}
+}
+
+func TestPlainEventLinesFormatsGatewayEvents(t *testing.T) {
+	lines := []string{
+		"RTI Routing Service 7.7.0 executing (with configuration=gw)",
+		"LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED] name=Square, type_name=ShapeType, connection=edge_participant_domain_0",
+		"LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_session/routes/route_0_all_edge_to_cloud@Square|RUN]",
+		"WARNING [/routing_services/gateway/domain_routes/etc] Port 7410 in use",
+	}
+	got := []string{}
+	for _, line := range lines {
+		got = append(got, PlainEventLines(line)...)
+	}
+	expected := []string{
+		"[status] running",
+		"[stream] Square ShapeType discovered from edge_participant_domain_0",
+		"[route] Square edge_to_cloud run",
+		"[warning] Port 7410 in use",
+	}
+	if strings.Join(got, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("unexpected lines:\n%s", strings.Join(got, "\n"))
 	}
 }
 
@@ -327,6 +351,30 @@ func TestDiscoverConnextUsesNDDSHOME(t *testing.T) {
 	if result.Version != "7.7.0" || result.Path == "" {
 		t.Fatalf("unexpected install: %#v", result)
 	}
+	if result.Reason != "selected via $NDDSHOME" {
+		t.Fatalf("unexpected reason: %q", result.Reason)
+	}
+}
+
+func TestDiscoverConnextUsesCONNEXTDDS_DIR(t *testing.T) {
+	tmpDir := t.TempDir()
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := DiscoverConnextInstall(map[string]string{"CONNEXTDDS_DIR": install})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != "7.7.0" || result.Path == "" {
+		t.Fatalf("unexpected install: %#v", result)
+	}
+	if result.Reason != "selected via $CONNEXTDDS_DIR" {
+		t.Fatalf("unexpected reason: %q", result.Reason)
+	}
 }
 
 func TestDiscoverConnextSelectsHighestCommonInstallWhenNotPrompting(t *testing.T) {
@@ -339,9 +387,9 @@ func TestDiscoverConnextSelectsHighestCommonInstallWhenNotPrompting(t *testing.T
 	if err := os.MkdirAll(filepath.Join(newer, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	previousPatterns := append([]string(nil), connextInstallPatterns...)
-	t.Cleanup(func() { connextInstallPatterns = previousPatterns })
-	connextInstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
+	previousPatterns := append([]string(nil), connext.InstallPatterns...)
+	t.Cleanup(func() { connext.InstallPatterns = previousPatterns })
+	connext.InstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
 	t.Cleanup(func() {
 	})
 	if err := os.WriteFile(filepath.Join(older, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
@@ -350,7 +398,7 @@ func TestDiscoverConnextSelectsHighestCommonInstallWhenNotPrompting(t *testing.T
 	if err := os.WriteFile(filepath.Join(newer, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	result, err := DiscoverConnextInstallWithPrompt(map[string]string{}, false, nil)
+	result, err := DiscoverConnextInstallWithPrompt(map[string]string{}, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,9 +417,9 @@ func TestDiscoverConnextPromptsForExistingInstallations(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(newer, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	previousPatterns := append([]string(nil), connextInstallPatterns...)
-	t.Cleanup(func() { connextInstallPatterns = previousPatterns })
-	connextInstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
+	previousPatterns := append([]string(nil), connext.InstallPatterns...)
+	t.Cleanup(func() { connext.InstallPatterns = previousPatterns })
+	connext.InstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
 	if err := os.WriteFile(filepath.Join(older, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +432,7 @@ func TestDiscoverConnextPromptsForExistingInstallations(t *testing.T) {
 		gotMessage = message
 		gotChoices = append([]string(nil), choices...)
 		return older, nil
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

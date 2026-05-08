@@ -132,7 +132,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun()
+	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,41 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 	}
 }
 
+func TestFirstRunFailsBeforeDatabusSelectionWhenConnextMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	app := NewGatewayApp(tmpDir, &out)
+	steps := []string{}
+	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
+		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
+	}
+	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+		steps = append(steps, "discover")
+		return ConnextInstall{}, GatewayError{Message: "Connext Pro 7.3.0 or newer with rtiroutingservice was not found."}
+	}
+	app.SelectFunc = func(message string, choices []string) (string, error) {
+		steps = append(steps, "select:"+message)
+		switch message {
+		case "Select gateway capability:":
+			return "Data only", nil
+		case "Select Databus:":
+			return "inventory", nil
+		default:
+			return "", GatewayError{Message: message}
+		}
+	}
+	_, err := app.ConfigureFirstRun(false)
+	if err == nil || !strings.Contains(err.Error(), "Connext Pro 7.3.0 or newer with rtiroutingservice was not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if discoverIndex(steps, "select:Select gateway capability:") < len(steps)+1 {
+		t.Fatalf("expected failure before capability selection: %#v", steps)
+	}
+	if discoverIndex(steps, "select:Select Databus:") < len(steps)+1 {
+		t.Fatalf("expected failure before databus selection: %#v", steps)
+	}
+}
+
 func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
@@ -164,7 +199,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 		return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
 	}
 	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
-		return ConnextInstall{}, GatewayError{Message: "should not be called"}
+		return ConnextInstall{Path: filepath.Join(tmpDir, "rti_connext_dds-7.7.0"), Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	app.SelectFunc = func(message string, choices []string) (string, error) {
@@ -179,7 +214,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun()
+	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +265,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun()
+	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +314,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun()
+	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +364,7 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun()
+	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,6 +533,46 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRunRoutingServiceWithTextOutputPrintsPlainEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
+	if err := os.MkdirAll(routingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(routingDir, "gw.xml"), []byte("<routing/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+echo "RTI Routing Service 7.7.0 executing (with configuration=gw)"
+echo "LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED] name=Square, type_name=ShapeType, connection=edge_participant_domain_0"
+echo "LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_session/routes/route_0_all_edge_to_cloud@Square|RUN]"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "rtiroutingservice"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := NewGatewayApp(tmpDir, &out)
+	rc, err := app.RunRoutingServiceWithOptions(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, "", true, true, RunOptions{TextOutput: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc != 0 {
+		t.Fatalf("unexpected rc: %d", rc)
+	}
+	output := out.String()
+	if !strings.Contains(output, "[status] running") || !strings.Contains(output, "[route] Square edge_to_cloud run") {
+		t.Fatalf("unexpected output: %s", output)
+	}
+	if strings.Contains(output, "\x1b[") {
+		t.Fatalf("text output contains ANSI escapes: %q", output)
 	}
 }
 

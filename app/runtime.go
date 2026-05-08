@@ -17,6 +17,8 @@ import (
 	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
 type Runtime struct {
@@ -26,6 +28,7 @@ type Runtime struct {
 	CloudAPI *cloudapi.Client
 	Commands *commands.Runner
 	Gateway  *gateway.GatewayApp
+	Spy      *spy.App
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -33,31 +36,54 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	authManager := auth.New(configManager, "")
 	authManager.Stdout = out
 	cloudClient := cloudapi.New(configManager.GetAPIURL, authManager.GetAuthHeaders)
+	cloudClient.Out = out
 	commandRunner := commands.New(cloudClient, out)
 	commandRunner.CSRGenerator = mgcrypto.GeneratePrivateKeyAndCSR
 	gatewayApp := gateway.NewGatewayApp(workDir, out)
 	gatewayApp.APIGet = func(path string) (map[string]any, error) {
 		response, err := cloudClient.Get(path)
-		return decodeGatewayJSON(response, err, "GET", path, configManager.GetAPIURLSafe())
+		return decodeCommandJSON(response, err, "GET", path, configManager.GetAPIURLSafe(), "gateway")
 	}
 	gatewayApp.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
 		response, err := cloudClient.Post(path, payload)
-		return decodeGatewayJSON(response, err, "POST", path, configManager.GetAPIURLSafe())
+		return decodeCommandJSON(response, err, "POST", path, configManager.GetAPIURLSafe(), "gateway")
 	}
 	gatewayApp.CurrentZoneFunc = func() string { return currentZone(configManager) }
 	gatewayApp.DiscoverConnextInstallFn = func(prompt bool) (gateway.ConnextInstall, error) {
-		return gateway.DiscoverConnextInstallWithPrompt(nil, prompt, gatewayApp.SelectFunc)
+		return gateway.DiscoverConnextInstallWithPrompt(nil, prompt, gatewayApp.SelectFunc, gatewayApp.InputFunc)
 	}
 	gatewayApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
-	return &Runtime{Out: out, Config: configManager, Auth: authManager, CloudAPI: cloudClient, Commands: commandRunner, Gateway: gatewayApp}
+	spyApp := spy.NewApp(workDir, out)
+	spyApp.APIGet = func(path string) (map[string]any, error) {
+		response, err := cloudClient.Get(path)
+		return decodeCommandJSON(response, err, "GET", path, configManager.GetAPIURLSafe(), "spy")
+	}
+	spyApp.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
+		response, err := cloudClient.Post(path, payload)
+		return decodeCommandJSON(response, err, "POST", path, configManager.GetAPIURLSafe(), "spy")
+	}
+	spyApp.CurrentZoneFunc = func() string { return currentZone(configManager) }
+	spyApp.DiscoverConnextInstallFn = func(prompt bool) (spy.ConnextInstall, error) {
+		return spy.DiscoverConnextInstallWithPrompt(nil, prompt, spyApp.SelectFunc, spyApp.InputFunc)
+	}
+	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
+	return &Runtime{Out: out, Config: configManager, Auth: authManager, CloudAPI: cloudClient, Commands: commandRunner, Gateway: gatewayApp, Spy: spyApp}
 }
 
 func decodeGatewayJSON(response *http.Response, err error, method string, path string, apiHost string) (map[string]any, error) {
+	return decodeCommandJSON(response, err, method, path, apiHost, "gateway")
+}
+
+func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {
 			return nil, gateway.GatewayError{Message: err.Error()}
 		}
-		return nil, gateway.GatewayError{Message: gateway.FormatAPIConnectionError(method, apiHost, path, err)}
+		message := gateway.FormatAPIConnectionError(method, apiHost, path, err)
+		if command != "gateway" {
+			message = strings.ReplaceAll(message, "rticloud gateway", "rticloud "+command)
+		}
+		return nil, gateway.GatewayError{Message: message}
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
@@ -73,6 +99,7 @@ func decodeGatewayJSON(response *http.Response, err error, method string, path s
 	}
 	return payload, nil
 }
+
 func currentZone(manager *config.Manager) string {
 	configValues, err := manager.GetConfig()
 	if err != nil {
@@ -94,10 +121,6 @@ func currentZone(manager *config.Manager) string {
 }
 
 func (runtime *Runtime) Execute(args cli.Args) error {
-	if args.Help {
-		_, _ = fmt.Fprint(runtime.Out, cli.Usage())
-		return nil
-	}
 	runtime.CloudAPI.SSLVerify = !args.DisableSSLVerify
 	switch args.Resource {
 	case "version":
@@ -125,8 +148,55 @@ func (runtime *Runtime) Execute(args cli.Args) error {
 		return runtime.executeLicense(args)
 	case "gateway":
 		return runtime.executeGateway(args)
+	case "spy":
+		return runtime.executeSpy(args)
 	default:
 		return fmt.Errorf("unsupported resource: %s", args.Resource)
+	}
+}
+
+func (runtime *Runtime) executeSpy(args cli.Args) error {
+	switch args.SpyCommand {
+	case "status":
+		return runtime.Spy.Status()
+	case "reset":
+		return runtime.Spy.Reset()
+	default:
+		configValues, err := runtime.Spy.ReadConfig()
+		if err != nil {
+			return err
+		}
+		if configValues == nil {
+			configValues, err = runtime.Spy.ConfigureFirstRun(!runtime.liveTextOutput(args))
+			if err != nil {
+				return err
+			}
+		}
+		runtime.Spy.PrintConfigSummary(configValues)
+		if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
+			return err
+		}
+		if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
+			return err
+		}
+		databusSecure, err := runtime.Spy.EnsureSecureArtifacts(configValues)
+		if err != nil {
+			return err
+		}
+		runtimeConfig, _ := configValues["runtime"].(map[string]any)
+		connextHome, _ := runtimeConfig["connext_home"].(string)
+		var connext spy.ConnextInstall
+		if connextHome != "" {
+			connext, err = spy.ValidateConnextInstall(connextHome)
+		} else {
+			connext, err = spy.DiscoverConnextInstall(nil)
+		}
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
+		_, err = runtime.Spy.RunWithOptions(configValues, connext, databusSecure, spy.RunOptions{TextOutput: runtime.liveTextOutput(args)})
+		return err
 	}
 }
 
@@ -239,7 +309,7 @@ func (runtime *Runtime) executeGateway(args cli.Args) error {
 			return err
 		}
 		if configValues == nil {
-			configValues, err = runtime.Gateway.ConfigureFirstRun()
+			configValues, err = runtime.Gateway.ConfigureFirstRun(!runtime.liveTextOutput(args))
 			if err != nil {
 				return err
 			}
@@ -277,7 +347,7 @@ func (runtime *Runtime) executeGateway(args cli.Args) error {
 			}
 		}
 		if gateway.HasDatabus(configValues) {
-			_, err = runtime.Gateway.RunRoutingService(configValues, connext, collectorName, databusSecure, collectorSecure)
+			_, err = runtime.Gateway.RunRoutingServiceWithOptions(configValues, connext, collectorName, databusSecure, collectorSecure, gateway.RunOptions{TextOutput: runtime.liveTextOutput(args)})
 			return err
 		}
 		if err := runtime.Gateway.WriteRuntimeState(map[string]any{"routing_pid": nil, "started_at": runtime.Gateway.Now().UTC().Format("2006-01-02T15:04:05Z"), "collector_container": collectorName}); err != nil {
@@ -286,4 +356,8 @@ func (runtime *Runtime) executeGateway(args cli.Args) error {
 		_, _ = fmt.Fprintln(runtime.Out, "Gateway observability forwarding is running.")
 		return nil
 	}
+}
+
+func (runtime *Runtime) liveTextOutput(args cli.Args) bool {
+	return args.Format == "text" || terminal.PlainOutputRequested(runtime.Out)
 }

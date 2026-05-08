@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +16,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"golang.org/x/oauth2"
 )
 
 type ConfigProvider interface {
@@ -149,26 +148,6 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 	return os.Chmod(manager.TokenPath, 0o600)
 }
 
-func GenerateCodeVerifier(length int) (string, error) {
-	if length <= 0 {
-		length = 64
-	}
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
-	raw := make([]byte, length)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	for idx := range raw {
-		raw[idx] = alphabet[int(raw[idx])%len(alphabet)]
-	}
-	return string(raw), nil
-}
-
-func GenerateCodeChallenge(verifier string) string {
-	digest := sha256.Sum256([]byte(verifier))
-	return strings.TrimRight(base64.URLEncoding.EncodeToString(digest[:]), "=")
-}
-
 func (manager *Manager) Logout() error {
 	if err := os.Remove(manager.TokenPath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -272,26 +251,24 @@ func (manager *Manager) Login() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	verifier, err := GenerateCodeVerifier(64)
-	if err != nil {
-		return "", err
+
+	oauthConfig := oauth2.Config{
+		ClientID:    clientID,
+		RedirectURL: redirectURI,
+		Scopes:      strings.Fields(scope),
+		Endpoint: oauth2.Endpoint{
+			AuthURL:   fmt.Sprintf("https://%s/authorize", auth0Domain),
+			TokenURL:  fmt.Sprintf("https://%s/oauth/token", auth0Domain),
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
 	}
-	state, err := GenerateCodeVerifier(32)
-	if err != nil {
-		return "", err
-	}
-	challenge := GenerateCodeChallenge(verifier)
-	authParams := url.Values{
-		"client_id":             []string{clientID},
-		"audience":              []string{audience},
-		"response_type":         []string{"code"},
-		"redirect_uri":          []string{redirectURI},
-		"scope":                 []string{scope},
-		"state":                 []string{state},
-		"code_challenge":        []string{challenge},
-		"code_challenge_method": []string{"S256"},
-	}
-	authorizationURL := fmt.Sprintf("https://%s/authorize?%s", auth0Domain, authParams.Encode())
+	verifier := oauth2.GenerateVerifier()
+	state := oauth2.GenerateVerifier()
+	authorizationURL := oauthConfig.AuthCodeURL(
+		state,
+		oauth2.SetAuthURLParam("audience", audience),
+		oauth2.S256ChallengeOption(verifier),
+	)
 	listener, err := net.Listen("tcp", parsedRedirect.Host)
 	if err != nil {
 		return "", err
@@ -333,36 +310,38 @@ func (manager *Manager) Login() (string, error) {
 		if result.err != nil {
 			return "", result.err
 		}
-		requestBody := url.Values{
-			"grant_type":    []string{"authorization_code"},
-			"client_id":     []string{clientID},
-			"code":          []string{result.code},
-			"redirect_uri":  []string{redirectURI},
-			"code_verifier": []string{verifier},
-		}
-		response, err := manager.HTTPClient.PostForm(fmt.Sprintf("https://%s/oauth/token", auth0Domain), requestBody)
+		token, err := oauthConfig.Exchange(oauthContext(manager.HTTPClient), result.code, oauth2.VerifierOption(verifier))
 		if err != nil {
 			return "", err
 		}
-		defer response.Body.Close()
-		var tokenResponse struct {
-			AccessToken string `json:"access_token"`
-			ExpiresIn   int    `json:"expires_in"`
-			ErrorDesc   string `json:"error_description"`
+		if token.AccessToken == "" {
+			return "", fmt.Errorf("Error: OAuth token response did not include an access token")
 		}
-		if err := json.NewDecoder(response.Body).Decode(&tokenResponse); err != nil {
+		if err := manager.SaveAccessToken(token.AccessToken, tokenExpiresIn(token)); err != nil {
 			return "", err
 		}
-		if tokenResponse.AccessToken == "" {
-			return "", fmt.Errorf("Error: %s", tokenResponse.ErrorDesc)
-		}
-		if err := manager.SaveAccessToken(tokenResponse.AccessToken, tokenResponse.ExpiresIn); err != nil {
-			return "", err
-		}
-		return tokenResponse.AccessToken, nil
+		return token.AccessToken, nil
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+func oauthContext(client *http.Client) context.Context {
+	ctx := context.Background()
+	if client != nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, client)
+	}
+	return ctx
+}
+
+func tokenExpiresIn(token *oauth2.Token) int {
+	if token.ExpiresIn > 0 {
+		return int(token.ExpiresIn)
+	}
+	if !token.Expiry.IsZero() {
+		return int(time.Until(token.Expiry).Seconds())
+	}
+	return 0
 }
 
 func NewDefaultManager() *Manager {

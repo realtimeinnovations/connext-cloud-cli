@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 )
 
 const (
@@ -15,10 +17,7 @@ const (
 	RoutingLivePulseFrames   = 4
 )
 
-type ConnextInstall struct {
-	Path    string
-	Version string
-}
+type ConnextInstall = connext.Install
 
 type RouteState struct {
 	Route            string
@@ -128,6 +127,74 @@ func (state *RoutingState) Update(line string) {
 	if state.isLiveLogLine(line) {
 		state.appendLog(state.summarizeLogLine(line))
 	}
+}
+
+func PlainEventLines(line string) []string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.Contains(line, "RTIXMLUTILSTransformer_transformWithParams") {
+		return nil
+	}
+	if serviceRunningRE.MatchString(line) {
+		return []string{"[status] running"}
+	}
+	if match := streamDiscoveredRE.FindStringSubmatch(line); match != nil {
+		topic, typeName, connection := match[1], match[2], match[3]
+		if strings.HasPrefix(topic, "DDS") {
+			return nil
+		}
+		return []string{"[stream] " + topic + " " + typeName + " discovered from " + connection}
+	}
+	if match := streamDisposedRE.FindStringSubmatch(line); match != nil {
+		topic, typeName, connection := match[1], match[2], match[3]
+		if strings.HasPrefix(topic, "DDS") {
+			return nil
+		}
+		return []string{"[stream] " + topic + " " + typeName + " disposed from " + connection}
+	}
+	if match := routeEventRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		event := strings.ToLower(match[len(match)-1])
+		return []string{"[route] " + topic + " " + RouteDirection(routeName) + " " + event}
+	}
+	if match := routeInputMatchRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[match] " + topic + " " + RouteDirection(routeName) + " input"}
+	}
+	if match := routeOutputMatchRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[match] " + topic + " " + RouteDirection(routeName) + " output"}
+	}
+	if match := routeInputEnableRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[match] " + topic + " " + RouteDirection(routeName) + " input"}
+	}
+	if match := routeOutputEnableRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[match] " + topic + " " + RouteDirection(routeName) + " output"}
+	}
+	if match := routeInputLostRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[lost] " + topic + " " + RouteDirection(routeName) + " input"}
+	}
+	if match := routeOutputLostRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[lost] " + topic + " " + RouteDirection(routeName) + " output"}
+	}
+	if match := routeInputDisableRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[lost] " + topic + " " + RouteDirection(routeName) + " input"}
+	}
+	if match := routeOutputDisableRE.FindStringSubmatch(line); match != nil {
+		routeName, topic := routeMatchParts(match)
+		return []string{"[lost] " + topic + " " + RouteDirection(routeName) + " output"}
+	}
+	if strings.Contains(line, "WARNING ") {
+		return []string{"[warning] " + strings.TrimPrefix(trimLogContext(line, "WARNING"), "WARNING: ")}
+	}
+	if strings.Contains(line, "ERROR ") {
+		return []string{"[error] " + strings.TrimPrefix(trimLogContext(line, "ERROR"), "ERROR: ")}
+	}
+	return nil
 }
 
 func (state *RoutingState) SeedFromConfig(xmlPath string) {

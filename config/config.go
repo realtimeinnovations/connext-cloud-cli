@@ -1,14 +1,16 @@
 package config
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 )
 
 var RegionURLMap = map[string]string{
@@ -174,35 +176,19 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			defaultRegion = configuredRegion
 			break
 		}
-		_, _ = fmt.Fprintln(out, "Available regions:")
-		for configuredRegion := range RegionURLMap {
-			if strings.HasPrefix(configuredRegion, "dev-") {
-				continue
-			}
-			_, _ = fmt.Fprintf(out, "  %s\n", configuredRegion)
+		selectedRegion, err := prompt.Selector{
+			In:            in,
+			Out:           out,
+			CancelMessage: "Configuration cancelled.",
+			DefaultChoice: defaultRegion,
+		}.Select("Select region:", standardRegions())
+		if err != nil {
+			return false, err
 		}
-		_, _ = fmt.Fprintf(out, "Select region [%s]: ", defaultRegion)
-		reader := bufio.NewReader(in)
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && readErr != io.EOF {
-			return false, readErr
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			region = defaultRegion
-		} else {
-			region = line
-		}
+		region = selectedRegion
 	}
 	if _, ok := RegionURLMap[region]; !ok {
-		available := make([]string, 0)
-		for configuredRegion := range RegionURLMap {
-			if strings.HasPrefix(configuredRegion, "dev-") {
-				continue
-			}
-			available = append(available, configuredRegion)
-		}
-		_, _ = fmt.Fprintf(out, "Error: Invalid region '%s'. Available regions: %s\n", region, strings.Join(available, ", "))
+		_, _ = fmt.Fprintf(out, "Error: Invalid region '%s'. Available regions: %s\n", region, strings.Join(standardRegions(), ", "))
 		return false, nil
 	}
 	currentConfig["api_host"] = RegionURLMap[region]
@@ -212,6 +198,18 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 	}
 	_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or set CONNEXT_CLOUD_API_KEY.")
 	return true, nil
+}
+
+func standardRegions() []string {
+	regions := make([]string, 0, len(RegionURLMap))
+	for configuredRegion := range RegionURLMap {
+		if strings.HasPrefix(configuredRegion, "dev-") {
+			continue
+		}
+		regions = append(regions, configuredRegion)
+	}
+	sort.Strings(regions)
+	return regions
 }
 
 func copyMap(input map[string]string) map[string]string {

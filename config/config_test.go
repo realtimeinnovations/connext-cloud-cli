@@ -52,6 +52,49 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	}
 }
 
+func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("2\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config["api_host"] != RegionURLMap["us-west-2"] {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+	if !strings.Contains(out.String(), "Select region:") || !strings.Contains(out.String(), "2. us-west-2") {
+		t.Fatalf("unexpected prompt output: %s", out.String())
+	}
+}
+
+func TestConfigureRegionUsesDefaultForBlankPromptSelection(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config["api_host"] != RegionURLMap["us-west-2"] {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+}
+
 func TestGetRegionReportsCustomHost(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")

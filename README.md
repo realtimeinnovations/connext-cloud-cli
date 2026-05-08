@@ -53,7 +53,7 @@ rticloud --help
 Print build metadata:
 
 ```sh
-rticloud version
+rticloud --version
 ```
 
 ## Build

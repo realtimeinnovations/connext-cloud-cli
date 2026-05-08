@@ -1,32 +1,47 @@
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"testing"
+)
 
-func TestParserShowsHelpForNoArgsAndTopLevelHelp(t *testing.T) {
-	args, err := ParseArgs(nil)
-	if err != nil {
-		t.Fatal(err)
+func TestParserShowsGeneratedHelp(t *testing.T) {
+	var out bytes.Buffer
+	_, err := ParseArgsWithOutput(nil, &out, &out)
+	if !errors.Is(err, ErrHelp) {
+		t.Fatalf("expected help for no args, got %v", err)
 	}
-	if !args.Help {
-		t.Fatalf("expected help for no args: %#v", args)
+	if !strings.Contains(out.String(), "Connect to Connext Cloud:") ||
+		!strings.Contains(out.String(), "Manage Connext Cloud:") ||
+		!strings.Contains(out.String(), "Setup:") ||
+		!strings.Contains(out.String(), "rticloud [command] [flags]") ||
+		!strings.Contains(out.String(), "gateway") ||
+		!strings.Contains(out.String(), "databus") ||
+		!strings.Contains(out.String(), "--version") {
+		t.Fatalf("unexpected root help: %s", out.String())
+	}
+	if strings.Contains(out.String(), "\n  version") {
+		t.Fatalf("version should only be exposed as --version: %s", out.String())
 	}
 
-	args, err = ParseArgs([]string{"-h"})
-	if err != nil {
-		t.Fatal(err)
+	out.Reset()
+	_, err = ParseArgsWithOutput([]string{"databus"}, &out, &out)
+	if !errors.Is(err, ErrHelp) {
+		t.Fatalf("expected help for databus, got %v", err)
 	}
-	if !args.Help {
-		t.Fatalf("expected help for -h: %#v", args)
+	if !strings.Contains(out.String(), "Manage Databuses") || !strings.Contains(out.String(), "create") {
+		t.Fatalf("unexpected databus help: %s", out.String())
 	}
-}
 
-func TestParserShowsHelpForKnownResourceWithoutCommand(t *testing.T) {
-	args, err := ParseArgs([]string{"databus"})
-	if err != nil {
-		t.Fatal(err)
+	out.Reset()
+	_, err = ParseArgsWithOutput([]string{"databus", "create", "--help"}, &out, &out)
+	if !errors.Is(err, ErrHelp) {
+		t.Fatalf("expected help for databus create, got %v", err)
 	}
-	if !args.Help || args.Resource != "databus" {
-		t.Fatalf("expected help for databus resource: %#v", args)
+	if !strings.Contains(out.String(), "--replicas") || !strings.Contains(out.String(), "--observability-service") {
+		t.Fatalf("unexpected databus create help: %s", out.String())
 	}
 }
 
@@ -35,8 +50,8 @@ func TestParserRejectsUnknownResourceWithoutCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsupported resource error")
 	}
-	if got := err.Error(); got != "unsupported resource: databu" {
-		t.Fatalf("unexpected error: %s", got)
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 
@@ -60,6 +75,52 @@ func TestParserRegistersGatewayDefaultCommand(t *testing.T) {
 	}
 }
 
+func TestParserRegistersLiveTextFormat(t *testing.T) {
+	args, err := ParseArgs([]string{"gateway", "--format", "text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Resource != "gateway" || args.GatewayCommand != "" || args.Format != "text" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+
+	args, err = ParseArgs([]string{"spy", "status", "--format", "text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Resource != "spy" || args.SpyCommand != "status" || args.Format != "text" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+
+	_, err = ParseArgs([]string{"spy", "--format", "json"})
+	if err == nil {
+		t.Fatal("expected invalid format error")
+	}
+}
+
+func TestParserRegistersSpyCommands(t *testing.T) {
+	args, err := ParseArgs([]string{"spy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Resource != "spy" || args.SpyCommand != "" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+
+	args, err = ParseArgs([]string{"spy", "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Resource != "spy" || args.SpyCommand != "status" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+
+	_, err = ParseArgs([]string{"spy", "obs"})
+	if err == nil {
+		t.Fatal("expected unsupported spy command error")
+	}
+}
+
 func TestParserRegistersLicenseGet(t *testing.T) {
 	args, err := ParseArgs([]string{"license", "get", "--expiration-days", "30", "-o", "license.dat"})
 	if err != nil {
@@ -70,13 +131,13 @@ func TestParserRegistersLicenseGet(t *testing.T) {
 	}
 }
 
-func TestParserRegistersVersion(t *testing.T) {
-	args, err := ParseArgs([]string{"version"})
-	if err != nil {
-		t.Fatal(err)
+func TestParserRejectsVersionCommand(t *testing.T) {
+	_, err := ParseArgs([]string{"version"})
+	if err == nil {
+		t.Fatal("expected version command to be unsupported")
 	}
-	if args.Resource != "version" {
-		t.Fatalf("unexpected args: %#v", args)
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 

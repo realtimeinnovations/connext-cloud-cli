@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
 
 type BaseURLProvider func() (string, error)
@@ -22,6 +24,7 @@ type Client struct {
 	HTTPClient      *http.Client
 	SSLVerify       bool
 	Stderr          io.Writer
+	Out             io.Writer
 	warningOnce     sync.Once
 }
 
@@ -76,6 +79,8 @@ func (client *Client) Request(method string, path string, payload any) (*http.Re
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		httpClient = &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	}
+	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
+	defer stopSpinner()
 	return httpClient.Do(request)
 }
 

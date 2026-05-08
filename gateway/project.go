@@ -1,11 +1,9 @@
 package gateway
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,15 +11,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
-	"github.com/manifoldco/promptui"
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,7 +28,6 @@ const (
 	CreateNewTemplateLabel     = "Create new template..."
 	ReloadTemplateListLabel    = "Reload template list"
 	CancelGatewaySetupLabel    = "Cancel gateway setup"
-	selectChoiceSeparator      = "\x00"
 	RoutingLogName             = "routing.log"
 	routingRenderPollInterval  = 50 * time.Millisecond
 	routingLiveRefreshInterval = 250 * time.Millisecond
@@ -47,10 +43,7 @@ var secureFiles = []string{
 	"psk.key",
 }
 
-type TemplateItem struct {
-	Name string
-	Kind string
-}
+type TemplateItem = common.TemplateItem
 
 type GatewayApp struct {
 	WorkDir                  string
@@ -69,10 +62,15 @@ type GatewayApp struct {
 	CollectorStateFunc       func(name string) (string, string, error)
 	PIDRunningFunc           func(pid int) bool
 	SelectFunc               func(message string, choices []string) (string, error)
+	InputFunc                func(message string) (string, error)
 	ConfirmReloadFunc        func(message string) (bool, error)
 	InterruptSignalFunc      func() (<-chan os.Signal, func())
 	OpenBrowserFunc          func(url string) error
 	Now                      func() time.Time
+}
+
+type RunOptions struct {
+	TextOutput bool
 }
 
 func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
@@ -110,6 +108,7 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 		},
 	}
 	app.SelectFunc = app.defaultSelect
+	app.InputFunc = app.defaultInput
 	app.ConfirmReloadFunc = app.defaultConfirmReload
 	app.PIDRunningFunc = pidRunning
 	return app
@@ -205,16 +204,7 @@ func ProjectID(config map[string]any) string {
 	if value == "" {
 		value = stringValue(config, "observability")
 	}
-	if value == "" {
-		cwd, _ := os.Getwd()
-		value = filepath.Base(cwd)
-	}
-	value = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`).ReplaceAllString(value, "-")
-	value = strings.Trim(strings.ToLower(value), "-")
-	if value == "" {
-		return "project"
-	}
-	return value
+	return common.ProjectID(value, "project")
 }
 
 func HasDatabus(config map[string]any) bool {
@@ -226,36 +216,7 @@ func HasObservability(config map[string]any) bool {
 }
 
 func TemplateItems(resource map[string]any, expectedKind string) []TemplateItem {
-	clients, ok := resource["clients"]
-	if !ok {
-		clients = resource["applications"]
-	}
-	results := make([]TemplateItem, 0)
-	expected := map[string]bool{expectedKind: true}
-	if expectedKind == "observability-collector" {
-		expected["telemetry-service-collector"] = true
-	}
-	switch typed := clients.(type) {
-	case map[string]any:
-		for name, rawInfo := range typed {
-			info, _ := rawInfo.(map[string]any)
-			kind, _ := info["kind"].(string)
-			if name != "" && expected[kind] {
-				results = append(results, TemplateItem{Name: name, Kind: kind})
-			}
-		}
-	case []any:
-		for _, raw := range typed {
-			entry, _ := raw.(map[string]any)
-			name, _ := entry["name"].(string)
-			kind, _ := entry["kind"].(string)
-			if name != "" && expected[kind] {
-				results = append(results, TemplateItem{Name: name, Kind: kind})
-			}
-		}
-	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
-	return results
+	return common.TemplateItems(resource, expectedKind)
 }
 
 func LinkedObservabilityName(databus map[string]any) string {
@@ -502,6 +463,10 @@ func (app *GatewayApp) licenseFile(connext ConnextInstall) (string, error) {
 }
 
 func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextInstall, collectorName string, databusSecure bool, collectorSecure bool) (int, error) {
+	return app.RunRoutingServiceWithOptions(config, connext, collectorName, databusSecure, collectorSecure, RunOptions{})
+}
+
+func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, connext ConnextInstall, collectorName string, databusSecure bool, collectorSecure bool, options RunOptions) (int, error) {
 	gatewayTemplate := nestedString(config, "templates", "gateway")
 	if gatewayTemplate == "" {
 		return 0, GatewayError{Message: "No Databus gateway template is configured for this gateway."}
@@ -550,6 +515,11 @@ func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextI
 		}
 		_, _ = fmt.Fprintf(logFile, "%s [routing] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 		liveView.HandleLine(line)
+		if options.TextOutput {
+			for _, eventLine := range PlainEventLines(line) {
+				_, _ = fmt.Fprintln(app.Out, eventLine)
+			}
+		}
 	}
 	stream := func(reader io.Reader) {
 		if reader == nil {
@@ -596,7 +566,9 @@ func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextI
 	go func() {
 		waitDone <- cmd.Wait()
 	}()
-	_ = renderer.Render(liveView.Render(liveView.PulseFrame()))
+	if !options.TextOutput {
+		_ = renderer.Render(liveView.Render(liveView.PulseFrame()))
+	}
 	renderTicker := time.NewTicker(routingRenderPollInterval)
 	defer renderTicker.Stop()
 	var killTimer *time.Timer
@@ -607,7 +579,9 @@ func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextI
 	renderCurrentView := func(now time.Time) {
 		currentPulseFrame := liveView.PulseFrame(float64(now.UnixNano()) / float64(time.Second))
 		lastPulseFrame = currentPulseFrame
-		_ = renderer.Render(liveView.Render(currentPulseFrame))
+		if !options.TextOutput {
+			_ = renderer.Render(liveView.Render(currentPulseFrame))
+		}
 		lastLiveRefresh = now
 		pendingLiveRefresh = false
 	}
@@ -665,7 +639,9 @@ func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextI
 done:
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			_ = renderer.Render(liveView.PrintSnapshot("stopped"))
+			if !options.TextOutput {
+				_ = renderer.Render(liveView.PrintSnapshot("stopped"))
+			}
 			if interrupted {
 				_, _ = fmt.Fprintf(app.Out, "Gateway interrupted.\n")
 			} else {
@@ -679,7 +655,9 @@ done:
 		}
 		return 0, err
 	}
-	_ = renderer.Render(liveView.PrintSnapshot("stopped"))
+	if !options.TextOutput {
+		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
+	}
 	if interrupted {
 		_, _ = fmt.Fprintf(app.Out, "Gateway interrupted.\n")
 	}
@@ -725,37 +703,11 @@ func (app *GatewayApp) printGatewayRestartHint() {
 }
 
 func supportsRoutingPTY() bool {
-	return runtime.GOOS != "windows"
+	return terminal.SupportsPTY()
 }
 
 func startRoutingProcess(cmd *exec.Cmd) (io.ReadCloser, io.ReadCloser, error) {
-	if supportsRoutingPTY() {
-		master, slave, err := pty.Open()
-		if err != nil {
-			return nil, nil, err
-		}
-		cmd.Stdout = slave
-		cmd.Stderr = slave
-		if err := cmd.Start(); err != nil {
-			_ = slave.Close()
-			_ = master.Close()
-			return nil, nil, err
-		}
-		_ = slave.Close()
-		return master, nil, nil
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-	return stdout, stderr, nil
+	return terminal.StartProcess(cmd)
 }
 
 func closeIfNotNil(closer io.Closer) {
@@ -887,11 +839,7 @@ func (app *GatewayApp) OpenObservabilityDashboard() error {
 	return nil
 }
 
-func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
-	connext := ConnextInstall{}
-	connextResolved := false
-	var connextErr error
-
+func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	databuses, observabilityServices, err := app.listResources()
 	if err != nil {
 		return nil, err
@@ -901,17 +849,17 @@ func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
 	}
 	_, _, cursorSelection := app.promptTerminal()
 	_, _ = fmt.Fprint(app.Out, RenderSetupIntro(len(databuses), len(observabilityServices), cursorSelection))
+	connext := ConnextInstall{}
 	if len(databuses) > 0 {
-		if discovered, err := app.discoverConnextInstall(true); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "cancelled") {
-				return nil, err
-			}
-			connextErr = err
-		} else {
-			connext = discovered
-			connextResolved = true
-			_, _ = fmt.Fprint(app.Out, RenderInfoMessage(fmt.Sprintf("Using Connext Pro %s at %s", connext.Version, connext.Path)))
+		connext, err = app.discoverConnextInstall(prompt)
+		if err != nil {
+			return nil, err
 		}
+		connextMsg := fmt.Sprintf("Using Connext Pro %s at %s", connext.Version, connext.Path)
+		if connext.Reason != "" {
+			connextMsg += fmt.Sprintf(" (%s)", connext.Reason)
+		}
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage(connextMsg))
 	}
 	capabilityChoices := []string{}
 	if len(databuses) > 0 && len(observabilityServices) > 0 {
@@ -929,11 +877,8 @@ func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
 	}
 	includeData := capability == "Data and Observability" || capability == "Data only"
 	includeObservability := capability == "Data and Observability" || capability == "Observability only"
-	if includeData && connextErr != nil {
-		return nil, connextErr
-	}
 	if !includeData {
-		connextResolved = false
+		connext = ConnextInstall{}
 	}
 	databusName := ""
 	gatewayTemplate := ""
@@ -997,7 +942,7 @@ func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
 			"collector_client_id": nullableClientID(collectorTemplate),
 		},
 	}
-	if includeData && connextResolved {
+	if includeData {
 		config["runtime"].(map[string]any)["connext_home"] = connext.Path
 	}
 	if err := app.WriteConfig(config); err != nil {
@@ -1179,142 +1124,27 @@ func (app *GatewayApp) confirmReload(message string) (bool, error) {
 }
 
 func (app *GatewayApp) defaultSelect(message string, choices []string) (string, error) {
-	if len(choices) == 0 {
-		return "", nil
-	}
-	if len(choices) == 1 {
-		return choices[0], nil
-	}
-	if inputFile, outputFile, ok := app.promptTerminal(); ok {
-		selected, err := app.cursorSelect(message, choices, inputFile, outputFile)
-		if err == nil {
-			return selected, nil
-		}
-		if errors.Is(err, promptui.ErrInterrupt) || errors.Is(err, promptui.ErrEOF) {
-			return "", GatewayError{Message: "Gateway configuration cancelled."}
-		}
-		return "", err
-	}
-	return app.numberedSelect(message, choices)
+	return app.selector().Select(message, choices)
 }
 
-func (app *GatewayApp) numberedSelect(message string, choices []string) (string, error) {
-	reader := bufio.NewReader(app.input())
-	for {
-		_, _ = fmt.Fprintln(app.Out, message)
-		for idx, choice := range choices {
-			label := selectionLabel(choice)
-			_, _ = fmt.Fprintf(app.Out, "  %d. %s\n", idx+1, label)
-		}
-		_, _ = fmt.Fprint(app.Out, "Select an option: ")
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return "", err
-		}
-		input := strings.TrimSpace(line)
-		if input == "" {
-			if err == io.EOF {
-				return "", GatewayError{Message: "Gateway configuration cancelled."}
-			}
-			continue
-		}
-		if index, convErr := strconv.Atoi(input); convErr == nil && index >= 1 && index <= len(choices) {
-			return selectionValue(choices[index-1]), nil
-		}
-		for _, choice := range choices {
-			if input == choice || input == selectionLabel(choice) {
-				return selectionValue(choice), nil
-			}
-			if choice == CreateNewTemplate && strings.EqualFold(input, CreateNewTemplateLabel) {
-				return choice, nil
-			}
-		}
-		_, _ = fmt.Fprintln(app.Out, "Invalid selection. Enter the option number.")
-		if err == io.EOF {
-			return "", GatewayError{Message: "Gateway configuration cancelled."}
-		}
-	}
-}
-
-func (app *GatewayApp) cursorSelect(message string, choices []string, inputFile *os.File, outputFile *os.File) (string, error) {
-	labels := make([]string, 0, len(choices))
-	for _, choice := range choices {
-		labels = append(labels, selectionLabel(choice))
-	}
-	prompt := promptui.Select{
-		Label:    message,
-		Items:    labels,
-		Size:     minInt(len(labels), 10),
-		HideHelp: true,
-		Stdin:    inputFile,
-		Stdout:   outputFile,
-		Templates: &promptui.SelectTemplates{
-			Label:    "{{ . }}",
-			Active:   "\x1b[38;5;208m▸ {{ . }}\x1b[0m",
-			Inactive: "  {{ . }}",
-			Selected: "\x1b[38;5;208m▸ {{ . }}\x1b[0m",
-		},
-	}
-	index, _, err := prompt.Run()
-	if err != nil {
-		return "", err
-	}
-	return selectionValue(choices[index]), nil
-}
-
-func (app *GatewayApp) promptTerminal() (*os.File, *os.File, bool) {
-	inputFile, ok := app.input().(*os.File)
-	if !ok {
-		return nil, nil, false
-	}
-	outputFile, ok := app.Out.(*os.File)
-	if !ok {
-		return nil, nil, false
-	}
-	if !isCharDevice(inputFile) || !isCharDevice(outputFile) {
-		return nil, nil, false
-	}
-	return inputFile, outputFile, true
-}
-
-func isCharDevice(file *os.File) bool {
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+func (app *GatewayApp) defaultInput(message string) (string, error) {
+	return prompt.Input{In: app.input(), Out: app.Out, CancelMessage: "Gateway configuration cancelled."}.Prompt(message)
 }
 
 func selectionLabel(choice string) string {
-	if value, label, ok := splitChoice(choice); ok {
-		if value == CreateNewTemplate {
-			return CreateNewTemplateLabel
-		}
-		return label
-	}
-	if choice == CreateNewTemplate {
-		return CreateNewTemplateLabel
-	}
-	return choice
+	return prompt.Selector{SpecialLabels: map[string]string{CreateNewTemplate: CreateNewTemplateLabel}}.SelectionLabel(choice)
 }
 
 func selectionValue(choice string) string {
-	if value, _, ok := splitChoice(choice); ok {
-		return value
-	}
-	return choice
+	return prompt.SelectionValue(choice)
 }
 
 func choiceWithLabel(value string, label string) string {
-	return value + selectChoiceSeparator + label
+	return prompt.ChoiceWithLabel(value, label)
 }
 
 func splitChoice(choice string) (string, string, bool) {
-	parts := strings.SplitN(choice, selectChoiceSeparator, 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
+	return prompt.SplitChoice(choice)
 }
 
 func minInt(left int, right int) int {
@@ -1337,6 +1167,19 @@ func (app *GatewayApp) input() io.Reader {
 		return app.In
 	}
 	return os.Stdin
+}
+
+func (app *GatewayApp) selector() prompt.Selector {
+	return prompt.Selector{
+		In:            app.input(),
+		Out:           app.Out,
+		CancelMessage: "Gateway configuration cancelled.",
+		SpecialLabels: map[string]string{CreateNewTemplate: CreateNewTemplateLabel},
+	}
+}
+
+func (app *GatewayApp) promptTerminal() (*os.File, *os.File, bool) {
+	return terminal.PromptFiles(app.input(), app.Out)
 }
 
 func (app *GatewayApp) pidRunning(pid int) bool {
