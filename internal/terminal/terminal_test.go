@@ -34,3 +34,11 @@ func TestCanAnimateFalseForBufferOutput(t *testing.T) {
 		t.Fatalf("expected no spinner output, got %q", out.String())
 	}
 }
+
+func TestFormatSpinnerFrameUsesRTIOrange(t *testing.T) {
+	got := formatSpinnerFrame("◐", "Loading...")
+	want := "\r\033[38;5;208m◐\033[0m Loading..."
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}

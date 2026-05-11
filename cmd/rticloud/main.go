@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -11,16 +10,8 @@ import (
 )
 
 func main() {
-	args, err := cli.ParseArgsWithOutput(os.Args[1:], os.Stdout, os.Stderr)
-	if err != nil {
-		if errors.Is(err, cli.ErrHelp) {
-			return
-		}
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 	runtime := app.NewRuntime("", os.Stdout)
-	if err := runtime.Execute(args); err != nil {
+	if err := cli.Execute(os.Args[1:], os.Stdout, os.Stderr, runtime); err != nil {
 		switch typed := err.(type) {
 		case gateway.GatewayError:
 			_, _ = fmt.Fprintln(os.Stdout, typed.Error())

@@ -9,6 +9,11 @@ import (
 
 var spinnerFrames = []string{"◐", "◓", "◑", "◒"}
 
+const (
+	spinnerRTIOrange = "\033[38;5;208m"
+	spinnerReset     = "\033[0m"
+)
+
 func CanAnimate(out io.Writer) bool {
 	file, ok := out.(*os.File)
 	if !ok {
@@ -31,7 +36,7 @@ func StartSpinner(out io.Writer, message string) func() {
 		defer ticker.Stop()
 		frame := 0
 		for {
-			_, _ = fmt.Fprintf(out, "\r%s %s", spinnerFrames[frame%len(spinnerFrames)], message)
+			_, _ = fmt.Fprint(out, formatSpinnerFrame(spinnerFrames[frame%len(spinnerFrames)], message))
 			frame++
 			select {
 			case <-ticker.C:
@@ -46,4 +51,8 @@ func StartSpinner(out io.Writer, message string) func() {
 		close(stop)
 		<-done
 	}
+}
+
+func formatSpinnerFrame(frame, message string) string {
+	return "\r" + spinnerRTIOrange + frame + spinnerReset + " " + message
 }

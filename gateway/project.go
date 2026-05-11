@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -521,7 +522,9 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			}
 		}
 	}
+	var streamWG sync.WaitGroup
 	stream := func(reader io.Reader) {
+		defer streamWG.Done()
 		if reader == nil {
 			return
 		}
@@ -556,10 +559,16 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			}
 		}
 	}
+	streamWG.Add(1)
 	go stream(stdout)
 	if stderr != nil {
+		streamWG.Add(1)
 		go stream(stderr)
 	}
+	go func() {
+		streamWG.Wait()
+		close(routingLines)
+	}()
 	interrupts, stopInterrupts := app.interruptSignals()
 	defer stopInterrupts()
 	waitDone := make(chan error, 1)
@@ -573,6 +582,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	defer renderTicker.Stop()
 	var killTimer *time.Timer
 	interrupted := false
+	processExited := false
 	lastLiveRefresh := time.Time{}
 	lastPulseFrame := liveView.PulseFrame()
 	pendingLiveRefresh := false
@@ -588,15 +598,33 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	for {
 		select {
 		case err = <-waitDone:
+			waitDone = nil
+			processExited = true
 			if killTimer != nil {
 				killTimer.Stop()
 			}
-			goto done
-		case line := <-routingLines:
+			if routingLines == nil {
+				goto done
+			}
+		case line, ok := <-routingLines:
+			if !ok {
+				routingLines = nil
+				if processExited {
+					goto done
+				}
+				continue
+			}
 			handleRoutingLine(line)
 			for {
 				select {
-				case line = <-routingLines:
+				case line, ok = <-routingLines:
+					if !ok {
+						routingLines = nil
+						if processExited {
+							goto done
+						}
+						goto drainedRoutingLines
+					}
 					handleRoutingLine(line)
 				default:
 					goto drainedRoutingLines
