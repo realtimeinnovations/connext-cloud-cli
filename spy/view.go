@@ -3,19 +3,19 @@ package spy
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
-	"golang.org/x/term"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 const (
-	SpyOrange             = "#FF9D00"
-	spyDefaultWidth       = 120
-	spyDefaultHeight      = 40
-	spySummaryLabelWidth  = 12
-	spySummaryStatusWidth = 24
+	SpyOrange               = tui.RTIOrange
+	spyDefaultWidth         = 120
+	spyDefaultHeight        = 40
+	spySummaryLabelWidth    = 12
+	spySummaryStatusWidth   = 24
+	spySampleTimestampWidth = len("2006-01-02 15:04:05.000000")
 )
 
 type SummaryLine struct {
@@ -26,12 +26,12 @@ type SummaryLine struct {
 }
 
 type RenderedTopic struct {
-	Activity string
-	Topic    string
-	Type     string
-	Writers  int
-	Readers  int
-	Samples  int
+	Activity   string
+	Topic      string
+	Type       string
+	Writers    int
+	Readers    int
+	Samples    int
 	LastSample string
 }
 
@@ -65,12 +65,6 @@ type LiveView struct {
 
 type TerminalRenderer struct {
 	Out io.Writer
-}
-
-type panelTheme struct {
-	titleStyle  func(string) string
-	borderStyle func(string) string
-	paddedBody  bool
 }
 
 func NewLiveView(config map[string]any) *LiveView {
@@ -133,12 +127,12 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 			break
 		}
 		topics = append(topics, RenderedTopic{
-			Activity: sampleActivityChip(row, pulseFrame),
-			Topic:    row.Topic,
-			Type:     fallbackString(row.TypeName, "-"),
-			Writers:  row.Writers,
-			Readers:  row.Readers,
-			Samples:  row.Samples,
+			Activity:   sampleActivityChip(row, pulseFrame),
+			Topic:      row.Topic,
+			Type:       fallbackString(row.TypeName, "-"),
+			Writers:    row.Writers,
+			Readers:    row.Readers,
+			Samples:    row.Samples,
 			LastSample: formatLastSample(row.LatestTime, row.LatestJSON),
 		})
 	}
@@ -146,7 +140,7 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 		topics = append(topics, RenderedTopic{Activity: "[dim]○[/dim]", Topic: "waiting", Type: "No topics discovered yet", LastSample: "-"})
 	}
 	recent := view.State.RecentSamples()
-	samples := make([]RenderedSample, 0, minInt(len(recent), SpyLiveSampleRows))
+	samples := make([]RenderedSample, 0, tui.MinInt(len(recent), SpyLiveSampleRows))
 	for index := len(recent) - 1; index >= 0 && len(samples) < SpyLiveSampleRows; index-- {
 		event := recent[index]
 		samples = append(samples, RenderedSample{Time: event.Time, Topic: event.Topic, Sample: event.Sample})
@@ -178,7 +172,7 @@ func sampleActivityChip(row TopicRow, pulseFrame int) string {
 		return "[green]◉[/green]"
 	}
 	if row.Writers > 0 || row.Readers > 0 {
-		return "[#5f819d]○[/]"
+		return fmt.Sprintf("[%s]○[/]", tui.RTIBlue)
 	}
 	return "[dim]○[/dim]"
 }
@@ -186,7 +180,7 @@ func sampleActivityChip(row TopicRow, pulseFrame int) string {
 func spySummaryChip(status string, activeTopicCount int, pulseFrame int) string {
 	short := strings.ToLower(status)
 	if strings.HasPrefix(short, "running, waiting") {
-		return "[#5f819d]○ waiting samples[/]"
+		return fmt.Sprintf("[%s]○ waiting samples[/]", tui.RTIBlue)
 	}
 	if short == "running" {
 		noun := "topics"
@@ -200,7 +194,7 @@ func spySummaryChip(status string, activeTopicCount int, pulseFrame int) string 
 		return fmt.Sprintf("[green]%s receiving %d %s[/green]", glyph, activeTopicCount, noun)
 	}
 	if short == "starting" {
-		return "[#5f819d]◐ starting[/]"
+		return fmt.Sprintf("[%s]◐ starting[/]", tui.RTIBlue)
 	}
 	if short == "stopped" {
 		return "[dim]◌ stopped[/dim]"
@@ -212,7 +206,7 @@ func (renderer TerminalRenderer) Render(view RenderedView) error {
 	if renderer.Out == nil {
 		return nil
 	}
-	width, height := terminalSize(renderer.Out)
+	width, height := tui.TerminalSize(renderer.Out, spyDefaultWidth, spyDefaultHeight)
 	_, err := io.WriteString(renderer.Out, renderANSIForSize(view, width, height))
 	return err
 }
@@ -228,37 +222,37 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	if height <= 0 {
 		height = spyDefaultHeight
 	}
-	contentWidth := maxInt(24, width-4)
-	summary := renderPanel(stripMarkup(view.Title), []string{formatSummaryLine(view.Header, contentWidth)}, width, summaryPanelTheme())
+	contentWidth := tui.MaxInt(24, width-4)
+	summary := tui.RenderPanel(tui.StripMarkup(view.Title), []string{formatSummaryLine(view.Header, contentWidth)}, width, summaryPanelTheme())
 	topicLines := []string{formatTopicHeader(contentWidth)}
 	for _, topic := range view.Topics {
 		topicLines = append(topicLines, formatTopicLine(topic, contentWidth))
 	}
 	if len(view.Topics) == 0 {
-		topicLines = append(topicLines, dim("No topics discovered yet"))
+		topicLines = append(topicLines, tui.Dim("No topics discovered yet"))
 	}
 	sampleLines := []string{}
 	if len(view.Samples) == 0 {
-		sampleLines = append(sampleLines, dim("Waiting for JSON samples..."))
+		sampleLines = append(sampleLines, tui.Dim("Waiting for JSON samples..."))
 	} else {
 		for _, sample := range view.Samples {
 			sampleLines = append(sampleLines, formatSampleLine(sample, contentWidth))
 		}
 	}
 	statsLines := formatStatisticsLines(view.Stats, contentWidth)
-	fixed := 1 + len(summary) + 1 + 2 + 1 + 2 + 1 + minInt(len(statsLines)+2, 6)
-	available := maxInt(2, height-fixed)
-	topicBudget := minInt(len(topicLines), maxInt(1, available/2))
-	sampleBudget := minInt(len(sampleLines), maxInt(1, available-topicBudget))
+	fixed := 1 + len(summary) + 1 + 2 + 1 + 2 + 1 + tui.MinInt(len(statsLines)+2, 6)
+	available := tui.MaxInt(2, height-fixed)
+	topicBudget := tui.MinInt(len(topicLines), tui.MaxInt(1, available/2))
+	sampleBudget := tui.MinInt(len(sampleLines), tui.MaxInt(1, available-topicBudget))
 	lines := []string{"\x1b[H\x1b[J"}
 	lines = append(lines, summary...)
 	lines = append(lines, "")
-	lines = append(lines, renderPanel("Topics", resizeLines(topicLines, topicBudget), width, topicsPanelTheme())...)
+	lines = append(lines, tui.RenderPanel("Topics", resizeLines(topicLines, topicBudget), width, topicsPanelTheme())...)
 	lines = append(lines, "")
-	lines = append(lines, renderPanel("Samples", resizeLines(sampleLines, sampleBudget), width, samplesPanelTheme())...)
+	lines = append(lines, tui.RenderPanel("Samples", resizeLines(sampleLines, sampleBudget), width, samplesPanelTheme())...)
 	if len(statsLines) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, renderPanel("Statistics", resizeLines(statsLines, minInt(len(statsLines), 4)), width, topicsPanelTheme())...)
+		lines = append(lines, tui.RenderPanel("Statistics", resizeLines(statsLines, tui.MinInt(len(statsLines), 4)), width, topicsPanelTheme())...)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -267,11 +261,11 @@ func formatSummaryLine(line SummaryLine, contentWidth int) string {
 	warningWidth := 0
 	warning := ""
 	if line.Warning != "" {
-		warning = styleInlineWarning(line.Warning)
-		warningWidth = displayWidth(warning) + 2
+		warning = tui.StyleInlineWarning(line.Warning)
+		warningWidth = tui.DisplayWidth(warning) + 2
 	}
-	targetWidth := maxInt(8, contentWidth-spySummaryLabelWidth-spySummaryStatusWidth-warningWidth-4)
-	formatted := fmt.Sprintf("%s  %s  %s", styleLabel(strings.ToUpper(line.Label), spySummaryLabelWidth), styleChipWidth(line.Status, spySummaryStatusWidth), styleTarget(truncateDisplay(line.Target, targetWidth), targetWidth))
+	targetWidth := tui.MaxInt(8, contentWidth-spySummaryLabelWidth-spySummaryStatusWidth-warningWidth-4)
+	formatted := fmt.Sprintf("%s  %s  %s", tui.StyleLabel(strings.ToUpper(line.Label), spySummaryLabelWidth), tui.StyleChipWidth(line.Status, spySummaryStatusWidth), tui.StyleTarget(tui.TruncateDisplay(line.Target, targetWidth), targetWidth))
 	if warning != "" {
 		formatted += "  " + warning
 	}
@@ -279,24 +273,24 @@ func formatSummaryLine(line SummaryLine, contentWidth int) string {
 }
 
 func formatTopicHeader(contentWidth int) string {
-	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", dim(padDisplay("IO", 4)), dim(padDisplay("Topic", 24)), dim(padDisplay("Type", 18)), dim(padDisplay("W/R", 5)), dim(padDisplay("Samples", 7)), dim(padDisplay("Last sample", maxInt(12, contentWidth-70))))
+	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", tui.Dim(tui.PadDisplay("IO", 4)), tui.Dim(tui.PadDisplay("Topic", 24)), tui.Dim(tui.PadDisplay("Type", 18)), tui.Dim(tui.PadDisplay("W/R", 5)), tui.Dim(tui.PadDisplay("Samples", 7)), tui.Dim(tui.PadDisplay("Last sample", tui.MaxInt(12, contentWidth-70))))
 }
 
 func formatTopicLine(topic RenderedTopic, contentWidth int) string {
 	return fmt.Sprintf("%s  %s  %s  %s  %s  %s",
-		styleChipWidth(topic.Activity, 4),
-		styleBold(truncateDisplay(topic.Topic, 24), 24),
-		padDisplay(truncateDisplay(topic.Type, 18), 18),
-		padDisplay(fmt.Sprintf("%d/%d", topic.Writers, topic.Readers), 5),
-		padDisplay(fmt.Sprintf("%d", topic.Samples), 7),
-		dim(padDisplay(truncateDisplay(topic.LastSample, maxInt(12, contentWidth-70)), maxInt(12, contentWidth-70))))
+		tui.StyleChipWidth(topic.Activity, 4),
+		tui.StyleBold(tui.TruncateDisplay(topic.Topic, 24), 24),
+		tui.PadDisplay(tui.TruncateDisplay(topic.Type, 18), 18),
+		tui.PadDisplay(fmt.Sprintf("%d/%d", topic.Writers, topic.Readers), 5),
+		tui.PadDisplay(fmt.Sprintf("%d", topic.Samples), 7),
+		tui.Dim(tui.PadDisplay(tui.TruncateDisplay(topic.LastSample, tui.MaxInt(12, contentWidth-70)), tui.MaxInt(12, contentWidth-70))))
 }
 
 func formatSampleLine(sample RenderedSample, contentWidth int) string {
-	timeLabel := truncateDisplay(fallbackString(sample.Time, "-"), 26)
-	topicLabel := truncateDisplay(sample.Topic, 16)
-	remaining := maxInt(8, contentWidth-displayWidth(timeLabel)-displayWidth(topicLabel)-7)
-	return dim(padDisplay(timeLabel, 26)) + "  " + styleBold(topicLabel, 16) + "  " + dim(truncateDisplay(sample.Sample, remaining))
+	timeLabel := tui.TruncateDisplay(fallbackString(sample.Time, "-"), spySampleTimestampWidth)
+	topicLabel := tui.TruncateDisplay(sample.Topic, 16)
+	remaining := tui.MaxInt(8, contentWidth-tui.DisplayWidth(timeLabel)-tui.DisplayWidth(topicLabel)-7)
+	return tui.Dim(tui.PadDisplay(timeLabel, spySampleTimestampWidth)) + "  " + tui.StyleBold(topicLabel, 16) + "  " + tui.Dim(tui.TruncateDisplay(sample.Sample, remaining))
 }
 
 func formatLastSample(timestamp string, sample string) string {
@@ -327,37 +321,10 @@ func formatStatisticsLines(stats RenderedStats, contentWidth int) []string {
 	lines := []string{fmt.Sprintf("Discovered %d DataWriters and %d DataReaders", stats.DataWriters, stats.DataReaders)}
 	for _, row := range stats.Rows {
 		s := row.Statistics
-		lines = append(lines, truncateDisplay(fmt.Sprintf("%d data, %d dispose, %d no-writers  %s (%s)", s.Data, s.Dispose, s.NoWriters, row.Topic, fallbackString(row.TypeName, "-")), contentWidth))
+		lines = append(lines, tui.TruncateDisplay(fmt.Sprintf("%d data, %d dispose, %d no-writers  %s (%s)", s.Data, s.Dispose, s.NoWriters, row.Topic, fallbackString(row.TypeName, "-")), contentWidth))
 	}
 	return lines
 }
-
-func renderPanel(title string, body []string, width int, theme panelTheme) []string {
-	inner := maxInt(1, width-2)
-	label := truncateDisplay(title, maxInt(1, inner-3))
-	filler := maxInt(0, inner-displayWidth(label)-3)
-	lines := []string{theme.borderStyle("┌─ ") + theme.titleStyle(label) + theme.borderStyle(" "+strings.Repeat("─", filler)+"┐")}
-	if theme.paddedBody {
-		lines = append(lines, panelBody("", width, theme.borderStyle))
-	}
-	for _, line := range body {
-		lines = append(lines, panelBody(line, width, theme.borderStyle))
-	}
-	if theme.paddedBody {
-		lines = append(lines, panelBody("", width, theme.borderStyle))
-	}
-	lines = append(lines, theme.borderStyle("└"+strings.Repeat("─", maxInt(1, width-2))+"┘"))
-	return lines
-}
-
-func panelBody(content string, width int, borderStyle func(string) string) string {
-	inner := maxInt(1, width-4)
-	if displayWidth(content) > inner {
-		content = truncateDisplay(content, inner)
-	}
-	return borderStyle("│ ") + padStyled(content, inner) + borderStyle(" │")
-}
-
 func resizeLines(lines []string, size int) []string {
 	if size <= 0 {
 		return nil
@@ -371,134 +338,16 @@ func resizeLines(lines []string, size int) []string {
 	}
 	return out
 }
-
-func styleTitle(value string) string        { return "\x1b[1;38;5;208m" + value + "\x1b[0m" }
-func styleSection(value string) string      { return "\x1b[1;38;5;110m" + value + "\x1b[0m" }
-func styleMutedTitle(value string) string   { return "\x1b[1;38;5;245m" + value + "\x1b[0m" }
-func styleOrangeBorder(value string) string { return "\x1b[38;5;208m" + value + "\x1b[0m" }
-func styleBlueBorder(value string) string   { return "\x1b[38;5;110m" + value + "\x1b[0m" }
-func styleGrayBorder(value string) string   { return "\x1b[38;5;245m" + value + "\x1b[0m" }
-func dim(value string) string               { return "\x1b[2m" + value + "\x1b[0m" }
-func styleLabel(value string, width int) string {
-	return "\x1b[2;38;5;110m" + padDisplay(value, width) + "\x1b[0m"
-}
-func styleTarget(value string, width int) string {
-	return "\x1b[1m" + padDisplay(value, width) + "\x1b[0m"
-}
-func styleBold(value string, width int) string {
-	return "\x1b[1m" + padDisplay(value, width) + "\x1b[0m"
+func summaryPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleTitle, BorderStyle: tui.StyleOrangeBorder, PaddedBody: true}
 }
 
-func styleInlineWarning(value string) string {
-	if value == "secure" {
-		return "\x1b[38;2;95;129;157m(• " + value + ")\x1b[0m"
-	}
-	return "\x1b[33m(⚠ " + value + ")\x1b[0m"
+func topicsPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleSection, BorderStyle: tui.StyleBlueBorder}
 }
 
-func styleChipWidth(markup string, width int) string {
-	content := padDisplay(stripMarkup(markup), width)
-	switch {
-	case strings.Contains(markup, "[green]"):
-		return "\x1b[32m" + content + "\x1b[0m"
-	case strings.Contains(markup, "[yellow]"):
-		return "\x1b[33m" + content + "\x1b[0m"
-	case strings.Contains(markup, "[dim]"):
-		return dim(content)
-	default:
-		return "\x1b[36m" + content + "\x1b[0m"
-	}
-}
-
-func summaryPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleTitle, borderStyle: styleOrangeBorder, paddedBody: true}
-}
-
-func topicsPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleSection, borderStyle: styleBlueBorder}
-}
-
-func samplesPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleMutedTitle, borderStyle: styleGrayBorder}
-}
-
-func padDisplay(value string, width int) string {
-	clean := stripANSIEscapes(value)
-	runes := []rune(clean)
-	if len(runes) > width {
-		return truncateDisplay(clean, width)
-	}
-	return clean + strings.Repeat(" ", width-len(runes))
-}
-
-func padStyled(value string, width int) string {
-	visible := displayWidth(value)
-	if visible >= width {
-		return value
-	}
-	return value + strings.Repeat(" ", width-visible)
-}
-
-func truncateDisplay(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	clean := stripANSIEscapes(value)
-	runes := []rune(clean)
-	if len(runes) <= width {
-		return clean
-	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "…"
-}
-
-func displayWidth(value string) int {
-	return len([]rune(stripANSIEscapes(value)))
-}
-
-func stripMarkup(value string) string {
-	replacements := []string{"[green]", "", "[/green]", "", "[yellow]", "", "[/yellow]", "", "[dim]", "", "[/dim]", "", "[#5f819d]", "", "[/]", "", "[bold]", "", "[/bold]", ""}
-	replacer := strings.NewReplacer(replacements...)
-	return replacer.Replace(value)
-}
-
-func stripANSIEscapes(value string) string {
-	out := strings.Builder{}
-	inEscape := false
-	for _, r := range value {
-		if r == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if r == 'm' {
-				inEscape = false
-			}
-			continue
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
-}
-
-func terminalSize(out io.Writer) (int, int) {
-	file, ok := out.(*os.File)
-	if ok {
-		width, height, err := term.GetSize(int(file.Fd()))
-		if err == nil {
-			return width, height
-		}
-	}
-	return spyDefaultWidth, spyDefaultHeight
-}
-
-func minInt(left int, right int) int {
-	if left < right {
-		return left
-	}
-	return right
+func samplesPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleMutedSection, BorderStyle: tui.StyleGrayBorder}
 }
 
 func fallbackString(value string, fallback string) string {

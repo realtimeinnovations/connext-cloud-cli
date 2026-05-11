@@ -21,9 +21,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/realtimeinnovations/connext-cloud-cli/app.version={{ .Version }}
-      - -X github.com/realtimeinnovations/connext-cloud-cli/app.commit={{ .Commit }}
-      - -X github.com/realtimeinnovations/connext-cloud-cli/app.date={{ .Date }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.version={{ .Version }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.commit={{ .Commit }}
+      - -X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.date={{ .Date }}
       - -X github.com/realtimeinnovations/connext-cloud-cli/config.defaultClientID={{ .Env.AUTH0_CLIENT_ID }}
 
 archives:

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 func TestRoutingStateTracksWildcardRouteInstances(t *testing.T) {
@@ -482,7 +483,7 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 		State:     "RUN",
 	}
 	layout := view.Render(0)
-	if layout.Border != RTIOrange || layout.Title != GatewayPanelTitle() {
+	if layout.Border != tui.RTIOrange || layout.Title != GatewayPanelTitle() {
 		t.Fatalf("unexpected layout shell: %#v", layout)
 	}
 	if layout.Header.Label != "data" || !strings.Contains(layout.Header.Status, "routing 1 topic") || layout.Header.Target != "db / gw" {
@@ -518,7 +519,7 @@ func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 }
 
 func TestRenderSetupIntroIncludesWelcomeBoxAndHint(t *testing.T) {
-	rendered := stripANSIEscapes(RenderSetupIntro(2, 1, true))
+	rendered := tui.StripANSIEscapes(RenderSetupIntro(2, 1, true))
 	checks := []string{"Connext Cloud Gateway setup", "Databuses available: 2", "Observability services: 1", "Use arrow keys to choose and Enter to confirm."}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {
@@ -541,7 +542,7 @@ func TestRenderANSIForSizeKeepsSummaryVisibleInShortTerminal(t *testing.T) {
 	for index := 0; index < 18; index++ {
 		view.LogLines = append(view.LogLines, strings.Repeat(fmt.Sprintf("log-%02d ", index), 16))
 	}
-	rendered := stripANSIEscapes(renderANSIForSize(view, 60, 20))
+	rendered := tui.StripANSIEscapes(renderANSIForSize(view, 60, 20))
 	lines := strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
 	if len(lines) > 20 {
 		t.Fatalf("render exceeded terminal height: %d lines\n%s", len(lines), rendered)

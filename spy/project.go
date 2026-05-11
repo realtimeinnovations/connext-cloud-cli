@@ -929,22 +929,6 @@ func (app *App) pidRunning(pid int) bool {
 	return pidRunning(pid)
 }
 
-func selectionLabel(choice string) string {
-	return prompt.Selector{SpecialLabels: map[string]string{CreateNewApp: CreateNewAppLabel}}.SelectionLabel(choice)
-}
-
-func selectionValue(choice string) string {
-	return prompt.SelectionValue(choice)
-}
-
-func choiceWithLabel(value string, label string) string {
-	return prompt.ChoiceWithLabel(value, label)
-}
-
-func splitChoice(choice string) (string, string, bool) {
-	return prompt.SplitChoice(choice)
-}
-
 func sortedKeys(values map[string]map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {

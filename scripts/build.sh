@@ -33,5 +33,5 @@ EOF
 fi
 
 go build \
-  -ldflags "-X github.com/realtimeinnovations/connext-cloud-cli/app.version=$version -X github.com/realtimeinnovations/connext-cloud-cli/app.commit=$commit -X github.com/realtimeinnovations/connext-cloud-cli/app.date=$date -X github.com/realtimeinnovations/connext-cloud-cli/config.defaultClientID=$client_id" \
+  -ldflags "-X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.version=$version -X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.commit=$commit -X github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo.date=$date -X github.com/realtimeinnovations/connext-cloud-cli/config.defaultClientID=$client_id" \
   -o "$output" ./cmd/rticloud

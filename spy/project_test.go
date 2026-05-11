@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 func TestSpyStateParsesTopicsSamplesAndStatistics(t *testing.T) {
@@ -25,7 +27,7 @@ func TestSpyStateParsesTopicsSamplesAndStatistics(t *testing.T) {
 		state.Update(line)
 	}
 	rows := state.TopicRows()
-	if len(rows) != 1 || rows[0].Topic != "Square" || rows[0].Writers != 1 || rows[0].Readers != 1 || rows[0].Samples != 26 || rows[0].LatestJSON != `{"color":"RED","x":78}` {
+	if len(rows) != 1 || rows[0].Topic != "Square" || rows[0].Writers != 1 || rows[0].Readers != 1 || rows[0].Samples != 26 || rows[0].LatestTime != "2026-05-08 00:06:58.526430" || rows[0].LatestJSON != `{"color":"RED","x":78}` {
 		t.Fatalf("unexpected rows: %#v", rows)
 	}
 	writers, readers := state.EndpointTotals()
@@ -247,7 +249,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !strings.Contains(readFile(t, filepath.Join(tmpDir, ".connext", "spy", "logs", "spy.log")), "New data") {
 		t.Fatal("spy log missing data")
 	}
-	output := stripANSIEscapes(out.String())
+	output := tui.StripANSIEscapes(out.String())
 	if !strings.Contains(output, "Connext Cloud Spy") || !strings.Contains(output, "Square") || !strings.Contains(output, "Discovered 1 DataWriters") {
 		t.Fatalf("unexpected output: %s", output)
 	}
@@ -298,11 +300,11 @@ func TestRenderANSIUsesGatewayPanelColorThemes(t *testing.T) {
 		Title:  SpyPanelTitle(),
 		Header: SummaryLine{Label: "databus", Status: "[green]● receiving 1 topic[/green]", Target: "db / app"},
 		Topics: []RenderedTopic{{
-			Activity: "[green]●[/green]",
-			Topic:    "Square",
-			Type:     "ShapeType",
-			Writers:  1,
-			Samples:  3,
+			Activity:   "[green]●[/green]",
+			Topic:      "Square",
+			Type:       "ShapeType",
+			Writers:    1,
+			Samples:    3,
 			LastSample: `2026-05-08 00:06:58 {"x":1}`,
 		}},
 		Samples: []RenderedSample{{Time: "2026-05-08 00:06:58.475269", Topic: "Square", Sample: `{"x":1}`}},

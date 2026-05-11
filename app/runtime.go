@@ -67,11 +67,6 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
 	return &Runtime{Out: out, Config: configManager, Auth: authManager, CloudAPI: cloudClient, Commands: commandRunner, Gateway: gatewayApp, Spy: spyApp}
 }
-
-func decodeGatewayJSON(response *http.Response, err error, method string, path string, apiHost string) (map[string]any, error) {
-	return decodeCommandJSON(response, err, method, path, apiHost, "gateway")
-}
-
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {

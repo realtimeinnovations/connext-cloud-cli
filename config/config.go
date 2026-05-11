@@ -10,7 +10,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 var RegionURLMap = map[string]string{
@@ -21,6 +23,8 @@ var RegionURLMap = map[string]string{
 }
 
 var defaultClientID = ""
+
+const previewWarning = "⚠ Connext Cloud is in preview. Do not use in production."
 
 const NotConfiguredMessage = "RTI Connext Cloud CLI not configured.\n\nFirst run:\n  rticloud configure\n  rticloud login"
 
@@ -162,7 +166,6 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 		_, _ = fmt.Fprintf(out, "Current API host: %s\n", currentAPIHost)
 		return true, nil
 	}
-	_, _ = fmt.Fprint(out, "⚠️  Connext Cloud is in preview. Do not use in production.\n\n")
 	if region == "" {
 		defaultRegion := "us-west-2"
 		currentAPIHost := manager.GetAPIURLSafe()
@@ -176,6 +179,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			defaultRegion = configuredRegion
 			break
 		}
+		_, _ = fmt.Fprint(out, renderConfigureWelcome(out))
 		selectedRegion, err := prompt.Selector{
 			In:            in,
 			Out:           out,
@@ -186,6 +190,8 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			return false, err
 		}
 		region = selectedRegion
+	} else {
+		_, _ = fmt.Fprintf(out, "%s\n\n", previewWarning)
 	}
 	if _, ok := RegionURLMap[region]; !ok {
 		_, _ = fmt.Fprintf(out, "Error: Invalid region '%s'. Available regions: %s\n", region, strings.Join(standardRegions(), ", "))
@@ -196,8 +202,23 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 		_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
 		return false, nil
 	}
-	_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or set CONNEXT_CLOUD_API_KEY.")
+	_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or export CONNEXT_CLOUD_API_KEY.")
 	return true, nil
+}
+
+func renderConfigureWelcome(out io.Writer) string {
+	width, _ := tui.TerminalSize(out, 76, 24)
+	body := []string{
+		tui.StyleSection("Welcome!"),
+		previewWarning,
+		"",
+		tui.Dim(buildinfo.VersionLine()),
+	}
+	return strings.Join(tui.RenderPanel("RTI Connext Cloud", body, tui.MinInt(width, 76), configurePanelTheme()), "\n") + "\n\n"
+}
+
+func configurePanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleTitle, BorderStyle: tui.StyleBlueBorder, PaddedBody: true}
 }
 
 func standardRegions() []string {
