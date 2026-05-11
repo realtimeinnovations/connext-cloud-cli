@@ -103,9 +103,13 @@ print_path_help() {
 
   cat <<EOF
 
-$INSTALL_DIR is not on your PATH.
-Add this to your shell profile:
+$INSTALL_DIR is not on your PATH. Add it as follows for your current session:
   export PATH="$INSTALL_DIR:\$PATH"
+
+Or add it permanently to your shell profile:
+  zsh:  printf '\nexport PATH="$INSTALL_DIR:\$PATH"\n' >> ~/.zshrc
+  bash: printf '\nexport PATH="$INSTALL_DIR:\$PATH"\n' >> ~/.bashrc
+  fish: printf '\nfish_add_path "$INSTALL_DIR"\n' >> ~/.config/fish/config.fish
 EOF
 }
 
@@ -151,3 +155,11 @@ chmod 0755 "$INSTALL_DIR/$BINARY"
 
 echo "installed $BINARY $tag to $INSTALL_DIR/$BINARY"
 print_path_help
+
+cat <<EOF
+
+To enable shell completions:
+  zsh:  $BINARY completion zsh > "\${fpath[1]}/_$BINARY"
+  bash: $BINARY completion bash > ~/.local/share/bash-completion/completions/$BINARY
+  fish: $BINARY completion fish > ~/.config/fish/completions/$BINARY.fish
+EOF

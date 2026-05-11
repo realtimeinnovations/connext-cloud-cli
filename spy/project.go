@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -429,7 +430,9 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 			}
 		}
 	}
+	var streamWG sync.WaitGroup
 	stream := func(reader io.Reader) {
+		defer streamWG.Done()
 		if reader == nil {
 			return
 		}
@@ -464,10 +467,16 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 			}
 		}
 	}
+	streamWG.Add(1)
 	go stream(stdout)
 	if stderr != nil {
+		streamWG.Add(1)
 		go stream(stderr)
 	}
+	go func() {
+		streamWG.Wait()
+		close(spyLines)
+	}()
 	interrupts, stopInterrupts := app.interruptSignals()
 	defer stopInterrupts()
 	waitDone := make(chan error, 1)
@@ -479,6 +488,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	defer renderTicker.Stop()
 	var killTimer *time.Timer
 	interrupted := false
+	processExited := false
 	lastLiveRefresh := time.Time{}
 	lastPulseFrame := liveView.PulseFrame()
 	pendingLiveRefresh := false
@@ -494,15 +504,33 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	for {
 		select {
 		case err = <-waitDone:
+			waitDone = nil
+			processExited = true
 			if killTimer != nil {
 				killTimer.Stop()
 			}
-			goto done
-		case line := <-spyLines:
+			if spyLines == nil {
+				goto done
+			}
+		case line, ok := <-spyLines:
+			if !ok {
+				spyLines = nil
+				if processExited {
+					goto done
+				}
+				continue
+			}
 			handleLine(line)
 			for {
 				select {
-				case line = <-spyLines:
+				case line, ok = <-spyLines:
+					if !ok {
+						spyLines = nil
+						if processExited {
+							goto done
+						}
+						goto drainedSpyLines
+					}
 					handleLine(line)
 				default:
 					goto drainedSpyLines
@@ -543,15 +571,6 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	}
 
 done:
-	drainLines := true
-	for drainLines {
-		select {
-		case line := <-spyLines:
-			handleLine(line)
-		default:
-			drainLines = false
-		}
-	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if !options.TextOutput {

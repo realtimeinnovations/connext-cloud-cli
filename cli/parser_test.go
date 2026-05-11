@@ -2,16 +2,16 @@ package cli
 
 import (
 	"bytes"
-	"errors"
+	"io"
 	"strings"
 	"testing"
 )
 
 func TestParserShowsGeneratedHelp(t *testing.T) {
 	var out bytes.Buffer
-	_, err := ParseArgsWithOutput(nil, &out, &out)
-	if !errors.Is(err, ErrHelp) {
-		t.Fatalf("expected help for no args, got %v", err)
+	err := Execute(nil, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for no args (root help), got %v", err)
 	}
 	if !strings.Contains(out.String(), "Connect to Connext Cloud:") ||
 		!strings.Contains(out.String(), "Manage Connext Cloud:") ||
@@ -27,18 +27,18 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 	}
 
 	out.Reset()
-	_, err = ParseArgsWithOutput([]string{"databus"}, &out, &out)
-	if !errors.Is(err, ErrHelp) {
-		t.Fatalf("expected help for databus, got %v", err)
+	err = Execute([]string{"databus"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for databus (help), got %v", err)
 	}
 	if !strings.Contains(out.String(), "Manage Databuses") || !strings.Contains(out.String(), "create") {
 		t.Fatalf("unexpected databus help: %s", out.String())
 	}
 
 	out.Reset()
-	_, err = ParseArgsWithOutput([]string{"databus", "create", "--help"}, &out, &out)
-	if !errors.Is(err, ErrHelp) {
-		t.Fatalf("expected help for databus create, got %v", err)
+	err = Execute([]string{"databus", "create", "--help"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for databus create --help, got %v", err)
 	}
 	if !strings.Contains(out.String(), "--replicas") || !strings.Contains(out.String(), "--observability-service") {
 		t.Fatalf("unexpected databus create help: %s", out.String())
@@ -46,7 +46,7 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 }
 
 func TestParserRejectsUnknownResourceWithoutCommand(t *testing.T) {
-	_, err := ParseArgs([]string{"databu"})
+	err := Execute([]string{"databu"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected unsupported resource error")
 	}
@@ -55,84 +55,8 @@ func TestParserRejectsUnknownResourceWithoutCommand(t *testing.T) {
 	}
 }
 
-func TestParserRegistersGatewayAndObservabilityCollectorKind(t *testing.T) {
-	args, err := ParseArgs([]string{"client", "create", "--name", "obs", "--client-name", "collector", "--kind", "observability-collector"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Kind != "observability-collector" {
-		t.Fatalf("unexpected kind: %s", args.Kind)
-	}
-}
-
-func TestParserRegistersGatewayDefaultCommand(t *testing.T) {
-	args, err := ParseArgs([]string{"gateway"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "gateway" || args.GatewayCommand != "" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-}
-
-func TestParserRegistersLiveTextFormat(t *testing.T) {
-	args, err := ParseArgs([]string{"gateway", "--format", "text"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "gateway" || args.GatewayCommand != "" || args.Format != "text" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-
-	args, err = ParseArgs([]string{"spy", "status", "--format", "text"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "spy" || args.SpyCommand != "status" || args.Format != "text" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-
-	_, err = ParseArgs([]string{"spy", "--format", "json"})
-	if err == nil {
-		t.Fatal("expected invalid format error")
-	}
-}
-
-func TestParserRegistersSpyCommands(t *testing.T) {
-	args, err := ParseArgs([]string{"spy"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "spy" || args.SpyCommand != "" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-
-	args, err = ParseArgs([]string{"spy", "status"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "spy" || args.SpyCommand != "status" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-
-	_, err = ParseArgs([]string{"spy", "obs"})
-	if err == nil {
-		t.Fatal("expected unsupported spy command error")
-	}
-}
-
-func TestParserRegistersLicenseGet(t *testing.T) {
-	args, err := ParseArgs([]string{"license", "get", "--expiration-days", "30", "-o", "license.dat"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args.Resource != "license" || args.Command != "get" || !args.HasExpirationDays || args.ExpirationDays != 30 || args.Output != "license.dat" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-}
-
 func TestParserRejectsVersionCommand(t *testing.T) {
-	_, err := ParseArgs([]string{"version"})
+	err := Execute([]string{"version"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected version command to be unsupported")
 	}
@@ -141,37 +65,56 @@ func TestParserRejectsVersionCommand(t *testing.T) {
 	}
 }
 
-func TestParserRegistersVersionFlag(t *testing.T) {
-	args, err := ParseArgs([]string{"--version"})
+func TestParserVersionFlag(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"--version"}, &out, io.Discard, nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if args.Resource != "version" {
-		t.Fatalf("unexpected args: %#v", args)
+	if !strings.Contains(out.String(), "rticloud") {
+		t.Fatalf("expected version output, got: %s", out.String())
 	}
 }
 
 func TestParserRejectsInvalidClientKind(t *testing.T) {
-	_, err := ParseArgs([]string{"client", "create", "--name", "db", "--client-name", "app", "--kind", "collector"})
+	err := Execute([]string{"client", "create", "--name", "db", "--client-name", "app", "--kind", "collector"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected invalid kind error")
 	}
 }
 
 func TestParserReportsMissingValuesWithoutPanic(t *testing.T) {
-	_, err := ParseArgs([]string{"databus", "query", "--name"})
+	err := Execute([]string{"databus", "query", "--name"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected missing value error")
 	}
 }
 
 func TestParserRequiresExactlyOneObservabilityLinkAction(t *testing.T) {
-	_, err := ParseArgs([]string{"databus", "set-observability", "--name", "db"})
+	err := Execute([]string{"databus", "set-observability", "--name", "db"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected missing link action error")
 	}
-	_, err = ParseArgs([]string{"databus", "set-observability", "--name", "db", "--service", "obs", "--unlink"})
+	err = Execute([]string{"databus", "set-observability", "--name", "db", "--service", "obs", "--unlink"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected mutually exclusive link action error")
+	}
+}
+
+func TestParserRejectsInvalidLiveFormat(t *testing.T) {
+	err := Execute([]string{"spy", "--format", "json"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected invalid format error")
+	}
+	err = Execute([]string{"gateway", "--format", "json"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected invalid format error for gateway")
+	}
+}
+
+func TestParserRejectsSpyObsCommand(t *testing.T) {
+	err := Execute([]string{"spy", "obs"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected unsupported spy command error")
 	}
 }

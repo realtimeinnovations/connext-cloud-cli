@@ -70,5 +70,8 @@ brews:
     homepage: https://github.com/realtimeinnovations/connext-cloud-cli
     description: Command-line interface for RTI Connext Cloud
     license: Proprietary
+    install: |
+      bin.install "rticloud"
+      generate_completions_from_executable(bin/"rticloud", "completion")
     test: |
       system "#{bin}/rticloud", "--help"

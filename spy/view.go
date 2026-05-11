@@ -32,10 +32,11 @@ type RenderedTopic struct {
 	Writers  int
 	Readers  int
 	Samples  int
-	Status   string
+	LastSample string
 }
 
 type RenderedSample struct {
+	Time   string
 	Topic  string
 	Sample string
 }
@@ -138,17 +139,17 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 			Writers:  row.Writers,
 			Readers:  row.Readers,
 			Samples:  row.Samples,
-			Status:   topicStatus(row),
+			LastSample: formatLastSample(row.LatestTime, row.LatestJSON),
 		})
 	}
 	if len(topics) == 0 {
-		topics = append(topics, RenderedTopic{Activity: "[dim]○[/dim]", Topic: "waiting", Type: "No topics discovered yet", Status: "waiting"})
+		topics = append(topics, RenderedTopic{Activity: "[dim]○[/dim]", Topic: "waiting", Type: "No topics discovered yet", LastSample: "-"})
 	}
 	recent := view.State.RecentSamples()
 	samples := make([]RenderedSample, 0, minInt(len(recent), SpyLiveSampleRows))
 	for index := len(recent) - 1; index >= 0 && len(samples) < SpyLiveSampleRows; index-- {
 		event := recent[index]
-		samples = append(samples, RenderedSample{Topic: event.Topic, Sample: event.Sample})
+		samples = append(samples, RenderedSample{Time: event.Time, Topic: event.Topic, Sample: event.Sample})
 	}
 	writers, readers := view.State.EndpointTotals()
 	return RenderedView{
@@ -180,22 +181,6 @@ func sampleActivityChip(row TopicRow, pulseFrame int) string {
 		return "[#5f819d]○[/]"
 	}
 	return "[dim]○[/dim]"
-}
-
-func topicStatus(row TopicRow) string {
-	if row.Samples > 0 {
-		return "receiving samples"
-	}
-	if row.Writers > 0 {
-		return "writer discovered"
-	}
-	if row.Readers > 0 {
-		return "reader discovered"
-	}
-	if row.LastEvent != "" {
-		return row.LastEvent
-	}
-	return "waiting"
 }
 
 func spySummaryChip(status string, activeTopicCount int, pulseFrame int) string {
@@ -294,7 +279,7 @@ func formatSummaryLine(line SummaryLine, contentWidth int) string {
 }
 
 func formatTopicHeader(contentWidth int) string {
-	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", dim(padDisplay("IO", 4)), dim(padDisplay("Topic", 24)), dim(padDisplay("Type", 18)), dim(padDisplay("W/R", 5)), dim(padDisplay("Samples", 7)), dim(padDisplay("Status", maxInt(10, contentWidth-70))))
+	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", dim(padDisplay("IO", 4)), dim(padDisplay("Topic", 24)), dim(padDisplay("Type", 18)), dim(padDisplay("W/R", 5)), dim(padDisplay("Samples", 7)), dim(padDisplay("Last sample", maxInt(12, contentWidth-70))))
 }
 
 func formatTopicLine(topic RenderedTopic, contentWidth int) string {
@@ -304,13 +289,35 @@ func formatTopicLine(topic RenderedTopic, contentWidth int) string {
 		padDisplay(truncateDisplay(topic.Type, 18), 18),
 		padDisplay(fmt.Sprintf("%d/%d", topic.Writers, topic.Readers), 5),
 		padDisplay(fmt.Sprintf("%d", topic.Samples), 7),
-		styleStatus(truncateDisplay(topic.Status, maxInt(10, contentWidth-70)), maxInt(10, contentWidth-70)))
+		dim(padDisplay(truncateDisplay(topic.LastSample, maxInt(12, contentWidth-70)), maxInt(12, contentWidth-70))))
 }
 
 func formatSampleLine(sample RenderedSample, contentWidth int) string {
-	prefix := truncateDisplay(sample.Topic, 20)
-	remaining := maxInt(8, contentWidth-displayWidth(prefix)-5)
-	return styleBold(prefix, 20) + "  " + dim(truncateDisplay(sample.Sample, remaining))
+	timeLabel := truncateDisplay(fallbackString(sample.Time, "-"), 26)
+	topicLabel := truncateDisplay(sample.Topic, 16)
+	remaining := maxInt(8, contentWidth-displayWidth(timeLabel)-displayWidth(topicLabel)-7)
+	return dim(padDisplay(timeLabel, 26)) + "  " + styleBold(topicLabel, 16) + "  " + dim(truncateDisplay(sample.Sample, remaining))
+}
+
+func formatLastSample(timestamp string, sample string) string {
+	trimmedSample := strings.TrimSpace(sample)
+	if trimmedSample == "" {
+		return "-"
+	}
+	trimmedTime := stripSampleSubseconds(timestamp)
+	if trimmedTime == "" {
+		return trimmedSample
+	}
+	return trimmedTime + " " + trimmedSample
+}
+
+func stripSampleSubseconds(timestamp string) string {
+	trimmed := strings.TrimSpace(timestamp)
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.SplitN(trimmed, ".", 2)
+	return parts[0]
 }
 
 func formatStatisticsLines(stats RenderedStats, contentWidth int) []string {
@@ -387,14 +394,6 @@ func styleInlineWarning(value string) string {
 		return "\x1b[38;2;95;129;157m(• " + value + ")\x1b[0m"
 	}
 	return "\x1b[33m(⚠ " + value + ")\x1b[0m"
-}
-
-func styleStatus(value string, width int) string {
-	content := padDisplay(value, width)
-	if strings.Contains(strings.ToLower(value), "receiving") {
-		return "\x1b[32m" + content + "\x1b[0m"
-	}
-	return dim(content)
 }
 
 func styleChipWidth(markup string, width int) string {

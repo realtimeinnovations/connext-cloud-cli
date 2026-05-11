@@ -303,15 +303,18 @@ func TestRenderANSIUsesGatewayPanelColorThemes(t *testing.T) {
 			Type:     "ShapeType",
 			Writers:  1,
 			Samples:  3,
-			Status:   "receiving samples",
+			LastSample: `2026-05-08 00:06:58 {"x":1}`,
 		}},
-		Samples: []RenderedSample{{Topic: "Square", Sample: `{"x":1}`}},
+		Samples: []RenderedSample{{Time: "2026-05-08 00:06:58.475269", Topic: "Square", Sample: `{"x":1}`}},
 	}
 	rendered := renderANSI(view)
 	checks := []string{
 		"\x1b[1;38;5;208m Connext Cloud Spy",
 		"\x1b[1;38;5;110mTopics",
 		"\x1b[1;38;5;245mSamples",
+		"Last sample",
+		"2026-05-08 00:06:58.475269",
+		`{"x":1}`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {

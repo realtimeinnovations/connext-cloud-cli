@@ -23,11 +23,13 @@ type TopicRow struct {
 	Readers    int
 	Samples    int
 	LastEvent  string
+	LatestTime string
 	LatestJSON string
 	Statistics SampleStatistics
 }
 
 type SampleEvent struct {
+	Time     string
 	Topic    string
 	TypeName string
 	Sample   string
@@ -54,7 +56,7 @@ type SpyState struct {
 var (
 	spyRunningRE     = regexp.MustCompile(`rtiddsspy is listening for data`)
 	spyEndpointRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2} .* New (writer|reader)\s+from\s+(\S+)\s+:\s+topic="([^"]+)" type="([^"]+)"`)
-	spyDataRE        = regexp.MustCompile(`\d{4}-\d{2}-\d{2} .* (New data|Modified instance|Disposed instance|No writers)\s+from\s+(\S+)\s+:\s+topic="([^"]+)" type="([^"]+)" sample=(.*)`)
+	spyDataRE        = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(New data|Modified instance|Disposed instance|No writers)\s+from\s+(\S+)\s+:\s+topic="([^"]+)" type="([^"]+)" sample=(.*)`)
 	spyStatsHeaderRE = regexp.MustCompile(`Discovered\s+(\d+)\s+DataWriters\s+and\s+(\d+)\s+DataReaders`)
 	spyStatsTopicRE  = regexp.MustCompile(`^\s*(\d+),\s*(\d+),\s*(\d+)\s+\(Topic="([^"]+)"\s+Type="([^"]+)"\)`)
 )
@@ -102,7 +104,7 @@ func (state *SpyState) Update(line string) {
 		return
 	}
 	if match := spyDataRE.FindStringSubmatch(line); match != nil {
-		state.updateSample(match[1], match[3], match[4], match[5])
+		state.updateSample(match[1], match[2], match[4], match[5], match[6])
 	}
 }
 
@@ -119,7 +121,7 @@ func PlainEventLines(line string) []string {
 		return []string{"[" + kind + "] " + topic + " " + typeName + " from " + source}
 	}
 	if match := spyDataRE.FindStringSubmatch(line); match != nil {
-		action, topic, typeName, sample := match[1], match[3], match[4], match[5]
+		action, topic, typeName, sample := match[2], match[4], match[5], match[6]
 		if strings.HasPrefix(topic, "DDS") {
 			return nil
 		}
@@ -204,15 +206,16 @@ func (state *SpyState) updateEndpoint(kind string, topic string, typeName string
 	}
 }
 
-func (state *SpyState) updateSample(action string, topic string, typeName string, sample string) {
+func (state *SpyState) updateSample(timestamp string, action string, topic string, typeName string, sample string) {
 	if strings.HasPrefix(topic, "DDS") {
 		return
 	}
 	row := state.topic(topic, typeName)
 	row.Samples++
 	row.LastEvent = strings.ToLower(action)
+	row.LatestTime = timestamp
 	row.LatestJSON = compactJSON(sample)
-	state.recent = append(state.recent, SampleEvent{Topic: topic, TypeName: typeName, Sample: row.LatestJSON, Action: row.LastEvent})
+	state.recent = append(state.recent, SampleEvent{Time: timestamp, Topic: topic, TypeName: typeName, Sample: row.LatestJSON, Action: row.LastEvent})
 	if len(state.recent) > state.maxSamples {
 		state.recent = append([]SampleEvent(nil), state.recent[len(state.recent)-state.maxSamples:]...)
 	}
