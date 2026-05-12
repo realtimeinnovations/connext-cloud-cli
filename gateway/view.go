@@ -3,18 +3,13 @@ package gateway
 import (
 	"fmt"
 	"io"
-	"os"
-	"regexp"
 	"strings"
 	"time"
 
-	"golang.org/x/term"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 const (
-	SelectedOptionOrange  = "#FF9D00"
-	RTIOrange             = SelectedOptionOrange
-	RTIBlue               = "#5f819d"
 	RoutingLiveRouteRows  = 16
 	defaultTerminalWidth  = 120
 	defaultTerminalHeight = 40
@@ -26,8 +21,6 @@ const (
 	routeTypeMinWidth     = 12
 	routeTypeMaxWidth     = 18
 )
-
-var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 type RenderedSummaryLine struct {
 	Label   string
@@ -71,12 +64,6 @@ type RoutingLiveView struct {
 
 type TerminalRenderer struct {
 	Out io.Writer
-}
-
-type panelTheme struct {
-	titleStyle  func(string) string
-	borderStyle func(string) string
-	paddedBody  bool
 }
 
 func NewRoutingLiveView(config map[string]any) *RoutingLiveView {
@@ -175,7 +162,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		Resource: resource,
 		Routes:   routes,
 		LogLines: append([]string(nil), view.State.RecentLogs()...),
-		Border:   RTIOrange,
+		Border:   tui.RTIOrange,
 	}
 }
 
@@ -190,23 +177,13 @@ func routeTypeLabel(row TopicRouteRow) string {
 }
 
 func (view *RoutingLiveView) collectorLiveStatus() string {
-	if !hasObservability(view.Config) {
+	if !HasObservability(view.Config) {
 		return "not configured"
 	}
 	if view.CollectorStatusFunc != nil {
 		return view.CollectorStatusFunc(view.Config, view.CollectorName)
 	}
 	return view.CollectorStatus
-}
-
-func hasObservability(config map[string]any) bool {
-	observability, ok := config["observability"].(string)
-	if !ok || observability == "" {
-		return false
-	}
-	templates, _ := config["templates"].(map[string]any)
-	collector, _ := templates["collector"].(string)
-	return collector != ""
 }
 
 func LivePulseFrame(now float64) int {
@@ -227,12 +204,12 @@ func RouteStatusChip(row TopicRouteRow, pulseFrame int) string {
 		return fmt.Sprintf("[green]↓%s[/green]", pulse)
 	}
 	if row.EdgeToCloud == "starting" || row.CloudToEdge == "starting" {
-		return fmt.Sprintf("[%s]◐[/]", RTIBlue)
+		return fmt.Sprintf("[%s]◐[/]", tui.RTIBlue)
 	}
 	if row.EdgeToCloud == "stopping" || row.EdgeToCloud == "stopped" || row.CloudToEdge == "stopping" || row.CloudToEdge == "stopped" {
 		return "[dim]◌[/dim]"
 	}
-	return fmt.Sprintf("[%s]○[/]", RTIBlue)
+	return fmt.Sprintf("[%s]○[/]", tui.RTIBlue)
 }
 
 func TopicStatusLabel(row TopicRouteRow) string {
@@ -319,7 +296,7 @@ func duplexRouteArrows(frame int) string {
 func RoutingSummaryChip(status string, routedTopicCount int, pulseFrame int) string {
 	shortStatus := shortGatewayStatus(status)
 	if shortStatus == "waiting topics" {
-		return fmt.Sprintf("[%s]○ waiting topics[/]", RTIBlue)
+		return fmt.Sprintf("[%s]○ waiting topics[/]", tui.RTIBlue)
 	}
 	if shortStatus == "running" {
 		noun := "topics"
@@ -329,7 +306,7 @@ func RoutingSummaryChip(status string, routedTopicCount int, pulseFrame int) str
 		return fmt.Sprintf("[green]%s routing %d %s[/green]", pulseGlyph(pulseFrame), routedTopicCount, noun)
 	}
 	if shortStatus == "starting" {
-		return fmt.Sprintf("[%s]◐ starting[/]", RTIBlue)
+		return fmt.Sprintf("[%s]◐ starting[/]", tui.RTIBlue)
 	}
 	return fmt.Sprintf("[yellow]◌ %s[/yellow]", shortStatus)
 }
@@ -353,7 +330,7 @@ func (renderer TerminalRenderer) Render(view RenderedView) error {
 	if renderer.Out == nil {
 		return nil
 	}
-	width, height := terminalSize(renderer.Out)
+	width, height := tui.TerminalSize(renderer.Out, defaultTerminalWidth, defaultTerminalHeight)
 	_, err := io.WriteString(renderer.Out, renderANSIForSize(view, width, height))
 	return err
 }
@@ -369,7 +346,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	if height <= 0 {
 		height = defaultTerminalHeight
 	}
-	contentWidth := maxInt(24, width-4)
+	contentWidth := tui.MaxInt(24, width-4)
 	topicWidth, typeWidth, statusWidth := resolveRouteTableWidths(view.Routes, contentWidth)
 	routeLines := []string{
 		formatRouteHeaderLine(topicWidth, typeWidth, statusWidth),
@@ -389,7 +366,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 			logLines = append(logLines, formatLogLine(line, contentWidth))
 		}
 	}
-	summaryPanel := renderPanel(stripMarkup(view.Title), []string{
+	summaryPanel := tui.RenderPanel(tui.StripMarkup(view.Title), []string{
 		formatSummaryPanelLine(view.Header, contentWidth),
 		formatSummaryPanelLine(view.Resource, contentWidth),
 	}, width, summaryPanelTheme())
@@ -402,8 +379,8 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	if logBudget <= 0 {
 		logBudget = 1
 	}
-	routesPanel := renderPanel("Routes", resizePanelBody(routeLines, routeBudget, contentWidth), width, routesPanelTheme())
-	logsPanel := renderPanel("Routing Log", resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
+	routesPanel := tui.RenderPanel("Routes", resizePanelBody(routeLines, routeBudget, contentWidth), width, routesPanelTheme())
+	logsPanel := tui.RenderPanel("Routing Log", resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
 	lines := []string{"\x1b[H\x1b[J"}
 	lines = append(lines, summaryPanel...)
 	lines = append(lines, "")
@@ -424,8 +401,8 @@ func splitSectionBudget(available int, routeLines int, logLines int) (int, int) 
 		logLines = 1
 	}
 	minLogLines := minInt(logLines, 4)
-	routeBudget := minInt(routeLines, maxInt(1, available-minLogLines))
-	logBudget := minInt(logLines, maxInt(1, available-routeBudget))
+	routeBudget := minInt(routeLines, tui.MaxInt(1, available-minLogLines))
+	logBudget := minInt(logLines, tui.MaxInt(1, available-routeBudget))
 	for routeBudget+logBudget > available && logBudget > 1 {
 		logBudget--
 	}
@@ -433,68 +410,10 @@ func splitSectionBudget(available int, routeLines int, logLines int) (int, int) 
 		routeBudget--
 	}
 	if routeBudget+logBudget > available {
-		logBudget = maxInt(0, available-routeBudget)
+		logBudget = tui.MaxInt(0, available-routeBudget)
 	}
 	return routeBudget, logBudget
 }
-
-func formatSummaryLine(line RenderedSummaryLine) string {
-	formatted := fmt.Sprintf("  %s %s %s", dim(padDisplay(line.Label, summaryLabelWidth)), styleChipWidth(line.Status, summaryStatusWidth), line.Target)
-	if line.Warning != "" {
-		formatted += "  " + styleInlineWarning(line.Warning)
-	}
-	return formatted
-}
-
-func renderPanel(title string, body []string, width int, theme panelTheme) []string {
-	if width < 12 {
-		width = 12
-	}
-	lines := []string{panelTopBorder(title, width, theme)}
-	if theme.paddedBody {
-		lines = append(lines, panelBodyLine("", width, theme))
-	}
-	for _, line := range body {
-		lines = append(lines, panelBodyLine(line, width, theme))
-	}
-	if theme.paddedBody {
-		lines = append(lines, panelBodyLine("", width, theme))
-	}
-	lines = append(lines, panelBottomBorder(width, theme))
-	return lines
-}
-
-func panelTopBorder(title string, width int, theme panelTheme) string {
-	innerWidth := maxInt(1, width-2)
-	label := truncateDisplay(title, maxInt(1, innerWidth-3))
-	filler := maxInt(0, innerWidth-displayWidth(label)-3)
-	styled := theme.titleStyle(label)
-	left := theme.borderStyle("┌─ ")
-	middle := theme.borderStyle(" " + strings.Repeat("─", filler))
-	right := theme.borderStyle("┐")
-	return left + styled + middle + right
-}
-
-func panelBottomBorder(width int, theme panelTheme) string {
-	return theme.borderStyle("└" + strings.Repeat("─", maxInt(1, width-2)) + "┘")
-}
-
-func panelBodyLine(content string, width int, theme panelTheme) string {
-	innerWidth := maxInt(1, width-4)
-	if displayWidth(content) > innerWidth {
-		content = truncateDisplay(stripANSIEscapes(content), innerWidth)
-	}
-	return theme.borderStyle("│ ") + padStyled(content, innerWidth) + theme.borderStyle(" │")
-}
-
-func padStyled(value string, width int) string {
-	visible := displayWidth(value)
-	if visible >= width {
-		return value
-	}
-	return value + strings.Repeat(" ", width-visible)
-}
-
 func resizePanelBody(lines []string, size int, width int) []string {
 	if size <= 0 {
 		return nil
@@ -505,37 +424,28 @@ func resizePanelBody(lines []string, size int, width int) []string {
 	}
 	body = append(body, lines...)
 	for len(body) < size {
-		body = append(body, dim(strings.Repeat(" ", maxInt(1, width-4))))
+		body = append(body, tui.Dim(strings.Repeat(" ", tui.MaxInt(1, width-4))))
 	}
 	return body
 }
 
 func formatSummaryPanelLine(line RenderedSummaryLine, contentWidth int) string {
-	label := styleSummaryLabel(strings.ToUpper(line.Label), summaryLabelWidth)
+	label := tui.StyleLabel(strings.ToUpper(line.Label), summaryLabelWidth)
 	warningWidth := 0
 	warning := ""
 	if line.Warning != "" {
-		warning = styleInlineWarning(line.Warning)
-		warningWidth = displayWidth(warning) + 2
+		warning = tui.StyleInlineWarning(line.Warning)
+		warningWidth = tui.DisplayWidth(warning) + 2
 	}
-	targetWidth := maxInt(8, contentWidth-summaryLabelWidth-summaryStatusWidth-warningWidth-4)
-	status := styleChipWidth(line.Status, summaryStatusWidth)
-	target := styleSummaryTarget(truncateDisplay(line.Target, targetWidth), targetWidth)
+	targetWidth := tui.MaxInt(8, contentWidth-summaryLabelWidth-summaryStatusWidth-warningWidth-4)
+	status := tui.StyleChipWidth(line.Status, summaryStatusWidth)
+	target := tui.StyleTarget(tui.TruncateDisplay(line.Target, targetWidth), targetWidth)
 	formatted := fmt.Sprintf("%s  %s  %s", label, status, target)
 	if warning != "" {
 		formatted += "  " + warning
 	}
 	return formatted
 }
-
-func styleSummaryLabel(value string, width int) string {
-	return "\x1b[2;38;5;110m" + padDisplay(value, width) + "\x1b[0m"
-}
-
-func styleSummaryTarget(value string, width int) string {
-	return "\x1b[1m" + padDisplay(value, width) + "\x1b[0m"
-}
-
 func resolveRouteTableWidths(routes []RenderedRoute, contentWidth int) (int, int, int) {
 	topicWidth := boundedColumnWidth(routes, func(route RenderedRoute) string { return route.Topic }, "Topic", routeTopicMinWidth, routeTopicMaxWidth)
 	typeWidth := boundedColumnWidth(routes, func(route RenderedRoute) string { return route.Type }, "Type", routeTypeMinWidth, routeTypeMaxWidth)
@@ -548,27 +458,27 @@ func resolveRouteTableWidths(routes []RenderedRoute, contentWidth int) (int, int
 		typeWidth--
 		statusWidth++
 	}
-	return topicWidth, typeWidth, maxInt(12, statusWidth)
+	return topicWidth, typeWidth, tui.MaxInt(12, statusWidth)
 }
 
 func formatRouteHeaderLine(topicWidth int, typeWidth int, statusWidth int) string {
 	return fmt.Sprintf("%s  %s  %s  %s",
-		dim(padDisplay("IO", routeIOWidth)),
-		dim(padDisplay("Topic", topicWidth)),
-		dim(padDisplay("Type", typeWidth)),
-		dim(padDisplay("Status", statusWidth)))
+		tui.Dim(tui.PadDisplay("IO", routeIOWidth)),
+		tui.Dim(tui.PadDisplay("Topic", topicWidth)),
+		tui.Dim(tui.PadDisplay("Type", typeWidth)),
+		tui.Dim(tui.PadDisplay("Status", statusWidth)))
 }
 
 func formatRouteEmptyLine(contentWidth int) string {
-	return dim(padDisplay("No topics discovered yet", maxInt(1, contentWidth)))
+	return tui.Dim(tui.PadDisplay("No topics discovered yet", tui.MaxInt(1, contentWidth)))
 }
 
 func formatRouteLine(route RenderedRoute, topicWidth int, typeWidth int, statusWidth int) string {
-	status := truncateDisplay(route.Status, statusWidth)
+	status := tui.TruncateDisplay(route.Status, statusWidth)
 	return fmt.Sprintf("%s  %s  %s  %s",
-		styleChipWidth(route.IO, routeIOWidth),
-		styleRouteTopic(truncateDisplay(route.Topic, topicWidth), topicWidth),
-		styleRouteType(truncateDisplay(route.Type, typeWidth), typeWidth),
+		tui.StyleChipWidth(route.IO, routeIOWidth),
+		tui.StyleBold(tui.TruncateDisplay(route.Topic, topicWidth), topicWidth),
+		styleRouteType(tui.TruncateDisplay(route.Type, typeWidth), typeWidth),
 		styleRouteStatus(status, statusWidth))
 }
 
@@ -601,12 +511,12 @@ func compactLogLines(lines []string) []string {
 
 func formatLogLine(line string, contentWidth int) string {
 	trimmed := strings.TrimSpace(line)
-	textWidth := maxInt(8, contentWidth-2)
-	formatted := truncateDisplay(trimmed, textWidth)
+	textWidth := tui.MaxInt(8, contentWidth-2)
+	formatted := tui.TruncateDisplay(trimmed, textWidth)
 	lower := strings.ToLower(trimmed)
 	switch {
 	case strings.Contains(lower, "warning"):
-		return "· " + dim(formatted)
+		return "· " + tui.Dim(formatted)
 	case strings.Contains(lower, "error") || strings.Contains(lower, "mismatch") || strings.Contains(lower, "missing"):
 		return "! " + "\x1b[33m" + formatted + "\x1b[0m"
 	case strings.HasPrefix(lower, "input lost") || strings.HasPrefix(lower, "output lost") || strings.HasSuffix(lower, " lost"):
@@ -614,73 +524,29 @@ func formatLogLine(line string, contentWidth int) string {
 	case strings.HasPrefix(lower, "run ") || strings.HasPrefix(lower, "start ") || strings.HasPrefix(lower, "routing "):
 		return "• " + "\x1b[32m" + formatted + "\x1b[0m"
 	case strings.HasPrefix(lower, "discovered ") || strings.HasPrefix(lower, "disposed ") || strings.Contains(lower, "matched"):
-		return "· " + dim(formatted)
+		return "· " + tui.Dim(formatted)
 	default:
-		return "· " + dim(formatted)
+		return "· " + tui.Dim(formatted)
 	}
 }
-
-func styleTitle(value string) string {
-	return "\x1b[1;38;5;208m" + value + "\x1b[0m"
+func summaryPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleTitle, BorderStyle: tui.StyleOrangeBorder, PaddedBody: true}
 }
 
-func styleSection(value string) string {
-	return "\x1b[1;38;5;110m" + value + "\x1b[0m"
+func routesPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleSection, BorderStyle: tui.StyleBlueBorder}
 }
 
-func styleMutedSection(value string) string {
-	return "\x1b[1;38;5;245m" + value + "\x1b[0m"
-}
-
-func styleOrangeBorder(value string) string {
-	return "\x1b[38;5;208m" + value + "\x1b[0m"
-}
-
-func styleBlueBorder(value string) string {
-	return "\x1b[38;5;110m" + value + "\x1b[0m"
-}
-
-func styleGrayBorder(value string) string {
-	return "\x1b[38;5;245m" + value + "\x1b[0m"
-}
-
-func summaryPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleTitle, borderStyle: styleOrangeBorder, paddedBody: true}
-}
-
-func routesPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleSection, borderStyle: styleBlueBorder}
-}
-
-func logPanelTheme() panelTheme {
-	return panelTheme{titleStyle: styleMutedSection, borderStyle: styleGrayBorder}
-}
-
-func dim(value string) string {
-	return "\x1b[2m" + value + "\x1b[0m"
-}
-
-func styleChip(value string) string {
-	return styleChipText(value, stripMarkup(value))
-}
-
-func styleInlineWarning(value string) string {
-	if value == "secure" {
-		return "\x1b[38;2;95;129;157m(• " + value + ")\x1b[0m"
-	}
-	return "\x1b[33m(⚠ " + value + ")\x1b[0m"
-}
-
-func styleRouteTopic(value string, width int) string {
-	return "\x1b[1m" + padDisplay(value, width) + "\x1b[0m"
+func logPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleMutedSection, BorderStyle: tui.StyleGrayBorder}
 }
 
 func styleRouteType(value string, width int) string {
-	return padDisplay(value, width)
+	return tui.PadDisplay(value, width)
 }
 
 func styleRouteStatus(value string, width int) string {
-	content := padDisplay(value, width)
+	content := tui.PadDisplay(value, width)
 	lower := strings.ToLower(strings.TrimSpace(value))
 	switch {
 	case strings.HasPrefix(lower, "routing both"):
@@ -692,33 +558,15 @@ func styleRouteStatus(value string, width int) string {
 	case strings.HasSuffix(lower, " lost") || strings.Contains(lower, "mismatch") || strings.Contains(lower, "missing"):
 		return "\x1b[33m" + content + "\x1b[0m"
 	case strings.Contains(lower, "waiting") || strings.Contains(lower, "listening") || strings.Contains(lower, "starting"):
-		return dim(content)
+		return tui.Dim(content)
 	default:
-		return dim(content)
+		return tui.Dim(content)
 	}
 }
-
-func styleChipWidth(value string, width int) string {
-	return styleChipText(value, padDisplay(stripMarkup(value), width))
-}
-
-func styleChipText(markup string, content string) string {
-	switch {
-	case strings.Contains(markup, "[green]"):
-		return "\x1b[32m" + content + "\x1b[0m"
-	case strings.Contains(markup, "[yellow]"):
-		return "\x1b[33m" + content + "\x1b[0m"
-	case strings.Contains(markup, "[dim]"):
-		return dim(content)
-	default:
-		return "\x1b[36m" + content + "\x1b[0m"
-	}
-}
-
 func boundedColumnWidth(routes []RenderedRoute, accessor func(RenderedRoute) string, header string, minWidth int, maxWidth int) int {
-	width := displayWidth(header)
+	width := tui.DisplayWidth(header)
 	for _, route := range routes {
-		if candidate := displayWidth(accessor(route)); candidate > width {
+		if candidate := tui.DisplayWidth(accessor(route)); candidate > width {
 			width = candidate
 		}
 	}
@@ -729,57 +577,6 @@ func boundedColumnWidth(routes []RenderedRoute, accessor func(RenderedRoute) str
 		width = maxWidth
 	}
 	return width
-}
-
-func padDisplay(value string, width int) string {
-	clean := stripANSIEscapes(value)
-	runes := []rune(clean)
-	if len(runes) > width {
-		return truncateDisplay(clean, width)
-	}
-	return clean + strings.Repeat(" ", width-len(runes))
-}
-
-func truncateDisplay(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	clean := stripANSIEscapes(value)
-	runes := []rune(clean)
-	if len(runes) <= width {
-		return clean
-	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "…"
-}
-
-func displayWidth(value string) int {
-	return len([]rune(stripANSIEscapes(value)))
-}
-
-func stripANSIEscapes(value string) string {
-	return ansiEscapePattern.ReplaceAllString(stripMarkup(value), "")
-}
-
-func terminalSize(out io.Writer) (int, int) {
-	file, ok := out.(*os.File)
-	if !ok {
-		return defaultTerminalWidth, defaultTerminalHeight
-	}
-	width, height, err := term.GetSize(int(file.Fd()))
-	if err != nil || width <= 0 || height <= 0 {
-		return defaultTerminalWidth, defaultTerminalHeight
-	}
-	return width, height
-}
-
-func maxInt(left int, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }
 
 func RenderSetupIntro(databusCount int, observabilityCount int, cursorSelection bool) string {
@@ -798,7 +595,7 @@ func RenderSetupIntro(databusCount int, observabilityCount int, cursorSelection 
 	}
 	width := 0
 	for _, row := range rows {
-		if rowWidth := displayWidth(row); rowWidth > width {
+		if rowWidth := tui.DisplayWidth(row); rowWidth > width {
 			width = rowWidth
 		}
 	}
@@ -806,12 +603,12 @@ func RenderSetupIntro(databusCount int, observabilityCount int, cursorSelection 
 	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
 	lines := []string{"", "\x1b[38;5;110m" + top + "\x1b[0m"}
 	for index, row := range rows {
-		content := padDisplay(row, width)
+		content := tui.PadDisplay(row, width)
 		switch index {
 		case 0:
-			content = styleTitle(content)
+			content = tui.StyleTitle(content)
 		case 1, 6:
-			content = dim(content)
+			content = tui.Dim(content)
 		}
 		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", content))
 	}
@@ -833,20 +630,20 @@ func RenderSuccessMessage(message string) string {
 
 func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 	content := make([]string, 0, len(rows)+1)
-	content = append(content, styleSection(title))
+	content = append(content, tui.StyleSection(title))
 	if len(rows) == 1 && strings.Contains(rows[0].Value, "://") {
 		if rows[0].Key != "" {
-			content = append(content, dim(rows[0].Key+":"))
+			content = append(content, tui.Dim(rows[0].Key+":"))
 		}
 		content = append(content, rows[0].Value)
 	} else {
 		for _, row := range rows {
-			content = append(content, fmt.Sprintf("%s %s", dim(row.Key+":"), row.Value))
+			content = append(content, fmt.Sprintf("%s %s", tui.Dim(row.Key+":"), row.Value))
 		}
 	}
 	width := 0
 	for _, row := range content {
-		if rowWidth := displayWidth(row); rowWidth > width {
+		if rowWidth := tui.DisplayWidth(row); rowWidth > width {
 			width = rowWidth
 		}
 	}
@@ -854,24 +651,8 @@ func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
 	lines := []string{"\x1b[38;5;110m" + top + "\x1b[0m"}
 	for _, row := range content {
-		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", padDisplay(row, width)))
+		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", tui.PadDisplay(row, width)))
 	}
 	lines = append(lines, "\x1b[38;5;110m"+bottom+"\x1b[0m", "")
 	return strings.Join(lines, "\n")
-}
-
-func stripMarkup(value string) string {
-	replacer := strings.NewReplacer(
-		"[green]", "",
-		"[/green]", "",
-		"[yellow]", "",
-		"[/yellow]", "",
-		"[dim]", "",
-		"[/dim]", "",
-		"[bold]", "",
-		"[/bold]", "",
-		"[/]", "",
-		"[#5f819d]", "",
-	)
-	return replacer.Replace(value)
 }

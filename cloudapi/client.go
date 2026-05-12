@@ -26,6 +26,8 @@ type Client struct {
 	Stderr          io.Writer
 	Out             io.Writer
 	warningOnce     sync.Once
+	insecureOnce    sync.Once
+	insecureClient  *http.Client
 }
 
 func New(baseURLProvider BaseURLProvider, headersProvider HeadersProvider) *Client {
@@ -75,13 +77,28 @@ func (client *Client) Request(method string, path string, payload any) (*http.Re
 				_, _ = fmt.Fprintln(client.Stderr, "WARNING: SSL certificate verification disabled")
 			}
 		})
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-		httpClient = &http.Client{Transport: transport, Timeout: 30 * time.Second}
+		client.insecureOnce.Do(func() {
+			transport := insecureTransport(httpClient.Transport)
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			insecureClient := *httpClient
+			insecureClient.Transport = transport
+			if insecureClient.Timeout == 0 {
+				insecureClient.Timeout = 30 * time.Second
+			}
+			client.insecureClient = &insecureClient
+		})
+		httpClient = client.insecureClient
 	}
 	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
 	defer stopSpinner()
 	return httpClient.Do(request)
+}
+
+func insecureTransport(roundTripper http.RoundTripper) *http.Transport {
+	if transport, ok := roundTripper.(*http.Transport); ok && transport != nil {
+		return transport.Clone()
+	}
+	return http.DefaultTransport.(*http.Transport).Clone()
 }
 
 func (client *Client) Get(path string) (*http.Response, error) {

@@ -3,7 +3,6 @@ package gateway
 import (
 	"encoding/xml"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -218,10 +217,6 @@ func (state *RoutingState) SeedFromConfig(xmlPath string) {
 			state.topicEvents[topic] = "listening"
 		}
 	}
-	_ = filepath.Clean(xmlPath)
-	_ = data
-	_ = root
-	_ = strings.TrimSpace("")
 }
 
 func (state *RoutingState) TopicRows() []TopicRouteRow {

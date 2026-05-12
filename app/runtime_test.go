@@ -8,7 +8,7 @@ import (
 )
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
-	_, err := decodeGatewayJSON(nil, config.ErrNotConfigured, "GET", "/databuses?extra_fields=true", "")
+	_, err := decodeCommandJSON(nil, config.ErrNotConfigured, "GET", "/databuses?extra_fields=true", "", "gateway")
 	if err == nil {
 		t.Fatal("expected error")
 	}

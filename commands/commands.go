@@ -14,6 +14,11 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
+const (
+	databusStatusPollInterval = 5 * time.Second
+	databusStatusWaitTimeout  = 10 * time.Minute
+)
+
 type API interface {
 	Get(path string) (*http.Response, error)
 	Post(path string, payload any) (*http.Response, error)
@@ -68,19 +73,21 @@ func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
 }
 
 func (runner *Runner) waitForDatabusStatusChange(name string, previousStatus string) (string, bool, error) {
-	runner.Sleep(5 * time.Second)
-	status, exists, err := runner.queryDatabusStatus(name)
-	if err != nil || !exists {
-		return status, exists, err
-	}
-	for status == previousStatus {
-		runner.Sleep(5 * time.Second)
-		status, exists, err = runner.queryDatabusStatus(name)
+	waited := time.Duration(0)
+	for {
+		runner.Sleep(databusStatusPollInterval)
+		waited += databusStatusPollInterval
+		status, exists, err := runner.queryDatabusStatus(name)
 		if err != nil || !exists {
 			return status, exists, err
 		}
+		if status != previousStatus {
+			return status, exists, nil
+		}
+		if waited >= databusStatusWaitTimeout {
+			return status, exists, fmt.Errorf("timed out waiting for databus %q to leave %q after %s", name, previousStatus, databusStatusWaitTimeout)
+		}
 	}
-	return status, exists, nil
 }
 
 func (runner *Runner) ListDatabuses(short bool) error {

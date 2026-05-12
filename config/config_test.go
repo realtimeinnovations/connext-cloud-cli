@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 func TestDefaultPathsUseRticloudDirectory(t *testing.T) {
@@ -47,7 +49,7 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	if !strings.Contains(out.String(), "Configuration updated") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "Connext Cloud is in preview. Do not use in production.") {
+	if !strings.Contains(out.String(), previewWarning) {
 		t.Fatalf("missing preview disclaimer: %s", out.String())
 	}
 }
@@ -63,6 +65,7 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected success")
 	}
+	rendered := tui.StripANSIEscapes(out.String())
 	config, err := manager.GetConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -70,8 +73,21 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	if config["api_host"] != RegionURLMap["us-west-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if !strings.Contains(out.String(), "Select region:") || !strings.Contains(out.String(), "2. us-west-2") {
-		t.Fatalf("unexpected prompt output: %s", out.String())
+	checks := []string{
+		"┌─ RTI Connext Cloud",
+		"Welcome!",
+		previewWarning,
+		"rticloud dev",
+		"Select region:",
+		"2. us-west-2",
+	}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in output: %s", check, rendered)
+		}
+	}
+	if strings.Index(rendered, "Select region:") < strings.Index(rendered, "rticloud dev") {
+		t.Fatalf("expected region prompt after welcome box: %s", rendered)
 	}
 }
 

@@ -16,6 +16,7 @@ type fakeAPI struct {
 	lastPath    string
 	lastPayload any
 	responses   map[string]*http.Response
+	getFunc     func(string) (*http.Response, error)
 }
 
 func (api *fakeAPI) response(path string) (*http.Response, error) {
@@ -27,6 +28,9 @@ func (api *fakeAPI) response(path string) (*http.Response, error) {
 
 func (api *fakeAPI) Get(path string) (*http.Response, error) {
 	api.lastPath = path
+	if api.getFunc != nil {
+		return api.getFunc(path)
+	}
 	return api.response("GET " + path)
 }
 
@@ -121,6 +125,23 @@ func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  ready") {
 		t.Fatalf("unexpected output: %s", output)
+	}
+}
+
+func TestCreateDatabusTimesOutWaitingForStatusChange(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses": newTextResponse(http.StatusCreated, "{}")}}
+	api.getFunc = func(path string) (*http.Response, error) {
+		if path != "/databuses/inventory" {
+			return newTextResponse(http.StatusNotFound, "missing"), nil
+		}
+		return newJSONResponse(http.StatusOK, map[string]any{"status": "creating"}), nil
+	}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.Sleep = func(time.Duration) {}
+	err := runner.CreateDatabus("inventory", 2, "", false, "")
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for databus \"inventory\" to leave \"creating\"") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
