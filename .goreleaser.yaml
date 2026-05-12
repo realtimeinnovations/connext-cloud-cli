@@ -16,6 +16,7 @@ builds:
     goos:
       - darwin
       - linux
+      - windows
     goarch:
       - amd64
       - arm64
@@ -31,6 +32,9 @@ archives:
     ids:
       - rticloud
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [ zip ]
     files:
       - README.md
       - LICENSE

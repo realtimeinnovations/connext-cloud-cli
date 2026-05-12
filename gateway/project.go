@@ -11,10 +11,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
@@ -97,11 +97,13 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 		},
 		OpenBrowserFunc: func(url string) error {
 			var command *exec.Cmd
-			switch {
-			case hasCommand("open"):
+			switch runtime.GOOS {
+			case "darwin":
 				command = exec.Command("open", url)
-			case hasCommand("xdg-open"):
+			case "linux":
 				command = exec.Command("xdg-open", url)
+			case "windows":
+				command = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 			default:
 				return nil
 			}
@@ -111,13 +113,8 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 	app.SelectFunc = app.defaultSelect
 	app.InputFunc = app.defaultInput
 	app.ConfirmReloadFunc = app.defaultConfirmReload
-	app.PIDRunningFunc = pidRunning
+	app.PIDRunningFunc = terminal.ProcessRunning
 	return app
-}
-
-func hasCommand(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 func (app *GatewayApp) ConfigPath() string {
@@ -656,7 +653,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			interrupted = true
 			liveView.State.serviceState = "stopping"
 			if cmd.Process != nil {
-				_ = cmd.Process.Signal(os.Interrupt)
+				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
 					_ = cmd.Process.Kill()
 				})
@@ -749,7 +746,7 @@ func (app *GatewayApp) interruptSignals() (<-chan os.Signal, func()) {
 		return app.InterruptSignalFunc()
 	}
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(interrupts, terminal.InterruptSignals()...)
 	return interrupts, func() {
 		signal.Stop(interrupts)
 		close(interrupts)
@@ -1214,7 +1211,7 @@ func (app *GatewayApp) pidRunning(pid int) bool {
 	if app.PIDRunningFunc != nil {
 		return app.PIDRunningFunc(pid)
 	}
-	return pidRunning(pid)
+	return terminal.ProcessRunning(pid)
 }
 
 func templateListContains(items []TemplateItem, target string) bool {
@@ -1343,10 +1340,6 @@ func nestedString(config map[string]any, keys ...string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-func pidRunning(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
 }
 
 func fallbackString(value string, fallback string) string {

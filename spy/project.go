@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
@@ -87,7 +86,7 @@ func NewApp(workDir string, out io.Writer) *App {
 	app.SelectFunc = app.defaultSelect
 	app.InputFunc = app.defaultInput
 	app.ConfirmReloadFunc = app.defaultConfirmReload
-	app.PIDRunningFunc = pidRunning
+	app.PIDRunningFunc = terminal.ProcessRunning
 	return app
 }
 
@@ -562,7 +561,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 			interrupted = true
 			liveView.State.serviceState = "stopping"
 			if cmd.Process != nil {
-				_ = cmd.Process.Signal(os.Interrupt)
+				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
 					_ = cmd.Process.Kill()
 				})
@@ -915,7 +914,7 @@ func (app *App) interruptSignals() (<-chan os.Signal, func()) {
 		return app.InterruptSignalFunc()
 	}
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(interrupts, terminal.InterruptSignals()...)
 	return interrupts, func() {
 		signal.Stop(interrupts)
 		close(interrupts)
@@ -926,7 +925,7 @@ func (app *App) pidRunning(pid int) bool {
 	if app.PIDRunningFunc != nil {
 		return app.PIDRunningFunc(pid)
 	}
-	return pidRunning(pid)
+	return terminal.ProcessRunning(pid)
 }
 
 func sortedKeys(values map[string]map[string]any) []string {
@@ -1045,18 +1044,4 @@ func intFromAny(value any) int {
 	default:
 		return 0
 	}
-}
-
-func pidRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	if err := process.Signal(syscall.Signal(0)); err != nil {
-		return false
-	}
-	return true
 }
