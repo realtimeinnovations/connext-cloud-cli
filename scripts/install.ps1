@@ -21,7 +21,7 @@ function Get-Arch {
 
 function Resolve-Version {
     if ($Version -ne "latest") { return $Version }
-    $response = Invoke-WebRequest -Uri "https://github.com/$Owner/$Repo/releases/latest" -MaximumRedirection 0 -ErrorAction SilentlyContinue
+    $response = Invoke-WebRequest -Uri "https://github.com/$Owner/$Repo/releases/latest" -MaximumRedirection 0 -ErrorAction SilentlyContinue -UseBasicParsing
     $location = $response.Headers["Location"]
     return $location -replace ".*/", ""
 }
@@ -65,8 +65,8 @@ $tmp     = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemTy
 
 try {
     Write-Host "Downloading $Binary $tag..."
-    Invoke-WebRequest -Uri $url          -OutFile "$tmp\$archive"
-    Invoke-WebRequest -Uri $checksumsUrl -OutFile "$tmp\checksums.txt"
+    Invoke-WebRequest -Uri $url          -OutFile "$tmp\$archive"  -UseBasicParsing
+    Invoke-WebRequest -Uri $checksumsUrl -OutFile "$tmp\checksums.txt" -UseBasicParsing
 
     Confirm-Checksum -FilePath "$tmp\$archive" -ArchiveName $archive -ChecksumsPath "$tmp\checksums.txt"
 
