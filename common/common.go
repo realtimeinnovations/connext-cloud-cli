@@ -1,6 +1,9 @@
 package common
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -86,4 +89,97 @@ func NestedString(config map[string]any, keys ...string) string {
 	}
 	value, _ := current.(string)
 	return value
+}
+
+// GenerateClientID returns a unique client identifier in the form "cli-<16hex>".
+// The identifier is kept short so that the X.509 CN value built by the server
+// as "{databus}.{template}.{clientID}" stays within the 64-character RFC 5280 limit.
+func GenerateClientID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("cli-%x", b)
+}
+
+var SecureFiles = []string{
+	"client.key",
+	"client.crt",
+	"identity_ca.crt",
+	"permissions_ca.crt",
+	"signed_governance.p7s",
+	"signed_permissions.p7s",
+	"psk.key",
+}
+
+func FileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func IsSecure(resource map[string]any) bool {
+	if resource == nil {
+		return false
+	}
+	config, _ := resource["config"].(map[string]any)
+	if secure, ok := config["secure"].(bool); ok && secure {
+		return true
+	}
+	if secure, ok := resource["secure"].(bool); ok {
+		return secure
+	}
+	return false
+}
+
+func LocalSecureFilesExist(directory string) bool {
+	for _, name := range SecureFiles {
+		if !FileExists(filepath.Join(directory, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return err
+	}
+	for filename, content := range files {
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(targetDir, filename), decoded, secureFileMode(filename)); err != nil {
+			return err
+		}
+	}
+	if len(privateKey) > 0 {
+		if err := os.WriteFile(filepath.Join(targetDir, "client.key"), privateKey, secureFileMode("client.key")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func secureFileMode(fileName string) os.FileMode {
+	if strings.HasSuffix(fileName, ".key") {
+		return 0o600
+	}
+	return 0o644
+}
+
+func TemplateListContains(items []TemplateItem, target string) bool {
+	for _, item := range items {
+		if item.Name == target {
+			return true
+		}
+	}
+	return false
+}
+
+func SortedKeys(values map[string]map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

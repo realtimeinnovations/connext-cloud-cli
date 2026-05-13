@@ -2,7 +2,6 @@ package spy
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,15 +33,6 @@ const (
 	spyLiveRefreshInterval = 250 * time.Millisecond
 )
 
-var secureFiles = []string{
-	"client.key",
-	"client.crt",
-	"identity_ca.crt",
-	"permissions_ca.crt",
-	"signed_governance.p7s",
-	"signed_permissions.p7s",
-	"psk.key",
-}
 
 type UserError = common.UserError
 type ConnextInstall = connext.Install
@@ -212,7 +201,7 @@ func (app *App) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 		connextMsg += fmt.Sprintf(" (%s)", connext.Reason)
 	}
 	_, _ = fmt.Fprint(app.Out, RenderInfoMessage(connextMsg))
-	databusName, err := app.choose("Select Databus:", sortedKeys(databuses))
+	databusName, err := app.choose("Select Databus:", common.SortedKeys(databuses))
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +225,7 @@ func (app *App) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 			"connext_home": connext.Path,
 		},
 		"clients": map[string]any{
-			"app_client_id": appName + "-1",
+			"app_client_id": common.GenerateClientID(),
 		},
 	}
 	if err := app.WriteConfig(config); err != nil {
@@ -258,7 +247,7 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 		return nil
 	}
 	target := filepath.Join(app.AppDir(), appName+".xml")
-	if force || !fileExists(target) {
+	if force || !common.FileExists(target) {
 		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
 		}
@@ -302,7 +291,7 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 		return err
 	}
 	appTemplate := common.NestedString(config, "templates", "app")
-	if !templateListContains(TemplateItems(databus, "app"), appTemplate) {
+	if !common.TemplateListContains(TemplateItems(databus, "app"), appTemplate) {
 		zone := common.StringValue(config, "zone")
 		if zone == "" {
 			zone = app.currentZone()
@@ -320,14 +309,14 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !isSecure(databus) {
+	if !common.IsSecure(databus) {
 		return false, nil
 	}
 	_, _ = fmt.Fprintln(app.Out, "Secure Databus detected.")
 	clients, _ := config["clients"].(map[string]any)
 	clientID, _ := clients["app_client_id"].(string)
 	if clientID == "" {
-		clientID = common.NestedString(config, "templates", "app") + "-1"
+		clientID = common.GenerateClientID()
 	}
 	if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "app"), clientID, app.AppDir()); err != nil {
 		return false, err
@@ -336,7 +325,7 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 }
 
 func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string, targetDir string) error {
-	if localSecureFilesExist(targetDir) {
+	if common.LocalSecureFilesExist(targetDir) {
 		_, _ = fmt.Fprintln(app.Out, "Reusing local spy credentials")
 		_, _ = fmt.Fprintln(app.Out)
 		return nil
@@ -359,7 +348,7 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 			secureMap[key] = text
 		}
 	}
-	if err := saveSecureFiles(secureMap, privateKey, targetDir); err != nil {
+	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(app.Out, "Registered spy client credentials")
@@ -599,7 +588,7 @@ done:
 func (app *App) spyEnv() []string {
 	env := []string{"RTI_MONITORING2_ENABLE=false"}
 	privateKeyPath := filepath.Join(app.AppDir(), "client.key")
-	if fileExists(privateKeyPath) {
+	if common.FileExists(privateKeyPath) {
 		env = append(env, "RTI_PRIVATE_KEY_FILE="+privateKeyPath)
 	}
 	return env
@@ -642,7 +631,7 @@ func (app *App) Status() error {
 }
 
 func (app *App) Reset() error {
-	if !fileExists(app.ConfigPath()) {
+	if !common.FileExists(app.ConfigPath()) {
 		_, _ = fmt.Fprintln(app.Out, "No spy configuration found.")
 		return nil
 	}
@@ -926,80 +915,6 @@ func (app *App) pidRunning(pid int) bool {
 		return app.PIDRunningFunc(pid)
 	}
 	return terminal.ProcessRunning(pid)
-}
-
-func sortedKeys(values map[string]map[string]any) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func templateListContains(items []TemplateItem, target string) bool {
-	for _, item := range items {
-		if item.Name == target {
-			return true
-		}
-	}
-	return false
-}
-
-func localSecureFilesExist(directory string) bool {
-	for _, name := range secureFiles {
-		if !fileExists(filepath.Join(directory, name)) {
-			return false
-		}
-	}
-	return true
-}
-
-func saveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return err
-	}
-	for filename, content := range files {
-		decoded, err := base64.StdEncoding.DecodeString(content)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(targetDir, filename), decoded, secureFileMode(filename)); err != nil {
-			return err
-		}
-	}
-	if len(privateKey) > 0 {
-		if err := os.WriteFile(filepath.Join(targetDir, "client.key"), privateKey, secureFileMode("client.key")); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func secureFileMode(fileName string) os.FileMode {
-	if strings.HasSuffix(fileName, ".key") {
-		return 0o600
-	}
-	return 0o644
-}
-
-func isSecure(resource map[string]any) bool {
-	if resource == nil {
-		return false
-	}
-	config, _ := resource["config"].(map[string]any)
-	if secure, ok := config["secure"].(bool); ok && secure {
-		return true
-	}
-	if secure, ok := resource["secure"].(bool); ok {
-		return secure
-	}
-	return false
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func mergeEnv(base []string, overrides ...string) []string {

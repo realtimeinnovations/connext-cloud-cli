@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 )
 
 func TestDefaultSelectFallsBackToNumberedPromptWhenNonInteractive(t *testing.T) {
@@ -136,7 +139,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stringValue(config, "databus") != "inventory" || config["observability"] != nil || nestedString(config, "templates", "gateway") != "gw" || config["runtime"].(map[string]any)["connext_home"] != install {
+	if common.StringValue(config, "databus") != "inventory" || config["observability"] != nil || common.NestedString(config, "templates", "gateway") != "gw" || config["runtime"].(map[string]any)["connext_home"] != install {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	if !strings.Contains(out.String(), "Connext Cloud Gateway setup") || !strings.Contains(out.String(), "Databuses available: 1") {
@@ -218,7 +221,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["databus"] != nil || stringValue(config, "observability") != "inventory-obs" || nestedString(config, "templates", "collector") != "collector" {
+	if config["databus"] != nil || common.StringValue(config, "observability") != "inventory-obs" || common.NestedString(config, "templates", "collector") != "collector" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	if _, ok := config["runtime"].(map[string]any)["connext_home"]; ok {
@@ -269,7 +272,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nestedString(config, "templates", "gateway") != "gw" {
+	if common.NestedString(config, "templates", "gateway") != "gw" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	if !strings.Contains(out.String(), "• Create gateway template in Connext Cloud dashboard:") || !strings.Contains(out.String(), "Reloading templates...") {
@@ -281,24 +284,18 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
-	selection := []string{CreateNewTemplate, "collector"}
-	resourceCalls := 0
 	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
 		return map[string]map[string]any{}, map[string]map[string]any{"inventory-obs": {}}, nil
 	}
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		resourceCalls++
-		if resourceCalls == 1 {
-			return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
-		}
-		return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
+		return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		if message != "Reload template list after creating it in the dashboard." {
-			return false, GatewayError{Message: message}
+	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
+		if databusName != "inventory-obs" || kind != "telemetry-service-collector" || clientName != "collector" {
+			return GatewayError{Message: fmt.Sprintf("unexpected args: %s %s %s", databusName, kind, clientName)}
 		}
-		return true, nil
+		return nil
 	}
 	app.SelectFunc = func(message string, choices []string) (string, error) {
 		switch message {
@@ -307,22 +304,23 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		case "Select Observability Service:":
 			return "inventory-obs", nil
 		case "Select Collector template from inventory-obs:":
-			selected := selection[0]
-			selection = selection[1:]
-			return selected, nil
+			return "Create a new one...", nil
 		default:
 			return "", GatewayError{Message: message}
 		}
+	}
+	app.InputFunc = func(message string) (string, error) {
+		if message != "Collector name:" {
+			return "", GatewayError{Message: message}
+		}
+		return "collector", nil
 	}
 	config, err := app.ConfigureFirstRun(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nestedString(config, "templates", "collector") != "collector" {
+	if common.NestedString(config, "templates", "collector") != "collector" {
 		t.Fatalf("unexpected config: %#v", config)
-	}
-	if !strings.Contains(out.String(), "• Create collector template in Connext Cloud dashboard:") || !strings.Contains(out.String(), "Reloading templates...") {
-		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
 
@@ -338,7 +336,7 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 		case "inventory":
 			return map[string]any{"name": "inventory", "config": map[string]any{"observability_service": "inventory-obs"}, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 		case "inventory-obs":
-			return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
+			return map[string]any{"name": "inventory-obs", "clients": map[string]any{"inventory_gw": map[string]any{"kind": "telemetry-service-collector"}}}, nil
 		default:
 			return nil, GatewayError{Message: name}
 		}
@@ -358,8 +356,6 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 				return "", GatewayError{Message: selectionLabel(choices[0])}
 			}
 			return selectionValue(choices[0]), nil
-		case "Select Collector template from inventory-obs:":
-			return "collector", nil
 		default:
 			return "", GatewayError{Message: message}
 		}
@@ -368,8 +364,11 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stringValue(config, "observability") != "inventory-obs" {
+	if common.StringValue(config, "observability") != "inventory-obs" {
 		t.Fatalf("unexpected config: %#v", config)
+	}
+	if common.NestedString(config, "templates", "collector") != "inventory_gw" {
+		t.Fatalf("expected collector template inventory_gw, got: %#v", config)
 	}
 }
 
@@ -519,7 +518,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("unexpected rc: %d", rc)
 	}
-	if !fileExists(filepath.Join(tmpDir, ".connext", "gateway", "runtime.json")) {
+	if !common.FileExists(filepath.Join(tmpDir, ".connext", "gateway", "runtime.json")) {
 		t.Fatalf("runtime.json not written")
 	}
 	if !strings.Contains(readFile(t, filepath.Join(tmpDir, ".connext", "gateway", "logs", "routing.log")), "ready") {
@@ -686,7 +685,7 @@ func TestResetRemovesOnlyConfig(t *testing.T) {
 	if err := app.Reset(); err != nil {
 		t.Fatal(err)
 	}
-	if fileExists(filepath.Join(tmpDir, ".connext", "gateway.yaml")) || !fileExists(artifactPath) {
+	if common.FileExists(filepath.Join(tmpDir, ".connext", "gateway.yaml")) || !common.FileExists(artifactPath) {
 		t.Fatalf("unexpected files after reset")
 	}
 	if !strings.Contains(out.String(), "Runtime artifacts were left in") {

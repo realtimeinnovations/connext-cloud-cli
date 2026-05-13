@@ -37,6 +37,30 @@ function Confirm-Checksum {
 }
 
 function Install-Completions {
+    # The installer may run under -ExecutionPolicy Bypass, so Get-ExecutionPolicy
+    # returns the process-level override rather than the persistent system policy.
+    # Walk the scopes that govern a fresh terminal session (GPO first, then registry)
+    # and use those to decide whether the profile will actually be loadable.
+    $blockedPolicies = @('Restricted', 'AllSigned')
+    $persistentScopes = @('MachinePolicy', 'UserPolicy', 'CurrentUser', 'LocalMachine')
+    # Default for Windows PowerShell 5.x when nothing is configured is Restricted.
+    $persistentPolicy = 'Restricted'
+    foreach ($scope in $persistentScopes) {
+        $p = Get-ExecutionPolicy -Scope $scope
+        if ($p -ne 'Undefined') {
+            $persistentPolicy = $p
+            break
+        }
+    }
+
+    if ($persistentPolicy -in $blockedPolicies) {
+        Write-Host ""
+        Write-Host "Skipping PowerShell completions: script execution is disabled ($persistentPolicy)."
+        Write-Host "To enable completions, run the following and then re-run this installer:"
+        Write-Host "  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser"
+        return
+    }
+
     $line = "`n$Binary completion powershell | Out-String | Invoke-Expression"
     if (-not (Test-Path $PROFILE)) {
         New-Item -ItemType File -Path $PROFILE -Force | Out-Null

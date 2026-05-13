@@ -52,7 +52,7 @@ func DashboardURL(zone string, resourceName string, resourceKind string) string 
 	}
 	path := "databuses"
 	if resourceKind == "observability" {
-		path = "telemetry-services"
+		path = "observability-services"
 	}
 	return fmt.Sprintf("%s://%s/dashboard/%s/%s", scheme, host, path, resourceName)
 }
