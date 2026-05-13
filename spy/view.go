@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -161,7 +162,7 @@ func SpyPanelTitle() string {
 }
 
 func SpyLiveHeader(config map[string]any, status string, activeTopicCount int, pulseFrame int) SummaryLine {
-	return SummaryLine{Label: "databus", Status: spySummaryChip(status, activeTopicCount, pulseFrame), Target: fmt.Sprintf("%s / %s", configString(config, "databus"), nestedString(config, "templates", "app"))}
+	return SummaryLine{Label: "databus", Status: spySummaryChip(status, activeTopicCount, pulseFrame), Target: fmt.Sprintf("%s / %s", configString(config, "databus"), common.NestedString(config, "templates", "app"))}
 }
 
 func sampleActivityChip(row TopicRow, pulseFrame int) string {
@@ -367,19 +368,6 @@ func configString(config map[string]any, key string) string {
 	return "none"
 }
 
-func nestedString(config map[string]any, keys ...string) string {
-	current := any(config)
-	for _, key := range keys {
-		asMap, ok := current.(map[string]any)
-		if !ok {
-			return ""
-		}
-		current = asMap[key]
-	}
-	value, _ := current.(string)
-	return value
-}
-
 func hasDatabus(config map[string]any) bool {
-	return configString(config, "databus") != "none" && nestedString(config, "templates", "app") != ""
+	return configString(config, "databus") != "none" && common.NestedString(config, "templates", "app") != ""
 }

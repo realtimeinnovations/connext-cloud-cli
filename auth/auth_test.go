@@ -167,10 +167,8 @@ func TestGetAuthHeadersPreservesAPIKeyExchangeError(t *testing.T) {
 }
 
 func TestLoginIncludesStateAndExchangesCode(t *testing.T) {
-	redirectURI := "http://127.0.0.1:38081/callback"
 	manager := New(staticConfigProvider{values: map[string]string{
 		"api_host":     "https://example.test/api/v1",
-		"redirect_uri": redirectURI,
 		"auth0_domain": "auth.example.test",
 		"audience":     "https://cloud.example.test/api/v1",
 		"scope":        "openid profile email",
@@ -187,7 +185,8 @@ func TestLoginIncludesStateAndExchangesCode(t *testing.T) {
 		if state == "" {
 			return fmt.Errorf("missing state parameter")
 		}
-		_, err = http.Get(redirectURI + "?code=auth-code&state=" + url.QueryEscape(state))
+		callbackURL := parsedURL.Query().Get("redirect_uri")
+		_, err = http.Get(callbackURL + "?code=auth-code&state=" + url.QueryEscape(state))
 		return err
 	}
 	manager.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
@@ -227,19 +226,23 @@ func TestLoginIncludesStateAndExchangesCode(t *testing.T) {
 	if got := parsedURL.Query().Get("state"); got == "" {
 		t.Fatal("expected state parameter in authorization URL")
 	}
-	if got := parsedURL.Query().Get("redirect_uri"); got != redirectURI {
-		t.Fatalf("redirect_uri = %q, want %q", got, redirectURI)
+	gotRedirectURI := parsedURL.Query().Get("redirect_uri")
+	if !strings.HasPrefix(gotRedirectURI, "http://localhost:") || !strings.HasSuffix(gotRedirectURI, "/callback") {
+		t.Fatalf("redirect_uri = %q, want http://localhost:{port}/callback", gotRedirectURI)
 	}
 }
 
 func TestLoginRejectsMismatchedState(t *testing.T) {
-	redirectURI := "http://127.0.0.1:38082/callback"
 	manager := New(staticConfigProvider{values: map[string]string{
-		"api_host":     "https://example.test/api/v1",
-		"redirect_uri": redirectURI,
+		"api_host": "https://example.test/api/v1",
 	}}, filepath.Join(t.TempDir(), "credentials.json"))
-	manager.OpenBrowser = func(string) error {
-		_, err := http.Get(redirectURI + "?code=auth-code&state=wrong-state")
+	manager.OpenBrowser = func(target string) error {
+		parsedURL, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		callbackURL := parsedURL.Query().Get("redirect_uri")
+		_, err = http.Get(callbackURL + "?code=auth-code&state=wrong-state")
 		return err
 	}
 	manager.HTTPClient = roundTripClient(func(*http.Request) (*http.Response, error) {

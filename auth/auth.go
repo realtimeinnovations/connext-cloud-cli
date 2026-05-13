@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,11 +242,7 @@ func (manager *Manager) Login() (string, error) {
 	if scope == "" {
 		scope = "openid profile email list:databus query:databus create:databus delete:databus create:databus_client"
 	}
-	redirectURI := configValues["redirect_uri"]
-	if redirectURI == "" {
-		redirectURI = "http://localhost:8000/callback"
-	}
-	parsedRedirect, err := url.Parse(redirectURI)
+	listener, redirectURI, err := listenForCallback()
 	if err != nil {
 		return "", err
 	}
@@ -269,10 +264,6 @@ func (manager *Manager) Login() (string, error) {
 		oauth2.SetAuthURLParam("audience", audience),
 		oauth2.S256ChallengeOption(verifier),
 	)
-	listener, err := net.Listen("tcp", parsedRedirect.Host)
-	if err != nil {
-		return "", err
-	}
 	defer listener.Close()
 	type authResult struct {
 		code string
@@ -324,6 +315,24 @@ func (manager *Manager) Login() (string, error) {
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+// listenForCallback binds a TCP listener for the OAuth callback.
+// It tries the port in parsedRedirect first, then falls back to ports
+// 3001–3003 (all registered in Auth0). Returns the listener and the
+// redirect URI that matches the bound port.
+func listenForCallback() (net.Listener, string, error) {
+	ports := []int{3002, 3003, 31810, 31811}
+	for _, p := range ports {
+		if l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p)); err == nil {
+			return l, fmt.Sprintf("http://localhost:%d/callback", p), nil
+		}
+	}
+	ps := make([]string, len(ports))
+	for i, p := range ports {
+		ps[i] = fmt.Sprintf("%d", p)
+	}
+	return nil, "", fmt.Errorf("Login failed: ports %s are all in use. Close any other login attempts or applications using these ports and try again.", strings.Join(ps, ", "))
 }
 
 func oauthContext(client *http.Client) context.Context {

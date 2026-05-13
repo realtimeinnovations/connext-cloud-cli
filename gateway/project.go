@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,16 +32,6 @@ const (
 	routingLiveRefreshInterval = 250 * time.Millisecond
 )
 
-var secureFiles = []string{
-	"client.key",
-	"client.crt",
-	"identity_ca.crt",
-	"permissions_ca.crt",
-	"signed_governance.p7s",
-	"signed_permissions.p7s",
-	"psk.key",
-}
-
 type TemplateItem = common.TemplateItem
 
 type GatewayApp struct {
@@ -57,6 +45,7 @@ type GatewayApp struct {
 	CurrentZoneFunc          func() string
 	DiscoverConnextInstallFn func(prompt bool) (ConnextInstall, error)
 	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
+	CreateApplicationFunc    func(databusName string, kind string, clientName string) error
 	DockerAvailableFunc      func() bool
 	RunDockerFunc            func(args []string, check bool) (string, error)
 	DownloadArtifactsFunc    func(config map[string]any, force bool) error
@@ -198,19 +187,19 @@ func (app *GatewayApp) WriteRuntimeState(state map[string]any) error {
 }
 
 func ProjectID(config map[string]any) string {
-	value := stringValue(config, "databus")
+	value := common.StringValue(config, "databus")
 	if value == "" {
-		value = stringValue(config, "observability")
+		value = common.StringValue(config, "observability")
 	}
 	return common.ProjectID(value, "project")
 }
 
 func HasDatabus(config map[string]any) bool {
-	return stringValue(config, "databus") != "" && nestedString(config, "templates", "gateway") != ""
+	return common.StringValue(config, "databus") != "" && common.NestedString(config, "templates", "gateway") != ""
 }
 
 func HasObservability(config map[string]any) bool {
-	return stringValue(config, "observability") != "" && nestedString(config, "templates", "collector") != ""
+	return common.StringValue(config, "observability") != "" && common.NestedString(config, "templates", "collector") != ""
 }
 
 func TemplateItems(resource map[string]any, expectedKind string) []TemplateItem {
@@ -239,10 +228,10 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 		return app.DownloadArtifactsFunc(config, force)
 	}
 	templates, _ := config["templates"].(map[string]any)
-	if databus := stringValue(config, "databus"); databus != "" {
+	if databus := common.StringValue(config, "databus"); databus != "" {
 		if gatewayTemplate, _ := templates["gateway"].(string); gatewayTemplate != "" {
 			target := filepath.Join(app.RoutingDir(), gatewayTemplate+".xml")
-			if force || !fileExists(target) {
+			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(databus, gatewayTemplate, target); err != nil {
 					return err
 				}
@@ -250,10 +239,10 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 			}
 		}
 	}
-	if observability := stringValue(config, "observability"); observability != "" {
+	if observability := common.StringValue(config, "observability"); observability != "" {
 		if collectorTemplate, _ := templates["collector"].(string); collectorTemplate != "" {
 			target := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
-			if force || !fileExists(target) {
+			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(observability, collectorTemplate, target); err != nil {
 					return err
 				}
@@ -295,27 +284,27 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 	var observability map[string]any
 	var err error
 	if HasDatabus(config) {
-		databus, err = app.getResource(stringValue(config, "databus"))
+		databus, err = app.getResource(common.StringValue(config, "databus"))
 		if err != nil {
 			return false, false, err
 		}
 	}
 	if HasObservability(config) {
-		observability, err = app.getResource(stringValue(config, "observability"))
+		observability, err = app.getResource(common.StringValue(config, "observability"))
 		if err != nil {
 			return false, false, err
 		}
 	}
-	databusSecure := isSecure(databus)
-	collectorSecure := isSecure(observability)
+	databusSecure := common.IsSecure(databus)
+	collectorSecure := common.IsSecure(observability)
 	clients, _ := config["clients"].(map[string]any)
 	if databusSecure {
 		_, _ = fmt.Fprintln(app.Out, "Secure Databus detected.")
 		clientID, _ := clients["gateway_client_id"].(string)
 		if clientID == "" {
-			clientID = nestedString(config, "templates", "gateway") + "-1"
+			clientID = common.GenerateClientID()
 		}
-		if err := app.ensureSecureCredentials(stringValue(config, "databus"), nestedString(config, "templates", "gateway"), clientID, app.RoutingDir(), "gateway"); err != nil {
+		if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "gateway"), clientID, app.RoutingDir(), "gateway"); err != nil {
 			return false, false, err
 		}
 	}
@@ -323,9 +312,9 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 		_, _ = fmt.Fprintln(app.Out, "Secure Observability Service detected.")
 		clientID, _ := clients["collector_client_id"].(string)
 		if clientID == "" {
-			clientID = nestedString(config, "templates", "collector") + "-1"
+			clientID = common.GenerateClientID()
 		}
-		if err := app.ensureSecureCredentials(stringValue(config, "observability"), nestedString(config, "templates", "collector"), clientID, filepath.Join(app.CollectorDir(), "secure"), "collector"); err != nil {
+		if err := app.ensureSecureCredentials(common.StringValue(config, "observability"), common.NestedString(config, "templates", "collector"), clientID, filepath.Join(app.CollectorDir(), "secure"), "collector"); err != nil {
 			return false, false, err
 		}
 	}
@@ -333,7 +322,7 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 }
 
 func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName string, clientID string, targetDir string, label string) error {
-	if localSecureFilesExist(targetDir) {
+	if common.LocalSecureFilesExist(targetDir) {
 		_, _ = fmt.Fprintf(app.Out, "Reusing local %s credentials\n", label)
 		_, _ = fmt.Fprintln(app.Out)
 		return nil
@@ -356,7 +345,7 @@ func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName
 			secureMap[key] = text
 		}
 	}
-	if err := saveSecureFiles(secureMap, privateKey, targetDir); err != nil {
+	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Registered %s client credentials\n", label)
@@ -412,7 +401,7 @@ func (app *GatewayApp) StartCollectorContainer(config map[string]any, connext Co
 			return "", err
 		}
 	}
-	collectorTemplate := nestedString(config, "templates", "collector")
+	collectorTemplate := common.NestedString(config, "templates", "collector")
 	if collectorTemplate == "" {
 		return "", GatewayError{Message: "No Observability collector template is configured for this gateway."}
 	}
@@ -443,17 +432,17 @@ func (app *GatewayApp) StartCollectorContainer(config map[string]any, connext Co
 
 func (app *GatewayApp) licenseFile(connext ConnextInstall) (string, error) {
 	for _, envName := range []string{"RTI_LICENSE_FILE", "NDDS_LICENSE_FILE"} {
-		if value := os.Getenv(envName); value != "" && fileExists(value) {
+		if value := os.Getenv(envName); value != "" && common.FileExists(value) {
 			return value, nil
 		}
 	}
 	local := filepath.Join(app.CollectorDir(), "rti_license.dat")
-	if fileExists(local) {
+	if common.FileExists(local) {
 		return local, nil
 	}
 	if connext.Path != "" {
 		candidate := filepath.Join(connext.Path, "rti_license.dat")
-		if fileExists(candidate) {
+		if common.FileExists(candidate) {
 			return candidate, nil
 		}
 	}
@@ -465,7 +454,7 @@ func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextI
 }
 
 func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, connext ConnextInstall, collectorName string, databusSecure bool, collectorSecure bool, options RunOptions) (int, error) {
-	gatewayTemplate := nestedString(config, "templates", "gateway")
+	gatewayTemplate := common.NestedString(config, "templates", "gateway")
 	if gatewayTemplate == "" {
 		return 0, GatewayError{Message: "No Databus gateway template is configured for this gateway."}
 	}
@@ -693,7 +682,7 @@ done:
 func (app *GatewayApp) routingEnv() []string {
 	env := []string{"RTI_MONITORING2_ENABLE=false"}
 	privateKeyPath := filepath.Join(app.RoutingDir(), "client.key")
-	if fileExists(privateKeyPath) {
+	if common.FileExists(privateKeyPath) {
 		env = append(env, "RTI_PRIVATE_KEY_FILE="+privateKeyPath)
 	}
 	return env
@@ -801,7 +790,7 @@ func (app *GatewayApp) Status() error {
 	}
 	_, _ = fmt.Fprintf(app.Out, "Routing Service: %s\n", routing)
 	_, _ = fmt.Fprintf(app.Out, "Collector: %s\n", collector)
-	connextHome := nestedString(config, "runtime", "connext_home")
+	connextHome := common.NestedString(config, "runtime", "connext_home")
 	if connextHome != "" && HasDatabus(config) {
 		connext, err := ValidateConnextInstall(connextHome)
 		if err != nil {
@@ -815,15 +804,15 @@ func (app *GatewayApp) Status() error {
 
 func (app *GatewayApp) PrintConfigSummary(config map[string]any) {
 	_, _ = fmt.Fprintln(app.Out, "Gateway configuration:")
-	_, _ = fmt.Fprintf(app.Out, "  Databus: %s\n", fallbackString(stringValue(config, "databus"), "not configured"))
-	_, _ = fmt.Fprintf(app.Out, "  Observability: %s\n", fallbackString(stringValue(config, "observability"), "not configured"))
-	_, _ = fmt.Fprintf(app.Out, "  Gateway template: %s\n", fallbackString(nestedString(config, "templates", "gateway"), "not configured"))
-	_, _ = fmt.Fprintf(app.Out, "  Collector: %s\n", fallbackString(nestedString(config, "templates", "collector"), "not configured"))
+	_, _ = fmt.Fprintf(app.Out, "  Databus: %s\n", fallbackString(common.StringValue(config, "databus"), "not configured"))
+	_, _ = fmt.Fprintf(app.Out, "  Observability: %s\n", fallbackString(common.StringValue(config, "observability"), "not configured"))
+	_, _ = fmt.Fprintf(app.Out, "  Gateway template: %s\n", fallbackString(common.NestedString(config, "templates", "gateway"), "not configured"))
+	_, _ = fmt.Fprintf(app.Out, "  Collector: %s\n", fallbackString(common.NestedString(config, "templates", "collector"), "not configured"))
 	_, _ = fmt.Fprintln(app.Out)
 }
 
 func (app *GatewayApp) Reset() error {
-	if !fileExists(app.ConfigPath()) {
+	if !common.FileExists(app.ConfigPath()) {
 		_, _ = fmt.Fprintln(app.Out, "No gateway configuration found.")
 		return nil
 	}
@@ -844,17 +833,17 @@ func (app *GatewayApp) OpenObservabilityDashboard() error {
 	if err != nil {
 		return err
 	}
-	if config == nil || stringValue(config, "observability") == "" {
+	if config == nil || common.StringValue(config, "observability") == "" {
 		_, _ = fmt.Fprintln(app.Out, "No Observability Service is configured for this gateway.")
 		return nil
 	}
-	resource, err := app.getResource(stringValue(config, "observability"))
+	resource, err := app.getResource(common.StringValue(config, "observability"))
 	if err != nil {
 		return err
 	}
 	url := grafanaURL(resource)
 	if url == "" {
-		_, _ = fmt.Fprintf(app.Out, "Unable to resolve Grafana URL for Observability Service '%s'.\n", stringValue(config, "observability"))
+		_, _ = fmt.Fprintf(app.Out, "Unable to resolve Grafana URL for Observability Service '%s'.\n", common.StringValue(config, "observability"))
 		return nil
 	}
 	_, _ = fmt.Fprintf(app.Out, "Opening Observability dashboard\nURL: %s\n", url)
@@ -909,7 +898,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	gatewayTemplate := ""
 	var databus map[string]any
 	if includeData {
-		databusName, err = app.choose("Select Databus:", sortedKeys(databuses))
+		databusName, err = app.choose("Select Databus:", common.SortedKeys(databuses))
 		if err != nil {
 			return nil, err
 		}
@@ -930,7 +919,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 		if databus != nil {
 			linkedObs = LinkedObservabilityName(databus)
 		}
-		obsNames := sortedKeys(observabilityServices)
+		obsNames := common.SortedKeys(observabilityServices)
 		obsChoices := make([]string, 0, len(obsNames))
 		if linkedObs != "" && contains(obsNames, linkedObs) {
 			obsChoices = append(obsChoices, choiceWithLabel(linkedObs, fmt.Sprintf("%s  (linked to %s)", linkedObs, databusName)))
@@ -948,9 +937,23 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 			return nil, err
 		}
 		collectorTemplates := TemplateItems(observability, "observability-collector")
-		collectorTemplate, err = app.selectTemplateOrCreate(observabilityName, "Observability Service", "observability-collector", fmt.Sprintf("Select Collector template from %s:", observabilityName), collectorTemplates)
-		if err != nil {
-			return nil, err
+		if includeData {
+			autoName := sanitizeCollectorName(databusName + "_" + gatewayTemplate)
+			if common.TemplateListContains(collectorTemplates, autoName) {
+				collectorTemplate = autoName
+				_, _ = fmt.Fprint(app.Out, RenderInfoMessage(fmt.Sprintf("Using collector template: %s", autoName)))
+			} else {
+				_, _ = fmt.Fprint(app.Out, RenderInfoMessage(fmt.Sprintf("Creating collector template: %s", autoName)))
+				collectorTemplate, err = app.createCollectorTemplate(observabilityName, autoName)
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			collectorTemplate, err = app.selectCollectorOrCreate(observabilityName, fmt.Sprintf("Select Collector template from %s:", observabilityName), collectorTemplates)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	config := map[string]any{
@@ -985,31 +988,31 @@ func (app *GatewayApp) ValidateConfigResources(config map[string]any) error {
 		return GatewayError{Message: "No Databus or Observability Service is configured for this gateway."}
 	}
 	if HasDatabus(config) {
-		databus, err := app.getResource(stringValue(config, "databus"))
+		databus, err := app.getResource(common.StringValue(config, "databus"))
 		if err != nil {
 			return err
 		}
-		gatewayTemplate := nestedString(config, "templates", "gateway")
-		if !templateListContains(TemplateItems(databus, "gateway"), gatewayTemplate) {
-			zone := stringValue(config, "zone")
+		gatewayTemplate := common.NestedString(config, "templates", "gateway")
+		if !common.TemplateListContains(TemplateItems(databus, "gateway"), gatewayTemplate) {
+			zone := common.StringValue(config, "zone")
 			if zone == "" {
 				zone = app.currentZone()
 			}
-			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud gateway", gatewayTemplate, stringValue(config, "databus"), DashboardURL(zone, stringValue(config, "databus"), "databus"))}
+			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"))}
 		}
 	}
 	if HasObservability(config) {
-		observability, err := app.getResource(stringValue(config, "observability"))
+		observability, err := app.getResource(common.StringValue(config, "observability"))
 		if err != nil {
 			return err
 		}
-		collectorTemplate := nestedString(config, "templates", "collector")
-		if !templateListContains(TemplateItems(observability, "observability-collector"), collectorTemplate) {
-			zone := stringValue(config, "zone")
+		collectorTemplate := common.NestedString(config, "templates", "collector")
+		if !common.TemplateListContains(TemplateItems(observability, "observability-collector"), collectorTemplate) {
+			zone := common.StringValue(config, "zone")
 			if zone == "" {
 				zone = app.currentZone()
 			}
-			return GatewayError{Message: fmt.Sprintf("Collector template '%s' was not found for Observability Service '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud gateway", collectorTemplate, stringValue(config, "observability"), DashboardURL(zone, stringValue(config, "observability"), "observability"))}
+			return GatewayError{Message: fmt.Sprintf("Collector template '%s' was not found for Observability Service '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud gateway", collectorTemplate, common.StringValue(config, "observability"), DashboardURL(zone, common.StringValue(config, "observability"), "observability"))}
 		}
 	}
 	return nil
@@ -1056,6 +1059,63 @@ func (app *GatewayApp) waitForTemplateCreation(resourceName string, resourceLabe
 			return resource, templates, nil
 		}
 	}
+}
+
+// sanitizeCollectorName replaces any character not in [a-zA-Z0-9_] with "_".
+func sanitizeCollectorName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+}
+
+// createCollectorTemplate creates a new observability-collector application
+// template in the given observability service.
+func (app *GatewayApp) createCollectorTemplate(obsName, collectorName string) (string, error) {
+	if app.CreateApplicationFunc != nil {
+		return collectorName, app.CreateApplicationFunc(obsName, "telemetry-service-collector", collectorName)
+	}
+	if app.APIPost == nil {
+		return "", fmt.Errorf("API not configured")
+	}
+	_, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications", obsName), map[string]any{
+		"kind":        "telemetry-service-collector",
+		"client_name": collectorName,
+	})
+	if err != nil {
+		return "", err
+	}
+	return collectorName, nil
+}
+
+// selectCollectorOrCreate shows existing collector templates and a
+// "Create a new one..." option. If chosen, prompts for a name and
+// creates the template via the API.
+func (app *GatewayApp) selectCollectorOrCreate(obsName, selectMsg string, templates []TemplateItem) (string, error) {
+	const createNewCollector = "Create a new one..."
+	choices := make([]string, 0, len(templates)+1)
+	for _, item := range templates {
+		choices = append(choices, item.Name)
+	}
+	choices = append(choices, createNewCollector)
+	selected, err := app.choose(selectMsg, choices)
+	if err != nil {
+		return "", err
+	}
+	if selected != createNewCollector {
+		return selected, nil
+	}
+	name, err := app.InputFunc("Collector name:")
+	if err != nil {
+		return "", err
+	}
+	name = sanitizeCollectorName(strings.TrimSpace(name))
+	if name == "" {
+		return "", GatewayError{Message: "Collector name cannot be empty."}
+	}
+	return app.createCollectorTemplate(obsName, name)
 }
 
 func (app *GatewayApp) selectTemplateOrCreate(resourceName string, resourceLabel string, templateKind string, selectMessage string, templates []TemplateItem) (string, error) {
@@ -1214,15 +1274,6 @@ func (app *GatewayApp) pidRunning(pid int) bool {
 	return terminal.ProcessRunning(pid)
 }
 
-func templateListContains(items []TemplateItem, target string) bool {
-	for _, item := range items {
-		if item.Name == target {
-			return true
-		}
-	}
-	return false
-}
-
 func nullableString(value string) any {
 	if value == "" {
 		return nil
@@ -1234,16 +1285,7 @@ func nullableClientID(template string) any {
 	if template == "" {
 		return nil
 	}
-	return template + "-1"
-}
-
-func sortedKeys(values map[string]map[string]any) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return common.GenerateClientID()
 }
 
 func contains(values []string, target string) bool {
@@ -1263,83 +1305,6 @@ func remove(values []string, target string) []string {
 		}
 	}
 	return filtered
-}
-
-func localSecureFilesExist(directory string) bool {
-	for _, name := range secureFiles {
-		if !fileExists(filepath.Join(directory, name)) {
-			return false
-		}
-	}
-	return true
-}
-
-func saveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return err
-	}
-	for filename, content := range files {
-		decoded, err := base64.StdEncoding.DecodeString(content)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(targetDir, filename), decoded, secureFileMode(filename)); err != nil {
-			return err
-		}
-	}
-	if len(privateKey) > 0 {
-		if err := os.WriteFile(filepath.Join(targetDir, "client.key"), privateKey, secureFileMode("client.key")); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func secureFileMode(fileName string) os.FileMode {
-	if strings.HasSuffix(fileName, ".key") {
-		return 0o600
-	}
-	return 0o644
-}
-
-func isSecure(resource map[string]any) bool {
-	if resource == nil {
-		return false
-	}
-	config, _ := resource["config"].(map[string]any)
-	if secure, ok := config["secure"].(bool); ok && secure {
-		return true
-	}
-	if secure, ok := resource["secure"].(bool); ok {
-		return secure
-	}
-	return false
-}
-
-func stringValue(config map[string]any, key string) string {
-	if config == nil {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return value
-}
-
-func nestedString(config map[string]any, keys ...string) string {
-	current := any(config)
-	for _, key := range keys {
-		mapping, ok := current.(map[string]any)
-		if !ok {
-			return ""
-		}
-		current = mapping[key]
-	}
-	value, _ := current.(string)
-	return value
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func fallbackString(value string, fallback string) string {

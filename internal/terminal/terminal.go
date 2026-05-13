@@ -20,6 +20,12 @@ func PlainOutputRequested(out io.Writer) bool {
 }
 
 func PromptFiles(in io.Reader, out io.Writer) (*os.File, *os.File, bool) {
+	if !SupportsPTY() {
+		// On Windows, ConPTY doesn't reliably translate arrow-key escape
+		// sequences (ESC [ A / ESC [ B) in raw mode — Enter works but
+		// navigation is silently swallowed. Use the numbered fallback instead.
+		return nil, nil, false
+	}
 	inputFile, ok := in.(*os.File)
 	if !ok {
 		return nil, nil, false

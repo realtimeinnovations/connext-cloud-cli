@@ -299,7 +299,7 @@ func TestRoutingStateSeedsListeningRoutesFromGatewayXML(t *testing.T) {
 }
 
 func TestDashboardURLUsesTelemetryServicesForObservability(t *testing.T) {
-	if got := DashboardURL("dev-cloud", "luis-secobs-77", "observability"); got != "https://test.cloud.dev-rti.com/dashboard/telemetry-services/luis-secobs-77" {
+	if got := DashboardURL("dev-cloud", "luis-secobs-77", "observability"); got != "https://test.cloud.dev-rti.com/dashboard/observability-services/luis-secobs-77" {
 		t.Fatalf("unexpected URL: %s", got)
 	}
 	if got := DashboardURL("dev-cloud", "alex-test", "databus"); got != "https://test.cloud.dev-rti.com/dashboard/databuses/alex-test" {

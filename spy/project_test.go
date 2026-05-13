@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -122,7 +123,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stringValue(config, "databus") != "inventory" || nestedString(config, "templates", "app") != "app_1" || nestedString(config, "runtime", "connext_home") != install {
+	if stringValue(config, "databus") != "inventory" || common.NestedString(config, "templates", "app") != "app_1" || common.NestedString(config, "runtime", "connext_home") != install {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	output := out.String()
@@ -243,7 +244,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if rc != 0 {
 		t.Fatalf("unexpected rc: %d", rc)
 	}
-	if !fileExists(filepath.Join(tmpDir, ".connext", "spy", "runtime.json")) {
+	if !common.FileExists(filepath.Join(tmpDir, ".connext", "spy", "runtime.json")) {
 		t.Fatal("runtime.json not written")
 	}
 	if !strings.Contains(readFile(t, filepath.Join(tmpDir, ".connext", "spy", "logs", "spy.log")), "New data") {
