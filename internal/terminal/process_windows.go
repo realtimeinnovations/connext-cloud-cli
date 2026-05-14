@@ -2,7 +2,10 @@
 
 package terminal
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // InterruptSignals returns the OS signals that indicate a user interrupt.
 // On Windows, only os.Interrupt (Ctrl+C) is available.
@@ -21,4 +24,13 @@ func ProcessRunning(pid int) bool {
 	}
 	_, err := os.FindProcess(pid)
 	return err == nil
+}
+
+// PrepareCommand wraps cmd in "cmd.exe /c" when the first argument is a .bat
+// file. Windows cannot exec batch scripts directly; cmd.exe must interpret them.
+func PrepareCommand(cmd []string) []string {
+	if len(cmd) == 0 || !strings.HasSuffix(strings.ToLower(cmd[0]), ".bat") {
+		return cmd
+	}
+	return append([]string{"cmd.exe", "/c"}, cmd...)
 }

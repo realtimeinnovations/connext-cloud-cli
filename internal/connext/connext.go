@@ -1,6 +1,7 @@
 package connext
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,19 +30,46 @@ type DiscoveryOptions struct {
 }
 
 const (
-	EnterConnextPathLabel        = "Enter Connext path"
-	DownloadConnextLabel         = "Download Connext Professional"
-	CancelConnextSelectionLabel  = "Cancel"
-	nonStandardDirWarningMessage = "To use an installation in a non-standard directory, export NDDSHOME before."
-	installerVersion             = "7.7.0"
+	EnterConnextPathLabel       = "Enter Connext path"
+	DownloadConnextLabel        = "Download Connext Professional"
+	CancelConnextSelectionLabel = "Cancel"
+	installerVersion            = "7.7.0"
 )
 
+func nonStandardDirWarning() string {
+	if runtime.GOOS == "windows" {
+		return "To use an installation in a non-standard directory, set NDDSHOME before running rticloud."
+	}
+	return "To use an installation in a non-standard directory, export NDDSHOME before."
+}
+
+func nddshomeSetCommand(minVersion string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(
+			"  PowerShell:  $env:NDDSHOME = \"C:\\path\\to\\rti_connext_dds-%s\"\n  cmd.exe:     set NDDSHOME=C:\\path\\to\\rti_connext_dds-%s",
+			minVersion, minVersion)
+	}
+	return fmt.Sprintf("  export NDDSHOME=/path/to/rti_connext_dds-%s", minVersion)
+}
+
+// windowsUserInstallPatterns appends a %USERPROFILE%\rti_connext_dds-* pattern
+// on Windows, where users commonly install without admin rights.
+func windowsUserInstallPatterns(base []string) []string {
+	if runtime.GOOS != "windows" {
+		return base
+	}
+	if profile := os.Getenv("USERPROFILE"); profile != "" {
+		return append(base, filepath.Join(profile, "rti_connext_dds-*"))
+	}
+	return base
+}
+
 var (
-	InstallPatterns = []string{
+	InstallPatterns = windowsUserInstallPatterns([]string{
 		"/Applications/rti_connext_dds-*",
 		"/opt/rti.com/rti_connext_dds-*",
 		`C:\Program Files\rti_connext_dds-*`,
-	}
+	})
 	Glob           = filepath.Glob
 	HTTPGet        = http.Get
 	CurrentWorkDir = os.Getwd
@@ -97,12 +125,20 @@ func VersionFromPath(path string) string {
 	return match[1]
 }
 
-func Executable(path string, executableName string) string {
-	name := executableName
-	if os.PathSeparator == '\\' && !strings.HasSuffix(strings.ToLower(name), ".exe") {
-		name += ".exe"
+func Executable(installPath string, executableName string) string {
+	if os.PathSeparator == '\\' {
+		// On Windows, Connext ships .bat launchers rather than native .exe binaries.
+		// Try .bat first (preferred), then .exe.
+		for _, ext := range []string{".bat", ".exe"} {
+			candidate := filepath.Join(installPath, "bin", executableName+ext)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+		// Neither found — return the .bat path so error messages show a clear expectation.
+		return filepath.Join(installPath, "bin", executableName+".bat")
 	}
-	return filepath.Join(path, "bin", name)
+	return filepath.Join(installPath, "bin", executableName)
 }
 
 func ValidateInstall(path string, options DiscoveryOptions) (Install, error) {
@@ -112,8 +148,9 @@ func ValidateInstall(path string, options DiscoveryOptions) (Install, error) {
 		return Install{}, err
 	}
 	version := VersionFromPath(resolved)
-	if _, err := os.Stat(Executable(resolved, options.ExecutableName)); err != nil {
-		return Install{}, common.UserError{Message: fmt.Sprintf("%s\n\nSet NDDSHOME to your Connext installation and rerun:\n  export NDDSHOME=/path/to/rti_connext_dds-%s\n  rticloud %s", missingInstallTitle(options), options.MinVersion, options.CommandName)}
+	executable := Executable(resolved, options.ExecutableName)
+	if _, err := os.Stat(executable); err != nil {
+		return Install{}, common.UserError{Message: fmt.Sprintf("%s\n\nExpected executable not found:\n  %s\n\nSet NDDSHOME to your Connext installation and rerun:\n%s\n  rticloud %s", missingInstallTitle(options), executable, nddshomeSetCommand(options.MinVersion), options.CommandName)}
 	}
 	if CompareVersion(version, options.MinVersion) < 0 {
 		return Install{}, common.UserError{Message: fmt.Sprintf("Found Connext Pro %s at %s.\nrticloud %s requires Connext Pro %s or newer.", version, resolved, options.CommandName, options.MinVersion)}
@@ -177,11 +214,11 @@ func DiscoverInstallWithPrompt(env map[string]string, prompt bool, selectFunc fu
 }
 
 func missingInstallMessage(options DiscoveryOptions) string {
-	return fmt.Sprintf("%s\n\n%s\n\nSet NDDSHOME to your Connext installation and rerun:\n  export NDDSHOME=/path/to/rti_connext_dds-%s\n  rticloud %s", missingInstallTitle(options), nonStandardDirWarningMessage, options.MinVersion, options.CommandName)
+	return fmt.Sprintf("%s\n\n%s\n\nSet NDDSHOME to your Connext installation and rerun:\n%s\n  rticloud %s", missingInstallTitle(options), nonStandardDirWarning(), nddshomeSetCommand(options.MinVersion), options.CommandName)
 }
 
 func resolveMissingInstall(selectFunc func(message string, choices []string) (string, error), inputFunc func(message string) (string, error), options DiscoveryOptions) (Install, error) {
-	message := fmt.Sprintf("%s\n\n%s\n\nSelect how to continue:", missingInstallTitle(options), nonStandardDirWarningMessage)
+	message := fmt.Sprintf("%s\n\n%s\n\nSelect how to continue:", missingInstallTitle(options), nonStandardDirWarning())
 	for {
 		selected, err := selectFunc(message, []string{EnterConnextPathLabel, DownloadConnextLabel, CancelConnextSelectionLabel})
 		if err != nil {
@@ -192,6 +229,12 @@ func resolveMissingInstall(selectFunc func(message string, choices []string) (st
 			install, err := promptForInstallPath(inputFunc, options)
 			if err == nil {
 				return install, nil
+			}
+			var userErr common.UserError
+			if errors.As(err, &userErr) {
+				// Validation failed — go back to the selection menu with the error shown.
+				message = fmt.Sprintf("%s\n\nSelect how to continue:", userErr.Message)
+				continue
 			}
 			return Install{}, err
 		case DownloadConnextLabel:
@@ -213,22 +256,16 @@ func missingInstallTitle(options DiscoveryOptions) string {
 }
 
 func promptForInstallPath(inputFunc func(message string) (string, error), options DiscoveryOptions) (Install, error) {
-	message := "Enter Connext installation path"
 	for {
-		value, err := inputFunc(message)
+		value, err := inputFunc("Enter Connext installation path")
 		if err != nil {
 			return Install{}, err
 		}
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
-			message = "Path cannot be empty.\n\nEnter Connext installation path"
 			continue
 		}
-		install, err := ValidateInstall(trimmed, options)
-		if err == nil {
-			return install, nil
-		}
-		message = err.Error() + "\n\nEnter Connext installation path"
+		return ValidateInstall(trimmed, options)
 	}
 }
 

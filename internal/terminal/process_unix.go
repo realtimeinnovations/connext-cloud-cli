@@ -24,3 +24,6 @@ func ProcessRunning(pid int) bool {
 	}
 	return syscall.Kill(pid, 0) == nil
 }
+
+// PrepareCommand is a no-op on Unix
+func PrepareCommand(cmd []string) []string { return cmd }

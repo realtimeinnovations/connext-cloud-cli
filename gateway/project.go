@@ -479,7 +479,8 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		return 0, err
 	}
 	defer logFile.Close()
-	cmd := exec.CommandContext(context.Background(), command[0], command[1:]...)
+	wrapped := terminal.PrepareCommand(command)
+	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.RoutingDir()
 	cmd.Env = mergeEnv(os.Environ(), app.routingEnv()...)
 	stdout, stderr, err := startRoutingProcess(cmd)
