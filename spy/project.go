@@ -33,7 +33,6 @@ const (
 	spyLiveRefreshInterval = 250 * time.Millisecond
 )
 
-
 type UserError = common.UserError
 type ConnextInstall = connext.Install
 type TemplateItem = common.TemplateItem
@@ -390,7 +389,8 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		return 0, err
 	}
 	defer logFile.Close()
-	cmd := exec.CommandContext(context.Background(), command[0], command[1:]...)
+	wrapped := terminal.PrepareCommand(command)
+	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
 	cmd.Env = mergeEnv(os.Environ(), app.spyEnv()...)
 	stdout, stderr, err := terminal.StartProcess(cmd)

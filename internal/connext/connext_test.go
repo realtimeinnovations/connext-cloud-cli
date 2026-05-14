@@ -15,7 +15,7 @@ func TestDiscoverInstallIncludesNonStandardDirWarningWhenNotFound(t *testing.T) 
 	t.Cleanup(func() { InstallPatterns = previousPatterns })
 
 	_, err := DiscoverInstallWithPrompt(map[string]string{}, false, nil, nil, DiscoveryOptions{MinVersion: "7.7.0", ExecutableName: "rtiddsspy", CommandName: "spy"})
-	if err == nil || !strings.Contains(err.Error(), nonStandardDirWarningMessage) {
+	if err == nil || !strings.Contains(err.Error(), nonStandardDirWarning()) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
