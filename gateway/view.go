@@ -112,6 +112,25 @@ func (view *RoutingLiveView) PrintSnapshot(routingStatus string) RenderedView {
 }
 
 func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
+	if !HasDatabus(view.Config) {
+		// Observability-only: data row is not configured; suppress routing panels.
+		collectorStatus := view.collectorLiveStatus()
+		header := GatewayLiveHeader(view.Config, "not configured", 0, pulseFrame)
+		resource := GatewayLiveResources(view.Config, collectorStatus)
+		if HasObservability(view.Config) {
+			if view.CollectorSecure {
+				resource.Warning = "secure"
+			} else {
+				resource.Warning = "not secure"
+			}
+		}
+		return RenderedView{
+			Title:    GatewayPanelTitle(),
+			Header:   header,
+			Resource: resource,
+			Border:   tui.RTIOrange,
+		}
+	}
 	topicRows := VisibleTopicRows(view.State.TopicRows())
 	activeRoutes := 0
 	for _, row := range topicRows {
@@ -295,6 +314,9 @@ func duplexRouteArrows(frame int) string {
 
 func RoutingSummaryChip(status string, routedTopicCount int, pulseFrame int) string {
 	shortStatus := shortGatewayStatus(status)
+	if shortStatus == "not configured" {
+		return "[dim]◌ not configured[/dim]"
+	}
 	if shortStatus == "waiting topics" {
 		return fmt.Sprintf("[%s]○ waiting topics[/]", tui.RTIBlue)
 	}
@@ -319,8 +341,6 @@ func collectorSummaryChip(status string) string {
 		return "[dim]◌ stopped[/dim]"
 	case "not configured":
 		return "[dim]◌ not configured[/dim]"
-	case "docker unavailable":
-		return "[yellow]◌ docker unavailable[/yellow]"
 	default:
 		return fmt.Sprintf("[yellow]◌ %s[/yellow]", status)
 	}

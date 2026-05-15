@@ -68,6 +68,10 @@ func RoutingExecutable(path string) string {
 	return connext.Executable(path, "rtiroutingservice")
 }
 
+func CollectorExecutable(path string) string {
+	return connext.Executable(path, "rticollectorservicelite")
+}
+
 func ValidateConnextInstall(path string) (ConnextInstall, error) {
 	return connext.ValidateInstall(path, connextOptions())
 }
@@ -80,6 +84,18 @@ func DiscoverConnextInstallWithPrompt(env map[string]string, prompt bool, select
 	return connext.DiscoverInstallWithPrompt(env, prompt, selectFunc, inputFunc, connextOptions())
 }
 
+func ValidateCollectorInstall(path string) (ConnextInstall, error) {
+	return connext.ValidateInstall(path, collectorInstallOptions())
+}
+
+func DiscoverCollectorInstall(env map[string]string) (ConnextInstall, error) {
+	return connext.DiscoverInstall(env, collectorInstallOptions())
+}
+
 func connextOptions() connext.DiscoveryOptions {
 	return connext.DiscoveryOptions{MinVersion: MinConnextVersion, ExecutableName: "rtiroutingservice", CommandName: "gateway"}
+}
+
+func collectorInstallOptions() connext.DiscoveryOptions {
+	return connext.DiscoveryOptions{MinVersion: MinConnextVersion, ExecutableName: "rticollectorservicelite", CommandName: "gateway"}
 }

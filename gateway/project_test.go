@@ -435,58 +435,41 @@ func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
 	}
 }
 
-func TestStartCollectorReusesRunningContainer(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	app.DockerAvailableFunc = func() bool { return true }
-	app.RunDockerFunc = func(args []string, check bool) (string, error) { return "", nil }
-	app.CollectorStateFunc = func(name string) (string, string, error) { return "running", "", nil }
-	config := map[string]any{"databus": "Inventory Demo", "templates": map[string]any{"collector": "collector"}}
-	name, err := app.StartCollectorContainer(config, ConnextInstall{Path: filepath.Join(tmpDir, "rti_connext_dds-7.7.0"), Version: "7.7.0"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if name != "rti-cloud-gateway-collector-inventory-demo" || !strings.Contains(out.String(), "already running") {
-		t.Fatalf("unexpected result: %s %s", name, out.String())
-	}
-}
-
-func TestStartCollectorRemovesStoppedContainerAndMountsSecureDir(t *testing.T) {
+func TestStartCollectorLaunchesProcess(t *testing.T) {
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(collectorDir, "collector.xml"), []byte("<xml/>"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(collectorDir, "coll1.xml"), []byte("<collector/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(collectorDir, "rti_license.dat"), []byte("license"), 0o644); err != nil {
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(binDir, "rticollectorservicelite")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
-	app.DockerAvailableFunc = func() bool { return true }
-	calls := make([][]string, 0)
-	app.RunDockerFunc = func(args []string, check bool) (string, error) {
-		copyArgs := append([]string(nil), args...)
-		calls = append(calls, copyArgs)
-		return "", nil
-	}
-	app.CollectorStateFunc = func(name string) (string, string, error) { return "exited", "1", nil }
-	config := map[string]any{"databus": "db", "templates": map[string]any{"collector": "collector"}}
-	if _, err := app.StartCollectorContainer(config, ConnextInstall{Path: filepath.Join(tmpDir, "rti_connext_dds-7.7.0"), Version: "7.7.0"}, true); err != nil {
+	config := map[string]any{"observability": "obs", "templates": map[string]any{"collector": "coll1"}}
+	cmd, err := app.StartCollector(config, ConnextInstall{Path: install, Version: "7.7.0"}, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[0][0] != "rm" || calls[0][1] != "rti-cloud-gateway-collector-db" {
-		t.Fatalf("unexpected rm call: %#v", calls)
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid == 0 {
+		t.Fatal("expected a running process")
 	}
-	runArgs := calls[1]
-	if runArgs[0] != "run" || runArgs[1] != "--platform" || runArgs[len(runArgs)-1] != CollectorImage {
-		t.Fatalf("unexpected run args: %#v", runArgs)
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+	if !strings.Contains(out.String(), "Collector Service started") {
+		t.Fatalf("unexpected output: %s", out.String())
 	}
-	if !containsArg(runArgs, "CFG_NAME=collector") || !containsArgSubstring(runArgs, "collector/secure:/home/rtiuser") {
-		t.Fatalf("missing collector args: %#v", runArgs)
+	if !common.FileExists(filepath.Join(tmpDir, ".connext", "gateway", "logs", CollectorLogName)) {
+		t.Fatalf("collector log not created")
 	}
 }
 
@@ -511,7 +494,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
-	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, "collector", false, false)
+	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, 0, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +542,7 @@ echo "LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_sessio
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
-	rc, err := app.RunRoutingServiceWithOptions(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, "", true, true, RunOptions{TextOutput: true})
+	rc, err := app.RunRoutingServiceWithOptions(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, 0, true, true, RunOptions{TextOutput: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +586,7 @@ func TestRunRoutingServiceInterruptRendersStoppedScreen(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		interrupts <- os.Interrupt
 	}()
-	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, "collector", false, false)
+	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, 0, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,22 +721,4 @@ func readBytes(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func containsArg(args []string, target string) bool {
-	for _, arg := range args {
-		if arg == target {
-			return true
-		}
-	}
-	return false
-}
-
-func containsArgSubstring(args []string, target string) bool {
-	for _, arg := range args {
-		if strings.Contains(arg, target) {
-			return true
-		}
-	}
-	return false
 }

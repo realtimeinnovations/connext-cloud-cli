@@ -173,10 +173,10 @@ func (runtime *Runtime) RunGateway(format string) error {
 	if err != nil {
 		return err
 	}
+	runtimeConfig, _ := configValues["runtime"].(map[string]any)
+	connextHome, _ := runtimeConfig["connext_home"].(string)
 	var connext gateway.ConnextInstall
 	if gateway.HasDatabus(configValues) {
-		runtimeConfig, _ := configValues["runtime"].(map[string]any)
-		connextHome, _ := runtimeConfig["connext_home"].(string)
 		if connextHome != "" {
 			connext, err = gateway.ValidateConnextInstall(connextHome)
 		} else {
@@ -186,22 +186,37 @@ func (runtime *Runtime) RunGateway(format string) error {
 			return err
 		}
 		_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
+		// Start the collector as a background process alongside the routing service.
+		collectorPID := 0
+		if gateway.HasObservability(configValues) {
+			collectorCmd, startErr := runtime.Gateway.StartCollector(configValues, connext, collectorSecure)
+			if startErr != nil {
+				return startErr
+			}
+			collectorPID = collectorCmd.Process.Pid
+			defer func() {
+				if collectorCmd.Process != nil {
+					_ = collectorCmd.Process.Kill()
+				}
+			}()
+		}
+		_, err = runtime.Gateway.RunRoutingServiceWithOptions(configValues, connext, collectorPID, databusSecure, collectorSecure, gateway.RunOptions{TextOutput: runtime.liveTextOutput(format)})
+		return err
 	}
-	collectorName := ""
+	// Observability-only: discover Connext for rticollectorservicelite and run it in the foreground.
 	if gateway.HasObservability(configValues) {
-		collectorName, err = runtime.Gateway.StartCollectorContainer(configValues, connext, collectorSecure)
+		if connextHome != "" {
+			connext, err = gateway.ValidateCollectorInstall(connextHome)
+		} else {
+			connext, err = gateway.DiscoverCollectorInstall(nil)
+		}
 		if err != nil {
 			return err
 		}
-	}
-	if gateway.HasDatabus(configValues) {
-		_, err = runtime.Gateway.RunRoutingServiceWithOptions(configValues, connext, collectorName, databusSecure, collectorSecure, gateway.RunOptions{TextOutput: runtime.liveTextOutput(format)})
+		_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
+		_, err = runtime.Gateway.RunCollectorServiceWithOptions(configValues, connext, collectorSecure, gateway.RunOptions{TextOutput: runtime.liveTextOutput(format)})
 		return err
 	}
-	if err := runtime.Gateway.WriteRuntimeState(map[string]any{"routing_pid": nil, "started_at": runtime.Gateway.Now().UTC().Format("2006-01-02T15:04:05Z"), "collector_container": collectorName}); err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintln(runtime.Out, "Gateway observability forwarding is running.")
 	return nil
 }
 
