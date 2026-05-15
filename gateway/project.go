@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,7 +21,7 @@ import (
 )
 
 const (
-	CollectorImage             = "rticom/collector-service:7.7.0"
+	CollectorLogName           = "collector.log"
 	CreateNewTemplate          = "__create_new_template__"
 	CreateNewTemplateLabel     = "Create new template..."
 	ReloadTemplateListLabel    = "Reload template list"
@@ -46,10 +45,7 @@ type GatewayApp struct {
 	DiscoverConnextInstallFn func(prompt bool) (ConnextInstall, error)
 	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
 	CreateApplicationFunc    func(databusName string, kind string, clientName string) error
-	DockerAvailableFunc      func() bool
-	RunDockerFunc            func(args []string, check bool) (string, error)
 	DownloadArtifactsFunc    func(config map[string]any, force bool) error
-	CollectorStateFunc       func(name string) (string, string, error)
 	PIDRunningFunc           func(pid int) bool
 	SelectFunc               func(message string, choices []string) (string, error)
 	InputFunc                func(message string) (string, error)
@@ -72,18 +68,6 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 		In:      os.Stdin,
 		Out:     out,
 		Now:     time.Now,
-		DockerAvailableFunc: func() bool {
-			_, err := exec.LookPath("docker")
-			return err == nil
-		},
-		RunDockerFunc: func(args []string, check bool) (string, error) {
-			command := exec.Command("docker", args...)
-			output, err := command.CombinedOutput()
-			if err != nil && check {
-				return string(output), err
-			}
-			return string(output), nil
-		},
 		OpenBrowserFunc: func(url string) error {
 			var command *exec.Cmd
 			switch runtime.GOOS {
@@ -354,106 +338,255 @@ func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName
 	return nil
 }
 
-func CollectorContainerName(config map[string]any) string {
-	return fmt.Sprintf("rti-cloud-gateway-collector-%s", ProjectID(config))
+func (app *GatewayApp) CollectorLogPath() string {
+	return filepath.Join(app.LogsDir(), CollectorLogName)
 }
 
-func (app *GatewayApp) CollectorState(name string) (string, string, error) {
-	if app.CollectorStateFunc != nil {
-		return app.CollectorStateFunc(name)
+func (app *GatewayApp) collectorEnv(collectorSecure bool) []string {
+	if !collectorSecure {
+		return nil
 	}
-	if !app.DockerAvailableFunc() {
-		return "unavailable", "", nil
+	privateKeyPath := filepath.Join(app.CollectorDir(), "secure", "client.key")
+	if common.FileExists(privateKeyPath) {
+		return []string{"RTI_PRIVATE_KEY_FILE=" + privateKeyPath}
 	}
-	output, err := app.RunDockerFunc([]string{"ps", "-a", "--filter", fmt.Sprintf("name=^%s$", name), "--format", "{{.Status}}"}, false)
-	if err != nil {
-		return "unavailable", "", nil
-	}
-	status := strings.TrimSpace(output)
-	if status == "" {
-		return "missing", "", nil
-	}
-	if strings.HasPrefix(strings.ToLower(status), "up") {
-		return "running", "", nil
-	}
-	match := regexp.MustCompile(`exited \((\d+)\)`).FindStringSubmatch(strings.ToLower(status))
-	if match != nil {
-		return "exited", match[1], nil
-	}
-	return "exited", "", nil
+	return nil
 }
 
-func (app *GatewayApp) StartCollectorContainer(config map[string]any, connext ConnextInstall, secure bool) (string, error) {
-	if !app.DockerAvailableFunc() {
-		return "", GatewayError{Message: "Docker is required to run the Collector Service in this version.\n\nInstall/start Docker, then rerun:\n  rticloud gateway"}
-	}
-	name := CollectorContainerName(config)
-	state, _, err := app.CollectorState(name)
-	if err != nil {
-		return "", err
-	}
-	if state == "running" {
-		_, _ = fmt.Fprintf(app.Out, "Collector container already running: %s\n", name)
-		return name, nil
-	}
-	if state == "exited" {
-		if _, err := app.RunDockerFunc([]string{"rm", name}, true); err != nil {
-			return "", err
-		}
-	}
+// StartCollector launches rticollectorservicelite as a background subprocess.
+// The caller is responsible for stopping the returned process (e.g. via Kill
+// or SendInterrupt) when it is no longer needed.
+func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInstall, collectorSecure bool) (*exec.Cmd, error) {
 	collectorTemplate := common.NestedString(config, "templates", "collector")
 	if collectorTemplate == "" {
-		return "", GatewayError{Message: "No Observability collector template is configured for this gateway."}
+		return nil, GatewayError{Message: "No Observability collector template is configured for this gateway."}
 	}
-	collectorXML := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
-	licenseFile, err := app.licenseFile(connext)
+	collectorExe := CollectorExecutable(connext.Path)
+	if _, err := os.Stat(collectorExe); err != nil {
+		return nil, GatewayError{Message: fmt.Sprintf("rticollectorservicelite not found at %s.\n\nSet NDDSHOME to your Connext installation and rerun:\n  rticloud gateway", collectorExe)}
+	}
+	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
+	command := []string{
+		CollectorExecutable(connext.Path),
+		"-cfgFile", xmlPath,
+		"-cfgName", collectorTemplate,
+	}
+	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+		return nil, err
+	}
+	logFile, err := os.OpenFile(app.CollectorLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	args := []string{
-		"run", "--platform", "linux/amd64", "-dt", "--network", "host",
-		"-v", fmt.Sprintf("%s:/opt/rti.com/rti_connext_dds-7.7.0/rti_license.dat", licenseFile),
-		"-v", fmt.Sprintf("%s:/opt/rti.com/EDGE_QOS/EDGE_COLLECTOR_SERVICE_QOS.xml", collectorXML),
-		"-e", "RTI_LICENSE_FILE=/opt/rti.com/rti_connext_dds-7.7.0/rti_license.dat",
-		"-e", "CFG_FILE=/opt/rti.com/EDGE_QOS/EDGE_COLLECTOR_SERVICE_QOS.xml",
-		"-e", "CFG_NAME=" + collectorTemplate,
-		"--name", name,
+	wrapped := terminal.PrepareCommand(command)
+	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	cmd.Dir = app.CollectorDir()
+	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return nil, GatewayError{Message: fmt.Sprintf("Failed to start Collector Service: %v", err)}
 	}
-	if secure {
-		args = append(args, "-v", fmt.Sprintf("%s:/home/rtiuser/rti_workspace/7.7.0/user_config/collector_service/secure", filepath.Join(app.CollectorDir(), "secure")))
-	}
-	args = append(args, CollectorImage)
-	if _, err := app.RunDockerFunc(args, true); err != nil {
-		return "", err
-	}
-	_, _ = fmt.Fprintf(app.Out, "Collector container started: %s\n", name)
-	return name, nil
+	go func() {
+		_ = cmd.Wait()
+		logFile.Close()
+	}()
+	_, _ = fmt.Fprintf(app.Out, "Collector Service started (pid %d)\n", cmd.Process.Pid)
+	return cmd, nil
 }
 
-func (app *GatewayApp) licenseFile(connext ConnextInstall) (string, error) {
-	for _, envName := range []string{"RTI_LICENSE_FILE", "NDDS_LICENSE_FILE"} {
-		if value := os.Getenv(envName); value != "" && common.FileExists(value) {
-			return value, nil
+// RunCollectorService runs rticollectorservicelite in the foreground, blocking
+// until the process exits or is interrupted.
+func (app *GatewayApp) RunCollectorService(config map[string]any, connext ConnextInstall, collectorSecure bool) (int, error) {
+	return app.RunCollectorServiceWithOptions(config, connext, collectorSecure, RunOptions{})
+}
+
+func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, connext ConnextInstall, collectorSecure bool, options RunOptions) (int, error) {
+	collectorTemplate := common.NestedString(config, "templates", "collector")
+	if collectorTemplate == "" {
+		return 0, GatewayError{Message: "No Observability collector template is configured for this gateway."}
+	}
+	collectorExe := CollectorExecutable(connext.Path)
+	if _, err := os.Stat(collectorExe); err != nil {
+		return 0, GatewayError{Message: fmt.Sprintf("rticollectorservicelite not found at %s.\n\nSet NDDSHOME to your Connext installation and rerun:\n  rticloud gateway", collectorExe)}
+	}
+	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
+	command := []string{
+		collectorExe,
+		"-cfgFile", xmlPath,
+		"-cfgName", collectorTemplate,
+	}
+	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+		return 0, err
+	}
+	logFile, err := os.OpenFile(app.CollectorLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer logFile.Close()
+	liveView := NewRoutingLiveView(config)
+	liveView.CollectorStatus = "running"
+	liveView.CollectorSecure = collectorSecure
+	renderer := TerminalRenderer{Out: app.Out}
+	wrapped := terminal.PrepareCommand(command)
+	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
+	cmd.Dir = app.CollectorDir()
+	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
+	stdout, stderr, err := terminal.StartProcess(cmd)
+	if err != nil {
+		return 0, err
+	}
+	defer closeIfNotNil(stdout)
+	defer closeIfNotNil(stderr)
+	if err := app.WriteRuntimeState(map[string]any{
+		"collector_pid": cmd.Process.Pid,
+		"started_at":    app.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		return 0, err
+	}
+	collectorLines := make(chan string, 128)
+	var streamWG sync.WaitGroup
+	stream := func(reader io.Reader) {
+		defer streamWG.Done()
+		if reader == nil {
+			return
+		}
+		buf := make([]byte, 4096)
+		pending := ""
+		flushPending := func(force bool) {
+			pending = strings.ReplaceAll(pending, "\r\n", "\n")
+			pending = strings.ReplaceAll(pending, "\r", "\n")
+			for {
+				idx := strings.IndexByte(pending, '\n')
+				if idx < 0 {
+					break
+				}
+				collectorLines <- pending[:idx]
+				pending = pending[idx+1:]
+			}
+			if force && pending != "" {
+				collectorLines <- pending
+				pending = ""
+			}
+		}
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				text := string(buf[:n])
+				_, _ = fmt.Fprintf(logFile, "%s [collector] %s", app.Now().UTC().Format(time.RFC3339), text)
+				pending += text
+				flushPending(false)
+			}
+			if readErr != nil {
+				flushPending(true)
+				return
+			}
 		}
 	}
-	local := filepath.Join(app.CollectorDir(), "rti_license.dat")
-	if common.FileExists(local) {
-		return local, nil
+	streamWG.Add(1)
+	go stream(stdout)
+	if stderr != nil {
+		streamWG.Add(1)
+		go stream(stderr)
 	}
-	if connext.Path != "" {
-		candidate := filepath.Join(connext.Path, "rti_license.dat")
-		if common.FileExists(candidate) {
-			return candidate, nil
+	go func() {
+		streamWG.Wait()
+		close(collectorLines)
+	}()
+	interrupts, stopInterrupts := app.interruptSignals()
+	defer stopInterrupts()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	if !options.TextOutput {
+		_ = renderer.Render(liveView.Render(liveView.PulseFrame()))
+	}
+	renderTicker := time.NewTicker(routingRenderPollInterval)
+	defer renderTicker.Stop()
+	var killTimer *time.Timer
+	interrupted := false
+	processExited := false
+	lastPulseFrame := liveView.PulseFrame()
+	var exitErr error
+	for {
+		select {
+		case exitErr = <-waitDone:
+			waitDone = nil
+			processExited = true
+			liveView.CollectorStatus = "stopped"
+			if collectorLines == nil {
+				goto done
+			}
+		case line, ok := <-collectorLines:
+			if !ok {
+				collectorLines = nil
+				if processExited {
+					goto done
+				}
+				continue
+			}
+			if options.TextOutput && strings.TrimSpace(line) != "" {
+				_, _ = fmt.Fprintln(app.Out, line)
+			}
+		case <-renderTicker.C:
+			if !options.TextOutput {
+				now := app.Now()
+				currentPulseFrame := liveView.PulseFrame(float64(now.UnixNano()) / float64(time.Second))
+				if currentPulseFrame != lastPulseFrame {
+					lastPulseFrame = currentPulseFrame
+					_ = renderer.Render(liveView.Render(currentPulseFrame))
+				}
+			}
+		case <-interrupts:
+			if interrupted {
+				continue
+			}
+			interrupted = true
+			liveView.CollectorStatus = "stopping"
+			if cmd.Process != nil {
+				terminal.SendInterrupt(cmd.Process)
+				killTimer = time.AfterFunc(2*time.Second, func() {
+					_ = cmd.Process.Kill()
+				})
+			}
 		}
 	}
-	return "", GatewayError{Message: "An RTI license is required to run the Collector Service.\n\nSet RTI_LICENSE_FILE to a valid license file, then rerun:\n  rticloud gateway"}
+done:
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+	if !options.TextOutput {
+		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
+	}
+	if exitErr != nil {
+		if exitErr, ok := exitErr.(*exec.ExitError); ok {
+			if interrupted {
+				_, _ = fmt.Fprintf(app.Out, "Collector interrupted.\n")
+			} else {
+				_, _ = fmt.Fprintf(app.Out, "Collector stopped.\n")
+			}
+			app.printGatewayRestartHint()
+			if interrupted {
+				return 130, nil
+			}
+			return exitErr.ExitCode(), nil
+		}
+		return 0, exitErr
+	}
+	if interrupted {
+		_, _ = fmt.Fprintf(app.Out, "Collector interrupted.\n")
+	} else {
+		_, _ = fmt.Fprintf(app.Out, "Collector stopped.\n")
+	}
+	app.printGatewayRestartHint()
+	return 0, nil
 }
 
-func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextInstall, collectorName string, databusSecure bool, collectorSecure bool) (int, error) {
-	return app.RunRoutingServiceWithOptions(config, connext, collectorName, databusSecure, collectorSecure, RunOptions{})
+func (app *GatewayApp) RunRoutingService(config map[string]any, connext ConnextInstall, collectorPID int, databusSecure bool, collectorSecure bool) (int, error) {
+	return app.RunRoutingServiceWithOptions(config, connext, collectorPID, databusSecure, collectorSecure, RunOptions{})
 }
 
-func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, connext ConnextInstall, collectorName string, databusSecure bool, collectorSecure bool, options RunOptions) (int, error) {
+func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, connext ConnextInstall, collectorPID int, databusSecure bool, collectorSecure bool, options RunOptions) (int, error) {
 	gatewayTemplate := common.NestedString(config, "templates", "gateway")
 	if gatewayTemplate == "" {
 		return 0, GatewayError{Message: "No Databus gateway template is configured for this gateway."}
@@ -469,10 +602,18 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		return 0, err
 	}
 	liveView := NewRoutingLiveView(config)
-	liveView.CollectorName = collectorName
+	liveView.CollectorName = common.NestedString(config, "templates", "collector")
 	liveView.DatabusSecure = databusSecure
 	liveView.CollectorSecure = collectorSecure
 	liveView.SeedFromConfig(xmlPath)
+	if collectorPID > 0 {
+		liveView.CollectorStatusFunc = func(config map[string]any, name string) string {
+			if app.pidRunning(collectorPID) {
+				return "running"
+			}
+			return "stopped"
+		}
+	}
 	renderer := TerminalRenderer{Out: app.Out}
 	logFile, err := os.OpenFile(app.RoutingLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -490,9 +631,9 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	defer closeIfNotNil(stdout)
 	defer closeIfNotNil(stderr)
 	if err := app.WriteRuntimeState(map[string]any{
-		"routing_pid":         cmd.Process.Pid,
-		"started_at":          app.Now().UTC().Format(time.RFC3339),
-		"collector_container": collectorName,
+		"routing_pid":   cmd.Process.Pid,
+		"started_at":    app.Now().UTC().Format(time.RFC3339),
+		"collector_pid": collectorPID,
 	}); err != nil {
 		return 0, err
 	}
@@ -760,10 +901,7 @@ func (app *GatewayApp) Status() error {
 	}
 	app.PrintConfigSummary(config)
 	pid := intFromAny(runtimeState["routing_pid"])
-	collectorName, _ := runtimeState["collector_container"].(string)
-	if collectorName == "" {
-		collectorName = CollectorContainerName(config)
-	}
+	collectorPID := intFromAny(runtimeState["collector_pid"])
 	routing := "stopped"
 	if !HasDatabus(config) {
 		routing = "not configured"
@@ -774,18 +912,11 @@ func (app *GatewayApp) Status() error {
 	}
 	collector := "not configured"
 	if HasObservability(config) {
-		state, code, _ := app.CollectorState(collectorName)
-		switch state {
-		case "running":
-			collector = fmt.Sprintf("running (%s)", collectorName)
-		case "exited":
-			if code == "" {
-				code = "unknown"
-			}
-			collector = fmt.Sprintf("exited (code %s)", code)
-		case "unavailable":
-			collector = "unknown (Docker unavailable)"
-		default:
+		if collectorPID > 0 && app.pidRunning(collectorPID) {
+			collector = fmt.Sprintf("running (pid %d)", collectorPID)
+		} else if collectorPID > 0 {
+			collector = fmt.Sprintf("stopped (stale pid %d)", collectorPID)
+		} else {
 			collector = "stopped"
 		}
 	}
