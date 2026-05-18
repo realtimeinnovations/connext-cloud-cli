@@ -1239,7 +1239,7 @@ func (app *GatewayApp) selectCollectorOrCreate(obsName, selectMsg string, templa
 	if selected != createNewCollector {
 		return selected, nil
 	}
-	name, err := app.InputFunc("Collector name:")
+	name, err := app.InputFunc("Collector name")
 	if err != nil {
 		return "", err
 	}

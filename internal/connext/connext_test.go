@@ -46,6 +46,42 @@ func TestDiscoverInstallWithPromptAllowsEnteringCustomPath(t *testing.T) {
 	}
 }
 
+func TestDiscoverInstallWithPromptAppendsCustomPathAfterDetectedInstalls(t *testing.T) {
+	tmpDir := t.TempDir()
+	defaultInstall := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	customInstall := filepath.Join(tmpDir, "custom", "rti_connext_dds-7.8.0")
+	for _, install := range []string{defaultInstall, customInstall} {
+		if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(install, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previousPatterns := append([]string(nil), InstallPatterns...)
+	InstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
+	t.Cleanup(func() { InstallPatterns = previousPatterns })
+
+	var gotChoices []string
+	result, err := DiscoverInstallWithPrompt(map[string]string{}, true,
+		func(message string, choices []string) (string, error) {
+			gotChoices = append([]string(nil), choices...)
+			return EnterConnextPathLabel, nil
+		},
+		func(message string) (string, error) { return customInstall, nil },
+		DiscoveryOptions{MinVersion: "7.3.0", ExecutableName: "rtiroutingservice", CommandName: "gateway"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotChoices) != 2 || gotChoices[0] != defaultInstall || gotChoices[1] != EnterConnextPathLabel {
+		t.Fatalf("unexpected choices: %#v", gotChoices)
+	}
+	if result.Path != customInstall {
+		t.Fatalf("unexpected install: %#v", result)
+	}
+}
+
 func TestDiscoverInstallWithPromptDownloadsInstaller(t *testing.T) {
 	tmpDir := t.TempDir()
 	previousPatterns := append([]string(nil), InstallPatterns...)

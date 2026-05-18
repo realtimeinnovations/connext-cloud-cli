@@ -194,23 +194,42 @@ func DiscoverInstallWithPrompt(env map[string]string, prompt bool, selectFunc fu
 		}
 		return Install{}, common.UserError{Message: missingInstallMessage(options)}
 	}
-	if len(candidates) == 1 {
-		candidates[0].Reason = "only compatible installation found"
-		return candidates[0], nil
-	}
 	if !prompt || selectFunc == nil {
+		if len(candidates) == 1 {
+			candidates[0].Reason = "only compatible installation found"
+			return candidates[0], nil
+		}
 		candidates[0].Reason = "highest version automatically selected"
 		return candidates[0], nil
 	}
-	choices := make([]string, 0, len(candidates))
+	message := "Select Connext installation:"
+	choices := make([]string, 0, len(candidates)+1)
 	for _, candidate := range candidates {
 		choices = append(choices, candidate.Path)
 	}
-	selected, err := selectFunc("Select Connext installation:", choices)
-	if err != nil {
-		return Install{}, err
+	choices = append(choices, EnterConnextPathLabel)
+	for {
+		selected, err := selectFunc(message, choices)
+		if err != nil {
+			return Install{}, err
+		}
+		if selected == EnterConnextPathLabel {
+			if inputFunc == nil {
+				return Install{}, common.UserError{Message: "Connext path entry is not configured."}
+			}
+			install, err := promptForInstallPath(inputFunc, options)
+			if err == nil {
+				return install, nil
+			}
+			var userErr common.UserError
+			if errors.As(err, &userErr) {
+				message = fmt.Sprintf("%s\n\nSelect Connext installation:", userErr.Message)
+				continue
+			}
+			return Install{}, err
+		}
+		return ValidateInstall(selected, options)
 	}
-	return ValidateInstall(selected, options)
 }
 
 func missingInstallMessage(options DiscoveryOptions) string {
