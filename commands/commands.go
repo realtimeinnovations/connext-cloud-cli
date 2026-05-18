@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ const (
 type API interface {
 	Get(path string) (*http.Response, error)
 	Post(path string, payload any) (*http.Response, error)
+	PostWithBearerToken(path string, payload any, bearerToken string) (*http.Response, error)
 	Patch(path string, payload any) (*http.Response, error)
 	Delete(path string) (*http.Response, error)
 }
@@ -710,5 +713,361 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
+	return nil
+}
+
+// ── Edge System Management ───────────────────────────────────────────────────
+
+func (runner *Runner) ListEdgeSystems() error {
+	response, err := runner.API.Get("/edge-systems")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) CreateEdgeSystem(name string, governanceXML string, description string) error {
+	payload := map[string]any{"name": name, "governanceXml": governanceXML}
+	if description != "" {
+		payload["description"] = description
+	}
+	response, err := runner.API.Post("/edge-systems", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusAccepted {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) QueryEdgeSystem(name string) error {
+	response, err := runner.API.Get("/edge-systems/" + name)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		var payload any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return err
+		}
+		formatted, _ := json.MarshalIndent(payload, "", "  ")
+		_, _ = fmt.Fprintln(runner.Out, string(formatted))
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+func (runner *Runner) DeleteEdgeSystem(name string) error {
+	response, err := runner.API.Delete("/edge-systems/" + name)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "EdgeSystem '%s' deleted successfully.\n", name)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Edge Participants ────────────────────────────────────────────────────────
+
+func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissionsXML string, effectiveRevocationSeconds int) error {
+	payload := map[string]any{
+		"name":                       name,
+		"permissionsXml":             permissionsXML,
+		"effectiveRevocationSeconds": effectiveRevocationSeconds,
+	}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participants", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusCreated {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListParticipants(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) QueryParticipant(edgeSystem string, participantID string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		var payload any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return err
+		}
+		formatted, _ := json.MarshalIndent(payload, "", "  ")
+		_, _ = fmt.Fprintln(runner.Out, string(formatted))
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+func (runner *Runner) DeleteParticipant(edgeSystem string, participantID string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Participant '%s' deleted from EdgeSystem '%s'.\n", participantID, edgeSystem)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Edge Campaigns ───────────────────────────────────────────────────────────
+
+func parseDevicesFromCSV(data []byte) ([]any, error) {
+	r := csv.NewReader(bytes.NewReader(data))
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	devices := make([]any, 0, len(records))
+	for _, record := range records {
+		if len(record) < 2 {
+			return nil, fmt.Errorf("invalid CSV row: expected at least 2 fields (serial, macs), got %d", len(record))
+		}
+		device := map[string]any{
+			"serial": record[0],
+			"macs":   strings.Split(record[1], ","),
+		}
+		if len(record) >= 3 && record[2] != "" {
+			device["name"] = record[2]
+		}
+		devices = append(devices, device)
+	}
+	return devices, nil
+}
+
+func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, devicesFile string) error {
+	data, err := runner.ReadFile(devicesFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading devices file: %v\n", err)
+		return nil
+	}
+	var devices []any
+	if strings.HasSuffix(strings.ToLower(devicesFile), ".csv") {
+		devices, err = parseDevicesFromCSV(data)
+		if err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid CSV in file '%s': %v\n", devicesFile, err)
+			return nil
+		}
+	} else {
+		if err := json.Unmarshal(data, &devices); err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid JSON in file '%s': %v\n", devicesFile, err)
+			return nil
+		}
+	}
+	payload := map[string]any{"devices": devices}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participants/"+participantID+"/campaigns", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusCreated {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListCampaigns(edgeSystem string, participantID string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListCampaignDevices(edgeSystem string, participantID string, campaignID string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID + "/devices")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) DeleteCampaign(edgeSystem string, participantID string, campaignID string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Campaign '%s' deleted successfully.\n", campaignID)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Edge Devices ─────────────────────────────────────────────────────────────
+
+func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/devices")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, campaignID string, serial string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID + "/devices/" + serial)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Device '%s' revoked successfully.\n", serial)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, campaignToken string) error {
+	data, err := runner.ReadFile(csrFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
+		return nil
+	}
+	payload := map[string]any{
+		"serial": serial,
+		"macs":   macs,
+		"csr":    string(data),
+	}
+	path := "/edge-systems/" + edgeSystemID + "/participants/" + participantID + "/enroll"
+	var response *http.Response
+	if campaignToken != "" {
+		response, err = runner.API.PostWithBearerToken(path, payload, campaignToken)
+	} else {
+		response, err = runner.API.Post(path, payload)
+	}
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		var result any
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		formatted, _ := json.MarshalIndent(result, "", "  ")
+		_, _ = fmt.Fprintln(runner.Out, string(formatted))
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
 	return nil
 }

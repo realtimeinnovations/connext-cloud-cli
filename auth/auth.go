@@ -180,6 +180,12 @@ func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (
 }
 
 func (manager *Manager) GetAccessTokenForCLI() (string, error) {
+	// Env var override — lets dev scripts inject the Bearer token directly.
+	if manager.Env != nil {
+		if token := manager.Env("CONNEXT_CLOUD_ACCESS_TOKEN"); token != "" {
+			return token, nil
+		}
+	}
 	token, err := manager.GetAccessTokenFromHomeFile()
 	if err != nil {
 		return "", err

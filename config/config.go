@@ -94,6 +94,11 @@ func (manager *Manager) WriteConfig(config map[string]string) error {
 }
 
 func (manager *Manager) GetAPIURL() (string, error) {
+	if manager.Env != nil {
+		if value := manager.Env("CONNEXT_CLOUD_API_HOST"); value != "" {
+			return value, nil
+		}
+	}
 	if !manager.IsConfigured() {
 		return "", ErrNotConfigured
 	}
@@ -105,6 +110,11 @@ func (manager *Manager) GetAPIURL() (string, error) {
 }
 
 func (manager *Manager) GetAPIURLSafe() string {
+	if manager.Env != nil {
+		if value := manager.Env("CONNEXT_CLOUD_API_HOST"); value != "" {
+			return value
+		}
+	}
 	config, err := manager.GetConfig()
 	if err != nil {
 		return ""
@@ -125,6 +135,12 @@ func (manager *Manager) GetClientID() string {
 }
 
 func (manager *Manager) IsConfigured() bool {
+	// Env var override counts as configured — no config file needed.
+	if manager.Env != nil {
+		if value := manager.Env("CONNEXT_CLOUD_API_HOST"); value != "" {
+			return true
+		}
+	}
 	_, err := os.Stat(manager.Path)
 	if err != nil {
 		return false

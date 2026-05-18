@@ -41,6 +41,12 @@ func New(baseURLProvider BaseURLProvider, headersProvider HeadersProvider) *Clie
 }
 
 func (client *Client) Request(method string, path string, payload any) (*http.Response, error) {
+	return client.requestWithHeaders(method, path, payload, nil)
+}
+
+// requestWithHeaders is the common implementation.  extraHeaders, if non-nil,
+// override any matching key produced by HeadersProvider.
+func (client *Client) requestWithHeaders(method string, path string, payload any, extraHeaders map[string]string) (*http.Response, error) {
 	baseURL, err := client.BaseURLProvider()
 	if err != nil {
 		return nil, err
@@ -48,6 +54,9 @@ func (client *Client) Request(method string, path string, payload any) (*http.Re
 	headers, err := client.HeadersProvider()
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range extraHeaders {
+		headers[k] = v
 	}
 	var body io.Reader
 	if payload != nil {
@@ -92,6 +101,15 @@ func (client *Client) Request(method string, path string, payload any) (*http.Re
 	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
 	defer stopSpinner()
 	return httpClient.Do(request)
+}
+
+// PostWithBearerToken sends a POST using an explicit Bearer token instead of
+// the token produced by HeadersProvider.  Use this when the endpoint requires
+// a different JWT audience (e.g. a campaign enrollment token).
+func (client *Client) PostWithBearerToken(path string, payload any, bearerToken string) (*http.Response, error) {
+	return client.requestWithHeaders(http.MethodPost, path, payload, map[string]string{
+		"Authorization": "Bearer " + bearerToken,
+	})
 }
 
 func insecureTransport(roundTripper http.RoundTripper) *http.Transport {
