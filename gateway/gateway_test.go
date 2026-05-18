@@ -440,7 +440,7 @@ func TestDiscoverConnextPromptsForExistingInstallations(t *testing.T) {
 	if gotMessage != "Select Connext installation:" {
 		t.Fatalf("unexpected prompt: %s", gotMessage)
 	}
-	if len(gotChoices) < 2 || gotChoices[0] != newer || gotChoices[1] != older {
+	if len(gotChoices) != 3 || gotChoices[0] != newer || gotChoices[1] != older || gotChoices[2] != connext.EnterConnextPathLabel {
 		t.Fatalf("unexpected choices: %#v", gotChoices)
 	}
 	if result.Path != older {

@@ -310,7 +310,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		}
 	}
 	app.InputFunc = func(message string) (string, error) {
-		if message != "Collector name:" {
+		if message != "Collector name" {
 			return "", GatewayError{Message: message}
 		}
 		return "collector", nil
