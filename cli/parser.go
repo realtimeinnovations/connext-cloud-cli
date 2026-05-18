@@ -39,6 +39,9 @@ func newRootCommand(runtime *app.Runtime, disableSSLVerify *bool) *cobra.Command
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if runtime != nil {
 				runtime.CloudAPI.SSLVerify = !*disableSSLVerify
+				if runtime.EdgeProvision != nil {
+					runtime.EdgeProvision.SSLVerify = !*disableSSLVerify
+				}
 			}
 			return nil
 		},
@@ -823,11 +826,7 @@ func newEdgeSystemCommand(runtime *app.Runtime) *cobra.Command {
 				if governanceFile == "" {
 					return fmt.Errorf("--governance-file is required")
 				}
-				data, err := os.ReadFile(governanceFile)
-				if err != nil {
-					return fmt.Errorf("reading governance file: %w", err)
-				}
-				return runtime.Commands.CreateEdgeSystem(name, string(data), description)
+				return runtime.Commands.CreateEdgeSystem(name, governanceFile, description)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Edge System name")
@@ -895,11 +894,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 				if permissionsFile == "" {
 					return fmt.Errorf("--permissions-file is required")
 				}
-				data, err := os.ReadFile(permissionsFile)
-				if err != nil {
-					return fmt.Errorf("reading permissions file: %w", err)
-				}
-				return runtime.Commands.CreateParticipant(edgeSystem, name, string(data), effectiveRevocationSeconds)
+				return runtime.Commands.CreateParticipant(edgeSystem, name, permissionsFile, effectiveRevocationSeconds)
 			},
 		}
 		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Edge System name")
@@ -1176,7 +1171,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 			Short: "Check Edge Provision API health",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvisionHealthz(url)
+				return runtime.EdgeProvision.Healthz(url)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision signing API base URL (e.g. http://localhost:8080)")
@@ -1193,7 +1188,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if csrBase64 == "" {
 					return fmt.Errorf("--csr is required (base64-encoded PEM CSR)")
 				}
-				return runtime.EdgeProvisionSign(url, csrBase64)
+				return runtime.EdgeProvision.SignCSR(url, csrBase64)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision signing API base URL")
@@ -1208,7 +1203,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 			Short: "Get device status (mTLS)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvisionDeviceStatus(url, certFile, keyFile, caFile)
+				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")
@@ -1228,7 +1223,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvisionIdentity(url, certFile, keyFile, caFile, participantID, csrFile)
+				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, participantID, csrFile)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1250,7 +1245,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvisionPermissions(url, certFile, keyFile, caFile, participantID)
+				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, participantID)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1268,7 +1263,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 			Short: "Request or rotate PSK (mTLS)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvisionPSK(url, certFile, keyFile, caFile)
+				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1288,7 +1283,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvisionCRL(url, certFile, keyFile, caFile, participantID, output)
+				return runtime.EdgeProvision.GetCRL(url, certFile, keyFile, caFile, participantID, output)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")

@@ -21,13 +21,14 @@ import (
 )
 
 type Runtime struct {
-	Out      io.Writer
-	Config   *config.Manager
-	Auth     *auth.Manager
-	CloudAPI *cloudapi.Client
-	Commands *commands.Runner
-	Gateway  *gateway.GatewayApp
-	Spy      *spy.App
+	Out           io.Writer
+	Config        *config.Manager
+	Auth          *auth.Manager
+	CloudAPI      *cloudapi.Client
+	Commands      *commands.Runner
+	Gateway       *gateway.GatewayApp
+	Spy           *spy.App
+	EdgeProvision *edgeprovision.Runner
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -66,7 +67,17 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return spy.DiscoverConnextInstallWithPrompt(nil, prompt, spyApp.SelectFunc, spyApp.InputFunc)
 	}
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
-	return &Runtime{Out: out, Config: configManager, Auth: authManager, CloudAPI: cloudClient, Commands: commandRunner, Gateway: gatewayApp, Spy: spyApp}
+	edgeProvisionRunner := edgeprovision.NewRunner(out)
+	return &Runtime{
+		Out:           out,
+		Config:        configManager,
+		Auth:          authManager,
+		CloudAPI:      cloudClient,
+		Commands:      commandRunner,
+		Gateway:       gatewayApp,
+		Spy:           spyApp,
+		EdgeProvision: edgeProvisionRunner,
+	}
 }
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
@@ -223,103 +234,4 @@ func (runtime *Runtime) RunGateway(format string) error {
 
 func (runtime *Runtime) liveTextOutput(format string) bool {
 	return format == "text" || terminal.PlainOutputRequested(runtime.Out)
-}
-
-// ── Edge Provision API helpers ───────────────────────────────────────────────
-
-func (runtime *Runtime) edgeProvisionRunner(baseURL string, certFile string, keyFile string, caFile string, mtls bool) (*edgeprovision.Runner, error) {
-	var client *edgeprovision.Client
-	if mtls {
-		if certFile == "" || keyFile == "" || caFile == "" {
-			return nil, fmt.Errorf("--cert, --key, and --ca are required for mTLS endpoints")
-		}
-		var err error
-		client, err = edgeprovision.NewMTLSClient(baseURL, certFile, keyFile, caFile)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		if baseURL == "" {
-			return nil, fmt.Errorf("--url is required")
-		}
-		client = edgeprovision.NewClient(baseURL)
-	}
-	return edgeprovision.NewRunner(client, runtime.Out), nil
-}
-
-func (runtime *Runtime) EdgeProvisionHealthz(url string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, "", "", "", false)
-	if err != nil {
-		return err
-	}
-	return runner.Healthz()
-}
-
-func (runtime *Runtime) EdgeProvisionSign(url string, csrBase64 string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, "", "", "", false)
-	if err != nil {
-		return err
-	}
-	return runner.SignCSR(csrBase64)
-}
-
-func (runtime *Runtime) EdgeProvisionDeviceStatus(url string, certFile string, keyFile string, caFile string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, certFile, keyFile, caFile, certFile != "")
-	if err != nil {
-		return err
-	}
-	return runner.DeviceStatus()
-}
-
-func (runtime *Runtime) EdgeProvisionIdentity(url string, certFile string, keyFile string, caFile string, participantID string, csrFile string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, certFile, keyFile, caFile, certFile != "")
-	if err != nil {
-		return err
-	}
-	return runner.RequestIdentity(participantID, csrFile)
-}
-
-func (runtime *Runtime) EdgeProvisionPermissions(url string, certFile string, keyFile string, caFile string, participantID string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, certFile, keyFile, caFile, certFile != "")
-	if err != nil {
-		return err
-	}
-	return runner.RequestPermissions(participantID)
-}
-
-func (runtime *Runtime) EdgeProvisionPSK(url string, certFile string, keyFile string, caFile string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, certFile, keyFile, caFile, certFile != "")
-	if err != nil {
-		return err
-	}
-	return runner.RequestPSK()
-}
-
-func (runtime *Runtime) EdgeProvisionCRL(url string, certFile string, keyFile string, caFile string, participantID string, output string) error {
-	if url == "" {
-		return fmt.Errorf("--url is required")
-	}
-	runner, err := runtime.edgeProvisionRunner(url, certFile, keyFile, caFile, certFile != "")
-	if err != nil {
-		return err
-	}
-	return runner.GetCRL(participantID, output)
 }

@@ -216,7 +216,13 @@ func TestCreateEdgeSystem(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateEdgeSystem("alpha", "<governance/>", "test"); err != nil {
+	runner.ReadFile = func(path string) ([]byte, error) {
+		if path != "gov.xml" {
+			t.Fatalf("unexpected governance file path: %s", path)
+		}
+		return []byte("<governance/>"), nil
+	}
+	if err := runner.CreateEdgeSystem("alpha", "gov.xml", "test"); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -234,7 +240,8 @@ func TestCreateEdgeSystemError(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateEdgeSystem("", "", ""); err != nil {
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(""), nil }
+	if err := runner.CreateEdgeSystem("", "gov.xml", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Error") {
@@ -281,7 +288,13 @@ func TestCreateParticipant(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateParticipant("alpha", "sensor-net", "<permissions/>", 3600); err != nil {
+	runner.ReadFile = func(path string) ([]byte, error) {
+		if path != "perms.xml" {
+			t.Fatalf("unexpected permissions file path: %s", path)
+		}
+		return []byte("<permissions/>"), nil
+	}
+	if err := runner.CreateParticipant("alpha", "sensor-net", "perms.xml", 3600); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)

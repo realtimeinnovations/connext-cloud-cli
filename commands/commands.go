@@ -738,8 +738,13 @@ func (runner *Runner) ListEdgeSystems() error {
 	return nil
 }
 
-func (runner *Runner) CreateEdgeSystem(name string, governanceXML string, description string) error {
-	payload := map[string]any{"name": name, "governanceXml": governanceXML}
+func (runner *Runner) CreateEdgeSystem(name string, governanceFile string, description string) error {
+	data, err := runner.ReadFile(governanceFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading governance file: %v\n", err)
+		return nil
+	}
+	payload := map[string]any{"name": name, "governanceXml": string(data)}
 	if description != "" {
 		payload["description"] = description
 	}
@@ -799,10 +804,15 @@ func (runner *Runner) DeleteEdgeSystem(name string) error {
 
 // ── Edge Participants ────────────────────────────────────────────────────────
 
-func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissionsXML string, effectiveRevocationSeconds int) error {
+func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissionsFile string, effectiveRevocationSeconds int) error {
+	data, err := runner.ReadFile(permissionsFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading permissions file: %v\n", err)
+		return nil
+	}
 	payload := map[string]any{
 		"name":                       name,
-		"permissionsXml":             permissionsXML,
+		"permissionsXml":             string(data),
 		"effectiveRevocationSeconds": effectiveRevocationSeconds,
 	}
 	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participants", payload)
