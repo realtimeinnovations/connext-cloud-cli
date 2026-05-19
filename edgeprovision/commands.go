@@ -26,7 +26,7 @@ type Runner struct {
 
 	// Client factories — overridable in tests with a fake Doer.
 	NewClient     func(baseURL string, sslVerify bool) *Client
-	NewMTLSClient func(baseURL, certFile, keyFile, caFile string, sslVerify bool) (*Client, error)
+	NewMTLSClient func(baseURL, certFile, keyFile, caFile, serverAddr string, sslVerify bool) (*Client, error)
 }
 
 // NewRunner creates a Runner with sensible defaults.  SSLVerify defaults to
@@ -53,15 +53,16 @@ func (runner *Runner) plainClient(url string) (*Client, error) {
 }
 
 // mtlsClient builds an mTLS client for the device-facing endpoints.  All three
-// of cert/key/ca must be provided together.
-func (runner *Runner) mtlsClient(url, certFile, keyFile, caFile string) (*Client, error) {
+// of cert/key/ca must be provided together.  serverAddr, when non-empty, overrides
+// the TCP dial target (equivalent to curl's --connect-to) while preserving TLS SNI.
+func (runner *Runner) mtlsClient(url, certFile, keyFile, caFile, serverAddr string) (*Client, error) {
 	if url == "" {
 		return nil, fmt.Errorf("--url is required")
 	}
 	if certFile == "" || keyFile == "" || caFile == "" {
 		return nil, fmt.Errorf("--cert, --key, and --ca are required for mTLS endpoints")
 	}
-	return runner.NewMTLSClient(url, certFile, keyFile, caFile, runner.SSLVerify)
+	return runner.NewMTLSClient(url, certFile, keyFile, caFile, serverAddr, runner.SSLVerify)
 }
 
 // emitJSON consumes resp, prints either the formatted JSON body on success or
@@ -110,8 +111,8 @@ func (runner *Runner) SignCSR(url string, csrBase64 string) error {
 }
 
 // DeviceStatus calls GET /device/status (mTLS required).
-func (runner *Runner) DeviceStatus(url, certFile, keyFile, caFile string) error {
-	client, err := runner.mtlsClient(url, certFile, keyFile, caFile)
+func (runner *Runner) DeviceStatus(url, certFile, keyFile, caFile, serverAddr string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -124,8 +125,8 @@ func (runner *Runner) DeviceStatus(url, certFile, keyFile, caFile string) error 
 
 // RequestIdentity calls POST /{participantID}/identity to issue or renew
 // an identity certificate (mTLS required).
-func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, participantID, csrFile string) error {
-	client, err := runner.mtlsClient(url, certFile, keyFile, caFile)
+func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -147,8 +148,8 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, participan
 
 // RequestPermissions calls POST /{participantID}/permissions to issue or renew
 // a signed permissions document (mTLS required).
-func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, participantID string) error {
-	client, err := runner.mtlsClient(url, certFile, keyFile, caFile)
+func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -160,8 +161,8 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, partici
 }
 
 // RequestPSK calls POST /psk to issue or rotate the EdgeSystem PSK (mTLS required).
-func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile string) error {
-	client, err := runner.mtlsClient(url, certFile, keyFile, caFile)
+func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -176,8 +177,8 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile string) error {
 // Revocation List (mTLS required).  If output is non-empty the CRL is saved
 // to that path (parent directory created if needed); otherwise it is printed
 // to stdout.
-func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, participantID, output string) error {
-	client, err := runner.mtlsClient(url, certFile, keyFile, caFile)
+func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, participantID, output string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}

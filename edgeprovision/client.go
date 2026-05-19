@@ -2,11 +2,13 @@ package edgeprovision
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -51,7 +53,11 @@ func NewClient(baseURL string, sslVerify bool) *Client {
 //
 // certFile / keyFile: path to the device's PEM-encoded client certificate and key.
 // caFile: path to the EdgeSystem CA chain PEM used to verify the server.
-func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile string, sslVerify bool) (*Client, error) {
+// serverAddr: optional "host:port" to connect to at the TCP level (equivalent to
+// curl's --connect-to).  When non-empty the TLS dial target is overridden to
+// serverAddr while the TLS SNI / certificate verification use the URL hostname.
+// Use this to route through an NLB whose DNS is not yet globally resolvable.
+func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile string, serverAddr string, sslVerify bool) (*Client, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
@@ -72,11 +78,21 @@ func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile strin
 		InsecureSkipVerify: !sslVerify,
 	}
 
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	if serverAddr != "" {
+		// Redirect TCP dial to serverAddr while keeping TLS SNI from the URL hostname.
+		// Equivalent to curl's --connect-to flag.
+		dialer := &net.Dialer{Timeout: 30 * time.Second}
+		transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, serverAddr)
+		}
+	}
+
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Transport: transport,
 		},
 	}, nil
 }

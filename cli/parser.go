@@ -1197,24 +1197,25 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 	}
 
 	{ // device-status
-		var url, certFile, keyFile, caFile string
+		var url, certFile, keyFile, caFile, serverAddr string
 		c := &cobra.Command{
 			Use:   "device-status",
 			Short: "Get device status (mTLS)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile)
+				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile, serverAddr)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		cmd.AddCommand(c)
 	}
 
 	{ // identity
-		var url, certFile, keyFile, caFile, participantID, csrFile string
+		var url, certFile, keyFile, caFile, serverAddr, participantID, csrFile string
 		c := &cobra.Command{
 			Use:   "identity",
 			Short: "Request or renew an identity certificate (mTLS)",
@@ -1223,20 +1224,21 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, participantID, csrFile)
+				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
 		cmd.AddCommand(c)
 	}
 
 	{ // permissions
-		var url, certFile, keyFile, caFile, participantID string
+		var url, certFile, keyFile, caFile, serverAddr, participantID string
 		c := &cobra.Command{
 			Use:   "permissions",
 			Short: "Request or renew a permissions document (mTLS)",
@@ -1245,36 +1247,38 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, participantID)
+				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		cmd.AddCommand(c)
 	}
 
 	{ // psk
-		var url, certFile, keyFile, caFile string
+		var url, certFile, keyFile, caFile, serverAddr string
 		c := &cobra.Command{
 			Use:   "psk",
 			Short: "Request or rotate PSK (mTLS)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile)
+				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile, serverAddr)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		cmd.AddCommand(c)
 	}
 
 	{ // crl
-		var url, certFile, keyFile, caFile, participantID, output string
+		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
 		c := &cobra.Command{
 			Use:   "crl",
 			Short: "Fetch the Certificate Revocation List (mTLS)",
@@ -1283,13 +1287,14 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.GetCRL(url, certFile, keyFile, caFile, participantID, output)
+				return runtime.EdgeProvision.GetCRL(url, certFile, keyFile, caFile, serverAddr, participantID, output)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVarP(&output, "output", "o", "", "Output file (prints to stdout if not set)")
 		cmd.AddCommand(c)

@@ -49,7 +49,7 @@ func newRunnerWithDoer(out io.Writer, doer *fakeDoer) *Runner {
 	runner.NewClient = func(baseURL string, _ bool) *Client {
 		return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: doer}
 	}
-	runner.NewMTLSClient = func(baseURL, _, _, _ string, _ bool) (*Client, error) {
+	runner.NewMTLSClient = func(baseURL, _, _, _, _ string, _ bool) (*Client, error) {
 		return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: doer}, nil
 	}
 	return runner
@@ -124,7 +124,7 @@ func TestDeviceStatus(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.DeviceStatus("https://x:8443", "cert", "key", "ca"); err != nil {
+	if err := runner.DeviceStatus("https://x:8443", "cert", "key", "ca", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "alpha") || !strings.Contains(out.String(), "device1") {
@@ -134,7 +134,7 @@ func TestDeviceStatus(t *testing.T) {
 
 func TestDeviceStatusRequiresMTLSFlags(t *testing.T) {
 	runner := newRunnerWithDoer(io.Discard, &fakeDoer{})
-	err := runner.DeviceStatus("https://x:8443", "", "", "")
+	err := runner.DeviceStatus("https://x:8443", "", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "--cert, --key, and --ca are required") {
 		t.Fatalf("expected mTLS flags error, got %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRequestIdentity(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "sensor-net", "device.csr"); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "sensor-net", "device.csr"); err != nil {
 		t.Fatal(err)
 	}
 	var payload map[string]any
@@ -178,7 +178,7 @@ func TestRequestIdentityWithoutCSR(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "sensor-net", ""); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "sensor-net", ""); err != nil {
 		t.Fatal(err)
 	}
 	var payload map[string]any
@@ -202,7 +202,7 @@ func TestRequestPermissions(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "sensor-net"); err != nil {
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "sensor-net"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "permissions_doc_smime") {
@@ -219,7 +219,7 @@ func TestRequestPSK(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca"); err != nil {
+	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "psk_a") || !strings.Contains(out.String(), "psk_b") {
@@ -233,7 +233,7 @@ func TestGetCRLToStdout(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "sensor-net", ""); err != nil {
+	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", "sensor-net", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "BEGIN X509 CRL") {
@@ -258,7 +258,7 @@ func TestGetCRLToFileCreatesParentDir(t *testing.T) {
 		wroteData = data
 		return nil
 	}
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "sensor-net", target); err != nil {
+	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", "sensor-net", target); err != nil {
 		t.Fatal(err)
 	}
 	if mkdirPath != filepath.Dir(target) {
