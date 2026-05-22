@@ -484,7 +484,7 @@ func TestEnrollDevice(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", ""); err != nil {
+	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -493,5 +493,42 @@ func TestEnrollDevice(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "certificate") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestEnrollDeviceToDirectory(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/ces-alpha-123/participants/sensor-net/enroll": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate":       "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"ca_chain":          "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"signed_governance": "-----BEGIN PKCS7-----\nGov...",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(path string) ([]byte, error) {
+		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
+	}
+	outputDir := t.TempDir()
+	written := map[string]string{}
+	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		written[filepath.Base(path)] = string(data)
+		return nil
+	}
+	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", outputDir); err != nil {
+		t.Fatal(err)
+	}
+	if written["identity.crt"] == "" {
+		t.Fatal("expected identity.crt to be written")
+	}
+	if written["identity-ca-chain.crt"] == "" {
+		t.Fatal("expected identity-ca-chain.crt to be written")
+	}
+	if written["signed_governance.p7s"] == "" {
+		t.Fatal("expected signed_governance.p7s to be written")
+	}
+	if !strings.Contains(out.String(), "identity.crt") || !strings.Contains(out.String(), "identity-ca-chain.crt") {
+		t.Fatalf("unexpected stdout: %s", out.String())
 	}
 }

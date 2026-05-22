@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
@@ -123,9 +124,35 @@ func (runner *Runner) DeviceStatus(url, certFile, keyFile, caFile, serverAddr st
 	return runner.emitJSON(resp)
 }
 
+// saveToFile writes data to outputPath, creating parent directories as needed.
+func (runner *Runner) saveToFile(outputPath string, data []byte) error {
+	if dir := filepath.Dir(outputPath); dir != "." {
+		if err := runner.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return runner.WriteFile(outputPath, data, 0o644)
+}
+
+// resolveOutputPath returns a concrete file path for the given output value.
+// If output ends with the OS path separator, or points to an existing
+// directory, it is treated as a directory and defaultFilename is appended.
+// Otherwise output is returned unchanged (caller-specified file path).
+func resolveOutputPath(output, defaultFilename string) string {
+	if strings.HasSuffix(output, string(filepath.Separator)) {
+		return filepath.Join(output, defaultFilename)
+	}
+	if info, err := os.Stat(output); err == nil && info.IsDir() {
+		return filepath.Join(output, defaultFilename)
+	}
+	return output
+}
+
 // RequestIdentity calls POST /{participantID}/identity to issue or renew
-// an identity certificate (mTLS required).
-func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile string) error {
+// an identity certificate (mTLS required).  If output is non-empty the
+// identity_cert_pem field is written to that path; otherwise the full JSON
+// response is printed to stdout.
+func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
@@ -143,12 +170,33 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	if err != nil {
 		return err
 	}
-	return runner.emitJSON(resp)
+	if output == "" {
+		return runner.emitJSON(resp)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
+		return nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	certPEM, _ := result["identity_cert_pem"].(string)
+	dest := resolveOutputPath(output, "identity.crt")
+	if err := runner.saveToFile(dest, []byte(certPEM)); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "Identity certificate saved to %s\n", dest)
+	return nil
 }
 
 // RequestPermissions calls POST /{participantID}/permissions to issue or renew
-// a signed permissions document (mTLS required).
-func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID string) error {
+// a signed permissions document (mTLS required).  If output is non-empty the
+// permissions_doc_smime field is written to that path; otherwise the full JSON
+// response is printed to stdout.
+func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
@@ -157,11 +205,32 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	if err != nil {
 		return err
 	}
-	return runner.emitJSON(resp)
+	if output == "" {
+		return runner.emitJSON(resp)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
+		return nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	docSMIME, _ := result["permissions_doc_smime"].(string)
+	dest := resolveOutputPath(output, "signed_permissions.p7s")
+	if err := runner.saveToFile(dest, []byte(docSMIME)); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "Permissions document saved to %s\n", dest)
+	return nil
 }
 
-// RequestPSK calls POST /psk to issue or rotate the EdgeSystem PSK (mTLS required).
-func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr string) error {
+// RequestPSK calls POST /psk to issue or rotate the EdgeSystem PSK (mTLS
+// required).  If output is non-empty the full JSON response is written to
+// that path; otherwise it is printed to stdout.
+func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
@@ -170,7 +239,26 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr stri
 	if err != nil {
 		return err
 	}
-	return runner.emitJSON(resp)
+	if output == "" {
+		return runner.emitJSON(resp)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	dest := resolveOutputPath(output, "psk.json")
+	if err := runner.saveToFile(dest, append(formatted, '\n')); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "PSK saved to %s\n", dest)
+	return nil
 }
 
 // GetCRL calls GET /{participantID}/crl to fetch the current Certificate
@@ -196,14 +284,10 @@ func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, partici
 		_, _ = fmt.Fprintln(runner.Out, string(body))
 		return nil
 	}
-	if dir := filepath.Dir(output); dir != "." {
-		if err := runner.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	if err := runner.WriteFile(output, body, 0o644); err != nil {
+	dest := resolveOutputPath(output, "crl.pem")
+	if err := runner.saveToFile(dest, body); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(runner.Out, "CRL saved to %s\n", output)
+	_, _ = fmt.Fprintf(runner.Out, "CRL saved to %s\n", dest)
 	return nil
 }

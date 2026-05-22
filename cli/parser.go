@@ -1122,7 +1122,7 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 	}
 
 	{ // enroll
-		var edgeSystemID, participantID, serial, csrFile, campaignToken string
+		var edgeSystemID, participantID, serial, csrFile, campaignToken, output string
 		var macs []string
 		c := &cobra.Command{
 			Use:   "enroll",
@@ -1144,7 +1144,7 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
-				return runtime.Commands.EnrollDevice(edgeSystemID, participantID, serial, macs, csrFile, campaignToken)
+				return runtime.Commands.EnrollDevice(edgeSystemID, participantID, serial, macs, csrFile, campaignToken, output)
 			},
 		}
 		c.Flags().StringVar(&edgeSystemID, "edge-system-id", "", "Edge System resource ID (namespace)")
@@ -1153,6 +1153,7 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (can be specified multiple times)")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required by the enrollment endpoint)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save enrollment artifacts (identity.crt, identity-ca-chain.crt, signed_governance.p7s); prints JSON to stdout if not set")
 		cmd.AddCommand(c)
 	}
 
@@ -1215,7 +1216,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 	}
 
 	{ // identity
-		var url, certFile, keyFile, caFile, serverAddr, participantID, csrFile string
+		var url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output string
 		c := &cobra.Command{
 			Use:   "identity",
 			Short: "Request or renew an identity certificate (mTLS)",
@@ -1224,7 +1225,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile)
+				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1234,11 +1235,12 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identity_cert_pem to this file path (prints full JSON to stdout if not set)")
 		cmd.AddCommand(c)
 	}
 
 	{ // permissions
-		var url, certFile, keyFile, caFile, serverAddr, participantID string
+		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
 		c := &cobra.Command{
 			Use:   "permissions",
 			Short: "Request or renew a permissions document (mTLS)",
@@ -1247,7 +1249,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID)
+				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID, output)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1256,17 +1258,18 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissions_doc_smime to this file path (prints full JSON to stdout if not set)")
 		cmd.AddCommand(c)
 	}
 
 	{ // psk
-		var url, certFile, keyFile, caFile, serverAddr string
+		var url, certFile, keyFile, caFile, serverAddr, output string
 		c := &cobra.Command{
 			Use:   "psk",
 			Short: "Request or rotate PSK (mTLS)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile, serverAddr)
+				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile, serverAddr, output)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
@@ -1274,6 +1277,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to EdgeSystem CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this file path (prints to stdout if not set)")
 		cmd.AddCommand(c)
 	}
 

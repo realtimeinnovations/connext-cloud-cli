@@ -1046,7 +1046,14 @@ func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, camp
 	return nil
 }
 
-func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, campaignToken string) error {
+// enrollArtifacts maps enrollment response fields to their output file names.
+var enrollArtifacts = []struct{ field, filename string }{
+	{"certificate", "identity.crt"},
+	{"ca_chain", "identity-ca-chain.crt"},
+	{"signed_governance", "signed_governance.p7s"},
+}
+
+func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, campaignToken string, outputDir string) error {
 	data, err := runner.ReadFile(csrFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
@@ -1069,15 +1076,32 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var result any
-		if err := json.Unmarshal(body, &result); err != nil {
-			return err
-		}
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	if outputDir == "" {
 		formatted, _ := json.MarshalIndent(result, "", "  ")
 		_, _ = fmt.Fprintln(runner.Out, string(formatted))
 		return nil
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
+	if err := runner.MkdirAll(outputDir, 0o755); err != nil {
+		return err
+	}
+	for _, a := range enrollArtifacts {
+		val, ok := result[a.field].(string)
+		if !ok || val == "" {
+			continue
+		}
+		destPath := filepath.Join(outputDir, a.filename)
+		if err := runner.WriteFile(destPath, []byte(val), 0o644); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", destPath)
+	}
 	return nil
 }
