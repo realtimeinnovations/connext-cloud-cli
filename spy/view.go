@@ -24,6 +24,7 @@ type SummaryLine struct {
 	Status  string
 	Target  string
 	Warning string
+	Hosts   []string
 }
 
 type RenderedTopic struct {
@@ -112,16 +113,18 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 			active++
 		}
 	}
+	hosts := view.State.ConnectedHostNames()
 	status := view.State.ServiceState()
-	if status == "running" && active == 0 {
-		status = "running, waiting for samples"
+	if status == "running" && active == 0 && len(hosts) == 0 {
+		status = "running, waiting for hosts"
 	}
-	header := SpyLiveHeader(view.Config, status, active, pulseFrame)
+	header := SpyLiveHeader(view.Config, status, active, len(hosts), pulseFrame)
 	if view.DatabusSecure {
 		header.Warning = "secure"
 	} else if hasDatabus(view.Config) {
 		header.Warning = "not secure"
 	}
+	header.Hosts = hosts
 	topics := make([]RenderedTopic, 0, len(rows))
 	for _, row := range rows {
 		if len(topics) >= SpyLiveTopicRows {
@@ -161,8 +164,8 @@ func SpyPanelTitle() string {
 	return "[bold] Connext Cloud Spy  [/bold]"
 }
 
-func SpyLiveHeader(config map[string]any, status string, activeTopicCount int, pulseFrame int) SummaryLine {
-	return SummaryLine{Label: "databus", Status: spySummaryChip(status, activeTopicCount, pulseFrame), Target: fmt.Sprintf("%s / %s", configString(config, "databus"), common.NestedString(config, "templates", "app"))}
+func SpyLiveHeader(config map[string]any, status string, activeTopicCount int, connectedHostCount int, pulseFrame int) SummaryLine {
+	return SummaryLine{Label: "databus", Status: spySummaryChip(status, activeTopicCount, connectedHostCount, pulseFrame), Target: fmt.Sprintf("%s / %s", configString(config, "databus"), common.NestedString(config, "templates", "app"))}
 }
 
 func sampleActivityChip(row TopicRow, pulseFrame int) string {
@@ -178,21 +181,20 @@ func sampleActivityChip(row TopicRow, pulseFrame int) string {
 	return "[dim]○[/dim]"
 }
 
-func spySummaryChip(status string, activeTopicCount int, pulseFrame int) string {
+func spySummaryChip(status string, activeTopicCount int, connectedHostCount int, pulseFrame int) string {
 	short := strings.ToLower(status)
 	if strings.HasPrefix(short, "running, waiting") {
-		return fmt.Sprintf("[%s]○ waiting samples[/]", tui.RTIBlue)
+		return fmt.Sprintf("[%s]○ not connected[/]", tui.RTIBlue)
 	}
 	if short == "running" {
-		noun := "topics"
-		if activeTopicCount == 1 {
-			noun = "topic"
+		if activeTopicCount == 0 && connectedHostCount > 0 {
+			return "[green]○ connected[/green]"
 		}
 		glyph := "●"
 		if pulseFrame%2 != 0 {
 			glyph = "◉"
 		}
-		return fmt.Sprintf("[green]%s receiving %d %s[/green]", glyph, activeTopicCount, noun)
+		return fmt.Sprintf("[green]%s receiving samples[/green]", glyph)
 	}
 	if short == "starting" {
 		return fmt.Sprintf("[%s]◐ starting[/]", tui.RTIBlue)
@@ -224,7 +226,8 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		height = spyDefaultHeight
 	}
 	contentWidth := tui.MaxInt(24, width-4)
-	summary := tui.RenderPanel(tui.StripMarkup(view.Title), []string{formatSummaryLine(view.Header, contentWidth)}, width, summaryPanelTheme())
+	summaryLines := formatSummaryLines(view.Header, contentWidth)
+	summary := tui.RenderPanel(tui.StripMarkup(view.Title), summaryLines, width, summaryPanelTheme())
 	topicLines := []string{formatTopicHeader(contentWidth)}
 	for _, topic := range view.Topics {
 		topicLines = append(topicLines, formatTopicLine(topic, contentWidth))
@@ -258,6 +261,12 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+func formatSummaryLines(line SummaryLine, contentWidth int) []string {
+	lines := []string{formatSummaryLine(line, contentWidth)}
+	lines = append(lines, formatHostsLine(line.Hosts, contentWidth))
+	return lines
+}
+
 func formatSummaryLine(line SummaryLine, contentWidth int) string {
 	warningWidth := 0
 	warning := ""
@@ -271,6 +280,16 @@ func formatSummaryLine(line SummaryLine, contentWidth int) string {
 		formatted += "  " + warning
 	}
 	return formatted
+}
+
+func formatHostsLine(hosts []string, contentWidth int) string {
+	message := "no participants discovered yet"
+	if len(hosts) > 0 {
+		message = strings.Join(hosts, ", ")
+	}
+	indentWidth := spySummaryLabelWidth + spySummaryStatusWidth + 4
+	indent := strings.Repeat(" ", indentWidth)
+	return tui.Dim(indent + tui.TruncateDisplay(message, tui.MaxInt(8, contentWidth-len(indent))))
 }
 
 func formatTopicHeader(contentWidth int) string {

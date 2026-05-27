@@ -378,6 +378,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	if err != nil {
 		return nil, err
 	}
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.CollectorDir()
@@ -425,6 +426,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	liveView := NewRoutingLiveView(config)
 	liveView.CollectorStatus = "running"
 	liveView.CollectorSecure = collectorSecure
@@ -620,6 +622,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.RoutingDir()
@@ -830,6 +833,24 @@ func (app *GatewayApp) routingEnv() []string {
 	return env
 }
 
+func formatCommandLine(command []string) string {
+	quoted := make([]string, 0, len(command))
+	for _, arg := range command {
+		quoted = append(quoted, quoteCommandArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteCommandArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\n\"'\\") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+}
+
 func mergeEnv(base []string, overrides ...string) []string {
 	merged := append([]string{}, base...)
 	for _, override := range overrides {
@@ -855,6 +876,7 @@ func mergeEnv(base []string, overrides ...string) []string {
 }
 
 func (app *GatewayApp) printGatewayRestartHint() {
+	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud gateway' from this directory to start this gateway again.")
 }
 

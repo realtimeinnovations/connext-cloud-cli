@@ -24,6 +24,9 @@ import (
 
 const (
 	MinConnextVersion      = "7.7.0"
+	RTICloudSpyAppName     = "rticloud_spy"
+	CreateRTICloudSpyApp   = "__create_rticloud_spy_app__"
+	CreateRTICloudSpyLabel = "Create rticloud_spy cloud application"
 	CreateNewApp           = "__create_new_app__"
 	CreateNewAppLabel      = "Create new cloud application..."
 	ReloadAppListLabel     = "Reload application list"
@@ -261,6 +264,9 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	}
 	payload, err := app.APIGet(fmt.Sprintf("/databuses/%s/applications/%s", databusName, appName))
 	if err != nil {
+		if isMissingExternalEndpointError(err) {
+			return UserError{Message: fmt.Sprintf("Databus '%s' does not have an external endpoint yet, so spy cannot download the cloud application configuration.\n\nStart or resume the Databus and wait for it to be running:\n  rticloud databus resume --name %s\nThen rerun:\n  rticloud spy", databusName, databusName)}
+		}
 		return err
 	}
 	clientConfig := payload["client_config"]
@@ -281,6 +287,13 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	return os.WriteFile(target, []byte(content), 0o644)
 }
 
+func isMissingExternalEndpointError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "doesn't have an external endpoint configured")
+}
+
 func (app *App) ValidateConfigResources(config map[string]any) error {
 	if !HasDatabus(config) {
 		return UserError{Message: "No Databus or Cloud Native application is configured for this spy."}
@@ -291,6 +304,10 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 	}
 	appTemplate := common.NestedString(config, "templates", "app")
 	if !common.TemplateListContains(TemplateItems(databus, "app"), appTemplate) {
+		if appTemplate == RTICloudSpyAppName {
+			_, err := app.createRTICloudSpyApp(common.StringValue(config, "databus"))
+			return err
+		}
 		zone := common.StringValue(config, "zone")
 		if zone == "" {
 			zone = app.currentZone()
@@ -389,6 +406,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
@@ -653,6 +671,7 @@ func (app *App) PrintConfigSummary(config map[string]any) {
 }
 
 func (app *App) printRestartHint() {
+	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud spy' from this directory to start this spy again.")
 }
 
@@ -745,23 +764,24 @@ func DashboardURL(zone string, resourceName string) string {
 
 func (app *App) selectAppOrCreate(databusName string, selectMessage string, templates []TemplateItem) (string, error) {
 	for {
-		if len(templates) == 0 {
-			resource, reloaded, err := app.waitForAppCreation(databusName)
-			if err != nil {
-				return "", err
-			}
-			_ = resource
-			templates = reloaded
-			continue
-		}
-		choices := make([]string, 0, len(templates)+1)
+		hasSpyApp := false
+		choices := make([]string, 0, len(templates)+2)
 		for _, item := range templates {
 			choices = append(choices, item.Name)
+			if item.Name == RTICloudSpyAppName {
+				hasSpyApp = true
+			}
+		}
+		if !hasSpyApp {
+			choices = append(choices, CreateRTICloudSpyApp)
 		}
 		choices = append(choices, CreateNewApp)
 		selected, err := app.choose(selectMessage, choices)
 		if err != nil {
 			return "", err
+		}
+		if selected == CreateRTICloudSpyApp {
+			return app.createRTICloudSpyApp(databusName)
 		}
 		if selected != CreateNewApp {
 			return selected, nil
@@ -771,6 +791,35 @@ func (app *App) selectAppOrCreate(databusName string, selectMessage string, temp
 			return "", err
 		}
 	}
+}
+
+func (app *App) createRTICloudSpyApp(databusName string) (string, error) {
+	if app.APIPost == nil {
+		return "", fmt.Errorf("API not configured")
+	}
+	_, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications", databusName), map[string]any{
+		"kind":        "app",
+		"client_name": RTICloudSpyAppName,
+		"port":        7777,
+		"topic_data": map[string]any{
+			"0": map[string]any{
+				"domainId":      0,
+				"tag":           "",
+				"configuration": "all",
+				"allTopicsConfiguration": map[string]any{
+					"cloudToEdgeDirection": true,
+					"cloudToEdgeHistory":   1,
+					"edgeToCloudDirection": false,
+					"edgeToCloudHistory":   1,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage("Created rticloud_spy cloud application with subscribe-only access to all topics"))
+	return RTICloudSpyAppName, nil
 }
 
 func (app *App) waitForAppCreation(databusName string) (map[string]any, []TemplateItem, error) {
@@ -894,7 +943,10 @@ func (app *App) selector() prompt.Selector {
 		In:            app.input(),
 		Out:           app.Out,
 		CancelMessage: "Spy configuration cancelled.",
-		SpecialLabels: map[string]string{CreateNewApp: CreateNewAppLabel},
+		SpecialLabels: map[string]string{
+			CreateRTICloudSpyApp: CreateRTICloudSpyLabel,
+			CreateNewApp:         CreateNewAppLabel,
+		},
 	}
 }
 
@@ -915,6 +967,24 @@ func (app *App) pidRunning(pid int) bool {
 		return app.PIDRunningFunc(pid)
 	}
 	return terminal.ProcessRunning(pid)
+}
+
+func formatCommandLine(command []string) string {
+	quoted := make([]string, 0, len(command))
+	for _, arg := range command {
+		quoted = append(quoted, quoteCommandArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteCommandArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\n\"'\\") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
 }
 
 func mergeEnv(base []string, overrides ...string) []string {
