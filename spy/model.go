@@ -42,9 +42,17 @@ type SampleStatistics struct {
 	NoWriters int
 }
 
+type ParticipantInfo struct {
+	Source    string
+	Name      string
+	HostName  string
+	ProcessID string
+}
+
 type SpyState struct {
 	topics       map[string]*TopicRow
 	recent       []SampleEvent
+	participants map[string]ParticipantInfo
 	serviceState string
 	maxSamples   int
 	stats        map[string]SampleStatistics
@@ -55,6 +63,8 @@ type SpyState struct {
 
 var (
 	spyRunningRE     = regexp.MustCompile(`rtiddsspy is listening for data`)
+	spyParticipantRE = regexp.MustCompile(`(New|Deleted) participant\s+from\s+(\S+)\s+:\s+(.*)`)
+	spyAttrRE        = regexp.MustCompile(`(\w+)="([^"]*)"`)
 	spyEndpointRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2} .* New (writer|reader)\s+from\s+(\S+)\s+:\s+topic="([^"]+)" type="([^"]+)"`)
 	spyDataRE        = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(New data|Modified instance|Disposed instance|No writers)\s+from\s+(\S+)\s+:\s+topic="([^"]+)" type="([^"]+)" sample=(.*)`)
 	spyStatsHeaderRE = regexp.MustCompile(`Discovered\s+(\d+)\s+DataWriters\s+and\s+(\d+)\s+DataReaders`)
@@ -68,6 +78,7 @@ func NewSpyState(maxSamples int) *SpyState {
 	return &SpyState{
 		topics:       map[string]*TopicRow{},
 		recent:       make([]SampleEvent, 0, maxSamples),
+		participants: map[string]ParticipantInfo{},
 		serviceState: "starting",
 		maxSamples:   maxSamples,
 		stats:        map[string]SampleStatistics{},
@@ -80,6 +91,21 @@ func (state *SpyState) ServiceState() string {
 
 func (state *SpyState) EndpointTotals() (int, int) {
 	return state.dataWriters, state.dataReaders
+}
+
+func (state *SpyState) ConnectedHostNames() []string {
+	hosts := map[string]struct{}{}
+	for _, participant := range state.participants {
+		if participant.HostName != "" {
+			hosts[participant.HostName] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(hosts))
+	for host := range hosts {
+		names = append(names, host)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (state *SpyState) Update(line string) {
@@ -97,6 +123,10 @@ func (state *SpyState) Update(line string) {
 	}
 	if state.inStats {
 		state.updateStatistics(line)
+		return
+	}
+	if match := spyParticipantRE.FindStringSubmatch(line); match != nil {
+		state.updateParticipant(match[1], match[2], match[3])
 		return
 	}
 	if match := spyEndpointRE.FindStringSubmatch(line); match != nil {
@@ -203,6 +233,31 @@ func (state *SpyState) updateEndpoint(kind string, topic string, typeName string
 	} else {
 		row.Readers++
 		row.LastEvent = "reader discovered"
+	}
+}
+
+func (state *SpyState) updateParticipant(action string, source string, attributes string) {
+	values := map[string]string{}
+	for _, match := range spyAttrRE.FindAllStringSubmatch(attributes, -1) {
+		values[match[1]] = match[2]
+	}
+	hostName := values["hostName"]
+	if hostName == "" {
+		return
+	}
+	key := hostName + "\x00" + values["processId"]
+	if key == hostName+"\x00" {
+		key = hostName + "\x00" + source
+	}
+	if action == "Deleted" {
+		delete(state.participants, key)
+		return
+	}
+	state.participants[key] = ParticipantInfo{
+		Source:    source,
+		Name:      values["name"],
+		HostName:  hostName,
+		ProcessID: values["processId"],
 	}
 }
 
