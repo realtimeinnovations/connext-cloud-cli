@@ -1050,7 +1050,7 @@ func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, camp
 var enrollArtifacts = []struct{ field, filename string }{
 	{"certificate", "identity.crt"},
 	{"ca_chain", "identity-ca-chain.crt"},
-	{"signed_governance", "signed_governance.p7s"},
+	{"governance_p7s", "signed_governance.p7s"},
 }
 
 func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, campaignToken string, outputDir string) error {

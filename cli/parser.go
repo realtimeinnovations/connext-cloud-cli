@@ -875,7 +875,7 @@ func newEdgeSystemCommand(runtime *app.Runtime) *cobra.Command {
 // ── Edge Participant ─────────────────────────────────────────────────────────
 
 func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("edge-participant", "Manage Edge Participants")
+	cmd := parentCommand("edge-participant", "Manage Edge Participant Profiles")
 
 	{ // create
 		var edgeSystem, name, permissionsFile string

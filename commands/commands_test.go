@@ -475,8 +475,10 @@ func TestRevokeDevice(t *testing.T) {
 func TestEnrollDevice(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /edge-systems/ces-alpha-123/participants/sensor-net/enroll": newJSONResponse(http.StatusOK, map[string]any{
-			"certificate": "-----BEGIN CERTIFICATE-----\nMIIB...",
-			"ca_chain":    "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"certificate":    "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"ca_chain":       "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"governance_p7s": "MIME-Version: 1.0\ncontent",
+			"participant_id": "sensor-net",
 		}),
 	}}
 	var out bytes.Buffer
@@ -491,7 +493,7 @@ func TestEnrollDevice(t *testing.T) {
 	if payload["serial"] != "SN001" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
-	if !strings.Contains(out.String(), "certificate") {
+	if !strings.Contains(out.String(), "certificate") || !strings.Contains(out.String(), "governance_p7s") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -499,9 +501,10 @@ func TestEnrollDevice(t *testing.T) {
 func TestEnrollDeviceToDirectory(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /edge-systems/ces-alpha-123/participants/sensor-net/enroll": newJSONResponse(http.StatusOK, map[string]any{
-			"certificate":       "-----BEGIN CERTIFICATE-----\nMIIB...",
-			"ca_chain":          "-----BEGIN CERTIFICATE-----\nMIIC...",
-			"signed_governance": "-----BEGIN PKCS7-----\nGov...",
+			"certificate":    "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"ca_chain":       "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"governance_p7s": "MIME-Version: 1.0\nGov...",
+			"participant_id": "sensor-net",
 		}),
 	}}
 	var out bytes.Buffer

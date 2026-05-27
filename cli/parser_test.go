@@ -136,7 +136,7 @@ func TestParserEdgeParticipantHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil for edge-participant help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Manage Edge Participants") || !strings.Contains(out.String(), "create") {
+	if !strings.Contains(out.String(), "Manage Edge Participant Profiles") || !strings.Contains(out.String(), "create") {
 		t.Fatalf("unexpected edge-participant help: %s", out.String())
 	}
 }
