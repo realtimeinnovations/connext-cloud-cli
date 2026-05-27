@@ -96,18 +96,13 @@ By default the CLI resolves the API host from `~/.rticloud/config.json` (set by
 `rticloud configure --region <region>`), which maps to a cloud endpoint such as
 `https://us-west-2.cloud.dev-rti.com/api/v1`.
 
-When developing against a local Manager instance you can override both the API
-host and the Bearer token with environment variables — no `rticloud configure`
-needed:
+When developing against a local Manager instance you can override the API
+host with an environment variable:
 
 ```sh
 # Point all CLI API calls to the local Manager (e.g. started on port 8090).
 export CONNEXT_CLOUD_API_HOST="http://localhost:8090"
-
-# Inject the Bearer token directly, bypassing ~/.rticloud/credentials.json.
-export CONNEXT_CLOUD_ACCESS_TOKEN="<rti-cdb-token cookie from https://test.cloud.dev-rti.com>"
 ```
 
-With those two variables set, every `rticloud` command (e.g.
-`rticloud edge-system list`) will hit the local Manager instead of the cloud
-endpoint.
+With this variable set, every `rticloud` command (e.g. `rticloud edge-system list`) 
+will hit the local Manager instead of the cloud endpoint.
