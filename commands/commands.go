@@ -716,7 +716,7 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 	return nil
 }
 
-// ── Edge System Management ───────────────────────────────────────────────────
+// ── Provisioning Service Management ───────────────────────────────────────────────────
 
 func (runner *Runner) ListEdgeSystems() error {
 	response, err := runner.API.Get("/edge-systems")
@@ -795,14 +795,14 @@ func (runner *Runner) DeleteEdgeSystem(name string) error {
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "EdgeSystem '%s' deleted successfully.\n", name)
+		_, _ = fmt.Fprintf(runner.Out, "Provisioning Service '%s' deleted successfully.\n", name)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
 	return nil
 }
 
-// ── Edge Participants ────────────────────────────────────────────────────────
+// ── Participant Profiles ────────────────────────────────────────────────────────
 
 func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissionsFile string, effectiveRevocationSeconds int) error {
 	data, err := runner.ReadFile(permissionsFile)
@@ -882,14 +882,14 @@ func (runner *Runner) DeleteParticipant(edgeSystem string, participantID string)
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Participant '%s' deleted from EdgeSystem '%s'.\n", participantID, edgeSystem)
+		_, _ = fmt.Fprintf(runner.Out, "Participant '%s' deleted from Provisioning Service '%s'.\n", participantID, edgeSystem)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
 	return nil
 }
 
-// ── Edge Campaigns ───────────────────────────────────────────────────────────
+// ── Campaigns ───────────────────────────────────────────────────────────
 
 func parseDevicesFromCSV(data []byte) ([]any, error) {
 	r := csv.NewReader(bytes.NewReader(data))
@@ -1009,7 +1009,7 @@ func (runner *Runner) DeleteCampaign(edgeSystem string, participantID string, ca
 	return nil
 }
 
-// ── Edge Devices ─────────────────────────────────────────────────────────────
+// ── Devices ─────────────────────────────────────────────────────────────
 
 func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
 	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/devices")

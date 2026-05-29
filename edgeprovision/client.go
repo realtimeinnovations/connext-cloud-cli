@@ -22,15 +22,15 @@ type Doer interface {
 }
 
 // Client communicates with the Edge Provision API sidecar that runs inside
-// each EdgeSystem pod.  Device-facing endpoints require mTLS (the device
+// each Provisioning Service pod.  Device-facing endpoints require mTLS (the device
 // presents its client certificate and the server verifies it against the
-// EdgeSystem CA).
+// Provisioning Service CA).
 type Client struct {
 	// BaseURL is the Edge Provision API base URL (e.g. "https://alpha.devices.cloud.rti.com:8443").
 	BaseURL string
 	// HTTPClient is the underlying HTTP doer.  When mTLS is needed, it is
 	// configured with a tls.Config that provides the client cert and trusts
-	// the EdgeSystem CA.
+	// the Provisioning Service CA.
 	HTTPClient Doer
 }
 
@@ -52,7 +52,7 @@ func NewClient(baseURL string, sslVerify bool) *Client {
 // communication with the device-facing endpoints (port 8443 via nginx).
 //
 // certFile / keyFile: path to the device's PEM-encoded client certificate and key.
-// caFile: path to the EdgeSystem CA chain PEM used to verify the server.
+// caFile: path to the Provisioning Service CA chain PEM used to verify the server.
 // serverAddr: optional "host:port" to connect to at the TCP level (equivalent to
 // curl's --connect-to).  When non-empty the TLS dial target is overridden to
 // serverAddr while the TLS SNI / certificate verification use the URL hostname.

@@ -12,7 +12,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
-// Runner executes edge provision commands against the Edge Provision API.
+// Runner executes agent commands against the Provisioning Service API.
 // One Runner is created at startup and shared across subcommands; each
 // command builds its own Client on demand (mTLS or plain) because cert/key/ca
 // and base URL come from the user on the command line.
@@ -227,7 +227,7 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	return nil
 }
 
-// RequestPSK calls POST /psk to issue or rotate the EdgeSystem PSK (mTLS
+// RequestPSK calls POST /psk to issue or rotate the Provisioning Service PSK (mTLS
 // required).  If output is non-empty the full JSON response is written to
 // that path; otherwise it is printed to stdout.
 func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, output string) error {
