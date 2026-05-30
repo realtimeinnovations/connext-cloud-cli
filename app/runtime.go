@@ -196,7 +196,7 @@ func (runtime *Runtime) RunGateway(format string) error {
 			collectorPID = collectorCmd.Process.Pid
 			defer func() {
 				if collectorCmd.Process != nil {
-					_ = collectorCmd.Process.Kill()
+					terminal.KillProcess(collectorCmd.Process)
 				}
 			}()
 		}

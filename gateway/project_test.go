@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
 
 func TestDefaultSelectFallsBackToNumberedPromptWhenNonInteractive(t *testing.T) {
@@ -521,6 +522,81 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
 		t.Fatalf("missing restart hint: %s", out.String())
+	}
+}
+
+func TestRunCollectorServiceInterruptStopsProcessGroup(t *testing.T) {
+	if !supportsRoutingPTY() {
+		t.Skip("process-group interrupt behavior is Unix-only")
+	}
+	tmpDir := t.TempDir()
+	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
+	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(collectorDir, "coll1.xml"), []byte("<collector/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+trap 'exit 0' INT TERM
+sleep 30 &
+child=$!
+printf 'ready\n'
+wait "$child"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "rticollectorservicelite"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	interrupts := make(chan os.Signal, 1)
+	var out bytes.Buffer
+	app := NewGatewayApp(tmpDir, &out)
+	app.InterruptSignalFunc = func() (<-chan os.Signal, func()) {
+		return interrupts, func() {}
+	}
+	type result struct {
+		rc  int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rc, err := app.RunCollectorService(map[string]any{"observability": "obs", "templates": map[string]any{"collector": "coll1"}}, ConnextInstall{Path: install, Version: "7.7.0"}, false)
+		done <- result{rc: rc, err: err}
+	}()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		interrupts <- os.Interrupt
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.rc != 0 && got.rc != 130 {
+			t.Fatalf("unexpected rc: %d", got.rc)
+		}
+	case <-time.After(3 * time.Second):
+		state, _ := app.RuntimeState()
+		if pid := intFromAny(state["collector_pid"]); pid > 0 {
+			if process, err := os.FindProcess(pid); err == nil {
+				terminal.KillProcess(process)
+			}
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("collector did not stop after interrupt")
+	}
+	if !strings.Contains(out.String(), "Collector interrupted.") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+		t.Fatalf("missing logs hint: %s", out.String())
 	}
 }
 
