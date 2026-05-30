@@ -486,7 +486,7 @@ func TestEnrollDevice(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", ""); err != nil {
+	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -519,7 +519,7 @@ func TestEnrollDeviceToDirectory(t *testing.T) {
 		written[filepath.Base(path)] = string(data)
 		return nil
 	}
-	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", outputDir); err != nil {
+	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", outputDir); err != nil {
 		t.Fatal(err)
 	}
 	if written["identity.crt"] == "" {

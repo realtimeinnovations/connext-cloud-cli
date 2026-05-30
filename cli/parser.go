@@ -167,6 +167,17 @@ func printCommandList(out io.Writer, commands []*cobra.Command) {
 	}
 }
 
+// resolveConnextOutput returns the connext_artifacts directory (with trailing
+// separator so resolveOutputPath treats it as a directory) when --service and
+// --participant-id are set and the caller did not supply an explicit --output.
+// Falls back to the caller-supplied value (including "") in all other cases.
+func resolveConnextOutput(rt *app.Runtime, service, participantID, output string) string {
+	if output != "" || service == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
+		return output
+	}
+	return rt.EdgeStore.ConnextArtifactsDir(service, participantID) + string(os.PathSeparator)
+}
+
 func parentCommand(use string, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -1139,12 +1150,21 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("edge-sync", "Sync security artifacts from a Provisioning Service to this device")
 
+	// Persistent slot-selection flags shared by all subcommands.
+	var connextDir, service, participantID string
+	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Override the local artifact store base directory (default: <workdir>/.connext)")
+	cmd.PersistentFlags().StringVar(&service, "service", "", "Provisioning Service ID (selects the store slot)")
+	cmd.PersistentFlags().StringVar(&participantID, "participant-id", "", "Participant Profile ID")
+
 	// --disable-ssl-verify must not be used with edge-sync: all endpoints use
 	// mTLS and require certificate verification.  Reject it if supplied and
 	// hide it from help output (cobra inherits the help func to subcommands).
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
 		if c.Root().PersistentFlags().Changed("disable-ssl-verify") {
 			return fmt.Errorf("--disable-ssl-verify cannot be used with edge-sync commands: mTLS requires certificate verification")
+		}
+		if runtime != nil && runtime.EdgeStore != nil && connextDir != "" {
+			runtime.EdgeStore.BaseDir = connextDir
 		}
 		return nil
 	}
@@ -1156,15 +1176,15 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	})
 
 	{ // enroll
-		var serviceID, participantID, serial, csrFile, campaignToken, output string
+		var serial, csrFile, keyFile, campaignToken, output string
 		var macs []string
 		c := &cobra.Command{
 			Use:   "enroll",
 			Short: "Enroll this device with a Provisioning Service (first-time setup)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				if serviceID == "" {
-					return fmt.Errorf("--service-id is required")
+				if service == "" {
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1178,21 +1198,20 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
-				return runtime.Commands.EnrollDevice(serviceID, participantID, serial, macs, csrFile, campaignToken, output)
+				return runtime.Commands.EnrollDevice(service, participantID, serial, macs, csrFile, keyFile, campaignToken, output)
 			},
 		}
-		c.Flags().StringVar(&serviceID, "service-id", "", "Provisioning Service resource ID (namespace)")
-		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
 		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (can be specified multiple times)")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
+		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required by the enrollment endpoint)")
 		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save enrollment artifacts (identity.crt, identity-ca-chain.crt, signed_governance.p7s); prints JSON to stdout if not set")
 		cmd.AddCommand(c)
 	}
 
 	{ // identity
-		var url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output string
+		var url, certFile, keyFile, caFile, serverAddr, csrFile, output string
 		c := &cobra.Command{
 			Use:   "identity",
 			Short: "Request or renew an identity certificate",
@@ -1201,7 +1220,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output)
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
+				}
+				out := resolveConnextOutput(runtime, service, participantID, output)
+				return runtime.EdgeProvision.RequestIdentity(url, cert, key, ca, serverAddr, participantID, csrFile, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
@@ -1209,14 +1233,13 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save identity_cert_pem to this file path (prints full JSON to stdout if not set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identity_cert_pem to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
 	{ // permissions
-		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
+		var url, certFile, keyFile, caFile, serverAddr, output string
 		c := &cobra.Command{
 			Use:   "permissions",
 			Short: "Request or renew a permissions document",
@@ -1225,7 +1248,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID, output)
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
+				}
+				out := resolveConnextOutput(runtime, service, participantID, output)
+				return runtime.EdgeProvision.RequestPermissions(url, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
@@ -1233,8 +1261,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save permissions_doc_smime to this file path (prints full JSON to stdout if not set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissions_doc_smime to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
@@ -1245,7 +1272,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			Short: "Request or rotate a Pre-Shared Key",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile, serverAddr, output)
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
+				}
+				out := resolveConnextOutput(runtime, service, participantID, output)
+				return runtime.EdgeProvision.RequestPSK(url, cert, key, ca, serverAddr, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
@@ -1253,12 +1285,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this file path (prints to stdout if not set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
 	{ // crl
-		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
+		var url, certFile, keyFile, caFile, serverAddr, output string
 		c := &cobra.Command{
 			Use:   "crl",
 			Short: "Fetch the Certificate Revocation List",
@@ -1267,7 +1299,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
 				}
-				return runtime.EdgeProvision.GetCRL(url, certFile, keyFile, caFile, serverAddr, participantID, output)
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
+				}
+				out := resolveConnextOutput(runtime, service, participantID, output)
+				return runtime.EdgeProvision.GetCRL(url, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
@@ -1275,8 +1312,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
-		c.Flags().StringVarP(&output, "output", "o", "", "Output file (prints to stdout if not set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
@@ -1287,7 +1323,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			Short: "Get this device's enrollment and artifact status",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile, serverAddr)
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
+				}
+				return runtime.EdgeProvision.DeviceStatus(url, cert, key, ca, serverAddr)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")

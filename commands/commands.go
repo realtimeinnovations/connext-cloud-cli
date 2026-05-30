@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
@@ -40,6 +41,7 @@ type Runner struct {
 	MkdirAll     func(string, os.FileMode) error
 	Stat         func(string) (os.FileInfo, error)
 	CSRGenerator CSRGenerator
+	EdgeStore    *edgestore.Store
 }
 
 func New(api API, out io.Writer) *Runner {
@@ -1053,7 +1055,7 @@ var enrollArtifacts = []struct{ field, filename string }{
 	{"governance_p7s", "signed_governance.p7s"},
 }
 
-func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, campaignToken string, outputDir string) error {
+func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, keyFile string, campaignToken string, outputDir string) error {
 	data, err := runner.ReadFile(csrFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
@@ -1084,6 +1086,30 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 	if err := json.Unmarshal(body, &result); err != nil {
 		return err
 	}
+
+	// Write to the local artifact store when available.
+	if runner.EdgeStore != nil && edgeSystemID != "" && participantID != "" {
+		arts := edgestore.EnrollArtifacts{
+			DeviceCertPEM: []byte(stringField(result, "certificate")),
+			CAChainPEM:    []byte(stringField(result, "ca_chain")),
+			GovernanceP7S: []byte(stringField(result, "governance_p7s")),
+		}
+		if keyFile != "" {
+			keyData, err := runner.ReadFile(keyFile)
+			if err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not read key file %s: %v\n", keyFile, err)
+			} else {
+				arts.PrivateKeyPEM = keyData
+			}
+		}
+		if err := runner.EdgeStore.WriteArtifacts(edgeSystemID, participantID, arts); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:     %s\n  Participant: %s\n  Store:       %s\n",
+			edgeSystemID, participantID, runner.EdgeStore.SlotDir(edgeSystemID, participantID))
+		return nil
+	}
+
 	if outputDir == "" {
 		formatted, _ := json.MarshalIndent(result, "", "  ")
 		_, _ = fmt.Fprintln(runner.Out, string(formatted))
@@ -1104,4 +1130,9 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", destPath)
 	}
 	return nil
+}
+
+func stringField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
 }

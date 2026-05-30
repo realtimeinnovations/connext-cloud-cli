@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"path/filepath"
+
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
@@ -15,6 +17,7 @@ import (
 	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/spy"
@@ -29,6 +32,7 @@ type Runtime struct {
 	Gateway       *gateway.GatewayApp
 	Spy           *spy.App
 	EdgeProvision *edgeprovision.Runner
+	EdgeStore     *edgestore.Store
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -68,6 +72,8 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	}
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
 	edgeProvisionRunner := edgeprovision.NewRunner(out)
+	edgeStoreRunner := edgestore.New(filepath.Join(workDir, ".connext"))
+	commandRunner.EdgeStore = edgeStoreRunner
 	return &Runtime{
 		Out:           out,
 		Config:        configManager,
@@ -77,8 +83,10 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		Gateway:       gatewayApp,
 		Spy:           spyApp,
 		EdgeProvision: edgeProvisionRunner,
+		EdgeStore:     edgeStoreRunner,
 	}
 }
+
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {
