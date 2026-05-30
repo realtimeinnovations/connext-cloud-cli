@@ -119,94 +119,94 @@ func TestParserRejectsSpyObsCommand(t *testing.T) {
 	}
 }
 
-func TestParserProvisioningServiceHelp(t *testing.T) {
+func TestParserEdgeProvisioningServiceHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"provisioning-service"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "service"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for provisioning-service help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning service help, got %v", err)
 	}
 	if !strings.Contains(out.String(), "Manage Provisioning Services") || !strings.Contains(out.String(), "create") {
-		t.Fatalf("unexpected provisioning-service help: %s", out.String())
+		t.Fatalf("unexpected edge-provisioning service help: %s", out.String())
 	}
 }
 
-func TestParserParticipantProfileHelp(t *testing.T) {
+func TestParserEdgeProvisioningProfileHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"participant-profile"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "profile"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for participant-profile help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning profile help, got %v", err)
 	}
 	if !strings.Contains(out.String(), "Manage Participant Profiles") || !strings.Contains(out.String(), "create") {
-		t.Fatalf("unexpected participant-profile help: %s", out.String())
+		t.Fatalf("unexpected edge-provisioning profile help: %s", out.String())
 	}
 }
 
-func TestParserCampaignHelp(t *testing.T) {
+func TestParserEdgeProvisioningCampaignHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"campaign"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "campaign"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for campaign help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning campaign help, got %v", err)
 	}
 	if !strings.Contains(out.String(), "Manage Campaigns") || !strings.Contains(out.String(), "create") {
-		t.Fatalf("unexpected campaign help: %s", out.String())
+		t.Fatalf("unexpected edge-provisioning campaign help: %s", out.String())
 	}
 }
 
-func TestParserDeviceHelp(t *testing.T) {
+func TestParserEdgeProvisioningDeviceHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"device"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "device"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for device help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning device help, got %v", err)
 	}
 	if !strings.Contains(out.String(), "Manage Devices") || !strings.Contains(out.String(), "list") {
-		t.Fatalf("unexpected device help: %s", out.String())
+		t.Fatalf("unexpected edge-provisioning device help: %s", out.String())
 	}
 }
 
-func TestParserAgentHelp(t *testing.T) {
+func TestParserEdgeSyncHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"agent"}, &out, &out, nil)
+	err := Execute([]string{"edge-sync"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for agent help, got %v", err)
+		t.Fatalf("expected nil for edge-sync help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Device agent") || !strings.Contains(out.String(), "healthz") {
-		t.Fatalf("unexpected agent help: %s", out.String())
+	if !strings.Contains(out.String(), "Sync security artifacts") || !strings.Contains(out.String(), "healthz") {
+		t.Fatalf("unexpected edge-sync help: %s", out.String())
 	}
 }
 
-func TestParserProvisioningServiceRequiresName(t *testing.T) {
-	err := Execute([]string{"provisioning-service", "query"}, io.Discard, io.Discard, nil)
+func TestParserEdgeProvisioningServiceRequiresName(t *testing.T) {
+	err := Execute([]string{"edge-provisioning", "service", "query"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected --name required error")
 	}
 }
 
-func TestParserParticipantProfileRequiresProvisioningService(t *testing.T) {
-	err := Execute([]string{"participant-profile", "list"}, io.Discard, io.Discard, nil)
+func TestParserEdgeProvisioningProfileRequiresService(t *testing.T) {
+	err := Execute([]string{"edge-provisioning", "profile", "list"}, io.Discard, io.Discard, nil)
 	if err == nil {
-		t.Fatal("expected --edge-system required error")
+		t.Fatal("expected --service required error")
 	}
 }
 
-func TestParserAgentIdentityRequiresParticipantID(t *testing.T) {
-	err := Execute([]string{"agent", "identity"}, io.Discard, io.Discard, nil)
+func TestParserEdgeSyncIdentityRequiresParticipantID(t *testing.T) {
+	err := Execute([]string{"edge-sync", "identity"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected --participant-id required error")
 	}
 }
 
-func TestParserAgentRejectsDisableSSLVerify(t *testing.T) {
-	err := Execute([]string{"--disable-ssl-verify", "agent", "healthz", "--url", "http://localhost:8080"}, io.Discard, io.Discard, nil)
-	if err == nil || !strings.Contains(err.Error(), "cannot be used with agent") {
+func TestParserEdgeSyncRejectsDisableSSLVerify(t *testing.T) {
+	err := Execute([]string{"--disable-ssl-verify", "edge-sync", "healthz", "--url", "http://localhost:8080"}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot be used with edge-sync") {
 		t.Fatalf("expected disable-ssl-verify rejection, got: %v", err)
 	}
 }
 
-func TestParserAgentHelpHidesDisableSSLVerify(t *testing.T) {
+func TestParserEdgeSyncHelpHidesDisableSSLVerify(t *testing.T) {
 	var out bytes.Buffer
-	_ = Execute([]string{"agent"}, &out, &out, nil)
+	_ = Execute([]string{"edge-sync"}, &out, &out, nil)
 	if strings.Contains(out.String(), "disable-ssl-verify") {
-		t.Fatalf("disable-ssl-verify should not appear in agent help: %s", out.String())
+		t.Fatalf("disable-ssl-verify should not appear in edge-sync help: %s", out.String())
 	}
 }
 
@@ -214,11 +214,8 @@ func TestRootHelpShowsOperatorCommands(t *testing.T) {
 	var out bytes.Buffer
 	_ = Execute(nil, &out, &out, nil)
 	output := out.String()
-	if !strings.Contains(output, "provisioning-service") ||
-		!strings.Contains(output, "participant-profile") ||
-		!strings.Contains(output, "campaign") ||
-		!strings.Contains(output, "device") ||
-		!strings.Contains(output, "agent") {
+	if !strings.Contains(output, "edge-provisioning") ||
+		!strings.Contains(output, "edge-sync") {
 		t.Fatalf("expected operator commands in root help: %s", output)
 	}
 }

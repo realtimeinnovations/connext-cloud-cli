@@ -15,7 +15,6 @@ const commandGroupAnnotation = "rticloud.commandGroup"
 var rootCommandGroups = []string{
 	"Connect to Connext Cloud",
 	"Manage Connext Cloud",
-	"Manage Provisioning Service",
 	"Setup",
 }
 
@@ -68,11 +67,8 @@ func newRootCommand(runtime *app.Runtime, disableSSLVerify *bool) *cobra.Command
 		groupCommand(newAppClientCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newNetworkCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newLicenseCommand(runtime), "Manage Connext Cloud"),
-		groupCommand(newEdgeSystemCommand(runtime), "Manage Provisioning Service"),
-		groupCommand(newEdgeParticipantCommand(runtime), "Manage Provisioning Service"),
-		groupCommand(newEdgeCampaignCommand(runtime), "Manage Provisioning Service"),
-		groupCommand(newEdgeDeviceCommand(runtime), "Manage Provisioning Service"),
-		groupCommand(newEdgeProvisionCommand(runtime), "Connect to Connext Cloud"),
+		groupCommand(newEdgeProvisioningCommand(runtime), "Manage Connext Cloud"),
+		groupCommand(newEdgeSyncCommand(runtime), "Connect to Connext Cloud"),
 		groupCommand(newGatewayCommand(runtime), "Connect to Connext Cloud"),
 		groupCommand(newSpyCommand(runtime), "Connect to Connext Cloud"),
 	)
@@ -797,10 +793,23 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── Edge System ──────────────────────────────────────────────────────────────
+// ── Edge Provisioning (parent) ────────────────────────────────────────────────
 
-func newEdgeSystemCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("provisioning-service", "Manage Provisioning Services")
+func newEdgeProvisioningCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("edge-provisioning", "Manage Edge Provisioning Services")
+	cmd.AddCommand(
+		newEdgeProvisioningServiceCommand(runtime),
+		newEdgeProvisioningProfileCommand(runtime),
+		newEdgeProvisioningCampaignCommand(runtime),
+		newEdgeProvisioningDeviceCommand(runtime),
+	)
+	return cmd
+}
+
+// ── edge-provisioning service ─────────────────────────────────────────────────
+
+func newEdgeProvisioningServiceCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("service", "Manage Provisioning Services")
 
 	{ // list
 		c := &cobra.Command{
@@ -873,10 +882,10 @@ func newEdgeSystemCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── Edge Participant ─────────────────────────────────────────────────────────
+// ── edge-provisioning profile ────────────────────────────────────────────────
 
-func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("participant-profile", "Manage Participant Profiles")
+func newEdgeProvisioningProfileCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("profile", "Manage Participant Profiles")
 
 	{ // create
 		var edgeSystem, name, permissionsFile string
@@ -887,7 +896,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if name == "" {
 					return fmt.Errorf("--name is required")
@@ -898,7 +907,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.CreateParticipant(edgeSystem, name, permissionsFile, effectiveRevocationSeconds)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&name, "name", "", "Participant name")
 		c.Flags().StringVar(&permissionsFile, "permissions-file", "", "Path to DDS Security Permissions XML file")
 		c.Flags().IntVar(&effectiveRevocationSeconds, "effective-revocation-seconds", 3600, "Certificate revocation period in seconds")
@@ -913,12 +922,12 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				return runtime.Commands.ListParticipants(edgeSystem)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		cmd.AddCommand(c)
 	}
 
@@ -930,7 +939,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -938,7 +947,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.QueryParticipant(edgeSystem, participantID)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		cmd.AddCommand(c)
 	}
@@ -951,7 +960,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -959,7 +968,7 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.DeleteParticipant(edgeSystem, participantID)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		cmd.AddCommand(c)
 	}
@@ -967,9 +976,9 @@ func newEdgeParticipantCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── Edge Campaign ────────────────────────────────────────────────────────────
+// ── edge-provisioning campaign ───────────────────────────────────────────────
 
-func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
+func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("campaign", "Manage Campaigns")
 
 	{ // create
@@ -980,7 +989,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -991,7 +1000,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.CreateCampaign(edgeSystem, participantID, devicesFile)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&devicesFile, "devices-file", "", "Path to JSON or CSV file with device inventory")
 		cmd.AddCommand(c)
@@ -1005,7 +1014,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1013,7 +1022,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.ListCampaigns(edgeSystem, participantID)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		cmd.AddCommand(c)
 	}
@@ -1026,7 +1035,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1037,7 +1046,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.ListCampaignDevices(edgeSystem, participantID, campaignID)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
 		cmd.AddCommand(c)
@@ -1051,7 +1060,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1062,7 +1071,7 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.DeleteCampaign(edgeSystem, participantID, campaignID)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
 		cmd.AddCommand(c)
@@ -1071,9 +1080,9 @@ func newEdgeCampaignCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── Edge Device ──────────────────────────────────────────────────────────────
+// ── edge-provisioning device ─────────────────────────────────────────────────
 
-func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
+func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("device", "Manage Devices")
 
 	{ // list
@@ -1084,12 +1093,12 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				return runtime.Commands.ListEdgeDevices(edgeSystem)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		cmd.AddCommand(c)
 	}
 
@@ -1101,7 +1110,7 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--edge-system is required")
+					return fmt.Errorf("--service is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1115,23 +1124,47 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.Commands.RevokeDevice(edgeSystem, participantID, campaignID, serial)
 			},
 		}
-		c.Flags().StringVar(&edgeSystem, "edge-system", "", "Provisioning Service name")
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
 		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
 		cmd.AddCommand(c)
 	}
 
+	return cmd
+}
+
+// ── edge-sync ─────────────────────────────────────────────────────────────────
+
+func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("edge-sync", "Sync security artifacts from a Provisioning Service to this device")
+
+	// --disable-ssl-verify must not be used with edge-sync: all endpoints use
+	// mTLS and require certificate verification.  Reject it if supplied and
+	// hide it from help output (cobra inherits the help func to subcommands).
+	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		if c.Root().PersistentFlags().Changed("disable-ssl-verify") {
+			return fmt.Errorf("--disable-ssl-verify cannot be used with edge-sync commands: mTLS requires certificate verification")
+		}
+		return nil
+	}
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		f := c.Root().PersistentFlags().Lookup("disable-ssl-verify")
+		f.Hidden = true
+		defer func() { f.Hidden = false }()
+		defaultHelp(c)
+	})
+
 	{ // enroll
-		var edgeSystemID, participantID, serial, csrFile, campaignToken, output string
+		var serviceID, participantID, serial, csrFile, campaignToken, output string
 		var macs []string
 		c := &cobra.Command{
 			Use:   "enroll",
-			Short: "Enroll a Device",
+			Short: "Enroll this device with a Provisioning Service (first-time setup)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				if edgeSystemID == "" {
-					return fmt.Errorf("--edge-system-id is required")
+				if serviceID == "" {
+					return fmt.Errorf("--service-id is required")
 				}
 				if participantID == "" {
 					return fmt.Errorf("--participant-id is required")
@@ -1145,10 +1178,10 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
-				return runtime.Commands.EnrollDevice(edgeSystemID, participantID, serial, macs, csrFile, campaignToken, output)
+				return runtime.Commands.EnrollDevice(serviceID, participantID, serial, macs, csrFile, campaignToken, output)
 			},
 		}
-		c.Flags().StringVar(&edgeSystemID, "edge-system-id", "", "Provisioning Service resource ID (namespace)")
+		c.Flags().StringVar(&serviceID, "service-id", "", "Provisioning Service resource ID (namespace)")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
 		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (can be specified multiple times)")
@@ -1158,85 +1191,11 @@ func newEdgeDeviceCommand(runtime *app.Runtime) *cobra.Command {
 		cmd.AddCommand(c)
 	}
 
-	return cmd
-}
-
-// ── Edge Provision ───────────────────────────────────────────────────────────
-
-func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("agent", "Device agent -- interact with a Provisioning Service over mTLS")
-
-	// --disable-ssl-verify must not be used with agent: all endpoints use mTLS
-	// and require certificate verification.  Reject it if supplied and hide it
-	// from the agent help output (cobra inherits the help func to subcommands).
-	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
-		if c.Root().PersistentFlags().Changed("disable-ssl-verify") {
-			return fmt.Errorf("--disable-ssl-verify cannot be used with agent commands: mTLS requires certificate verification")
-		}
-		return nil
-	}
-	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
-		f := c.Root().PersistentFlags().Lookup("disable-ssl-verify")
-		f.Hidden = true
-		defer func() { f.Hidden = false }()
-		defaultHelp(c)
-	})
-
-	{ // healthz
-		var url string
-		c := &cobra.Command{
-			Use:   "healthz",
-			Short: "Check Provision API health",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.Healthz(url)
-			},
-		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision signing API base URL (e.g. http://localhost:8080)")
-		cmd.AddCommand(c)
-	}
-
-	{ // sign
-		var url, csrBase64 string
-		c := &cobra.Command{
-			Use:   "sign",
-			Short: "Sign a CSR with the Provisioning Service CA",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				if csrBase64 == "" {
-					return fmt.Errorf("--csr is required (base64-encoded PEM CSR)")
-				}
-				return runtime.EdgeProvision.SignCSR(url, csrBase64)
-			},
-		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision signing API base URL")
-		c.Flags().StringVar(&csrBase64, "csr", "", "Base64-encoded PEM CSR")
-		cmd.AddCommand(c)
-	}
-
-	{ // device-status
-		var url, certFile, keyFile, caFile, serverAddr string
-		c := &cobra.Command{
-			Use:   "device-status",
-			Short: "Get device status (mTLS)",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile, serverAddr)
-			},
-		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")
-		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
-		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
-		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
-		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		cmd.AddCommand(c)
-	}
-
 	{ // identity
 		var url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output string
 		c := &cobra.Command{
 			Use:   "identity",
-			Short: "Request or renew an identity certificate (mTLS)",
+			Short: "Request or renew an identity certificate",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
@@ -1245,7 +1204,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1260,7 +1219,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
 		c := &cobra.Command{
 			Use:   "permissions",
-			Short: "Request or renew a permissions document (mTLS)",
+			Short: "Request or renew a permissions document",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
@@ -1269,7 +1228,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID, output)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1283,13 +1242,13 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		var url, certFile, keyFile, caFile, serverAddr, output string
 		c := &cobra.Command{
 			Use:   "psk",
-			Short: "Request or rotate PSK (mTLS)",
+			Short: "Request or rotate a Pre-Shared Key",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return runtime.EdgeProvision.RequestPSK(url, certFile, keyFile, caFile, serverAddr, output)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1302,7 +1261,7 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 		var url, certFile, keyFile, caFile, serverAddr, participantID, output string
 		c := &cobra.Command{
 			Use:   "crl",
-			Short: "Fetch the Certificate Revocation List (mTLS)",
+			Short: "Fetch the Certificate Revocation List",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
@@ -1311,13 +1270,45 @@ func newEdgeProvisionCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.GetCRL(url, certFile, keyFile, caFile, serverAddr, participantID, output)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Edge Provision device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVarP(&output, "output", "o", "", "Output file (prints to stdout if not set)")
+		cmd.AddCommand(c)
+	}
+
+	{ // status
+		var url, certFile, keyFile, caFile, serverAddr string
+		c := &cobra.Command{
+			Use:   "status",
+			Short: "Get this device's enrollment and artifact status",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runtime.EdgeProvision.DeviceStatus(url, certFile, keyFile, caFile, serverAddr)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		cmd.AddCommand(c)
+	}
+
+	{ // healthz
+		var url string
+		c := &cobra.Command{
+			Use:   "healthz",
+			Short: "Check Provisioning Service connectivity and health",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runtime.EdgeProvision.Healthz(url)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Provisioning Service signing API base URL (e.g. http://localhost:8080)")
 		cmd.AddCommand(c)
 	}
 
