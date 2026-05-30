@@ -3,6 +3,7 @@ package edgestore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Store manages the local artifact cache under BaseDir.
@@ -128,4 +129,35 @@ func (s *Store) ResolveMTLSDefaults(serviceID, participantID, cert, key, ca stri
 func (s *Store) fileExists(path string) bool {
 	_, err := s.Stat(path)
 	return err == nil
+}
+
+// DeviceURLPath is the path of the stored device endpoint URL for a slot.
+func (s *Store) DeviceURLPath(serviceID, participantID string) string {
+	return filepath.Join(s.SlotDir(serviceID, participantID), "device_url")
+}
+
+// WriteDeviceURL persists the device endpoint URL for a slot, creating the
+// slot directory as needed.  An empty url is silently ignored.
+func (s *Store) WriteDeviceURL(serviceID, participantID, deviceURL string) error {
+	if deviceURL == "" {
+		return nil
+	}
+	if err := s.MkdirAll(s.SlotDir(serviceID, participantID), 0o755); err != nil {
+		return err
+	}
+	return s.WriteFile(s.DeviceURLPath(serviceID, participantID), []byte(deviceURL), 0o644)
+}
+
+// ResolveDeviceURL returns the stored device endpoint URL for a slot,
+// or "" if none has been saved yet.
+func (s *Store) ResolveDeviceURL(serviceID, participantID string) string {
+	p := s.DeviceURLPath(serviceID, participantID)
+	if !s.fileExists(p) {
+		return ""
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

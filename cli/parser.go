@@ -178,6 +178,47 @@ func resolveConnextOutput(rt *app.Runtime, service, participantID, output string
 	return rt.EdgeStore.ConnextArtifactsDir(service, participantID) + string(os.PathSeparator)
 }
 
+// resolveConnextURL returns the device endpoint URL from the local store when
+// --url is not set and a slot is available.  Falls back to the caller-supplied
+// value (including "") in all other cases.
+func resolveConnextURL(rt *app.Runtime, service, participantID, rawURL string) string {
+	if rawURL != "" || service == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
+		return rawURL
+	}
+	return rt.EdgeStore.ResolveDeviceURL(service, participantID)
+}
+
+// deriveDeviceURL constructs the device endpoint base URL from the Manager API
+// host URL and the service namespace.  The "ces-" naming prefix is stripped
+// from the service namespace (Kubernetes convention for the edge-service).
+//
+//	API host                              → device URL
+//	https://test.cloud.dev-rti.com/…     → https://<svc>.devices.cloud.dev-rti.com
+//	https://us-west-2.cloud.dev-rti.com  → https://<svc>.devices.cloud.dev-rti.com
+//	http://localhost:8090                 → https://<svc>.devices.cloud.dev-rti.com (dev-local fallback)
+func deriveDeviceURL(apiHost, serviceID string) string {
+	// Strip scheme, extract hostname.
+	h := apiHost
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	// Strip path/port.
+	if i := strings.IndexAny(h, "/:"); i >= 0 {
+		h = h[:i]
+	}
+	// Find ".cloud." and keep everything from "cloud." onwards.
+	const marker = ".cloud."
+	cloudDomain := ""
+	if idx := strings.Index(h, marker); idx >= 0 {
+		cloudDomain = h[idx+1:] // e.g. "cloud.dev-rti.com"
+	} else {
+		// Local/dev deployment (e.g. localhost): fall back to the dev-rti cloud domain.
+		cloudDomain = "cloud.dev-rti.com"
+	}
+	name := strings.TrimPrefix(serviceID, "ces-")
+	return "https://" + name + ".devices." + cloudDomain
+}
+
 func parentCommand(use string, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -1198,7 +1239,18 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
-				return runtime.Commands.EnrollDevice(service, participantID, serial, macs, csrFile, keyFile, campaignToken, output)
+				if err := runtime.Commands.EnrollDevice(service, participantID, serial, macs, csrFile, keyFile, campaignToken, output); err != nil {
+					return err
+				}
+				// Persist the device endpoint URL so subsequent commands don't
+				// need --url.
+				if runtime.EdgeStore != nil {
+					deviceURL := deriveDeviceURL(runtime.Config.GetAPIURLSafe(), service)
+					if err := runtime.EdgeStore.WriteDeviceURL(service, participantID, deviceURL); err != nil {
+						_, _ = fmt.Fprintf(runtime.Out, "Warning: could not save device URL: %v\n", err)
+					}
+				}
+				return nil
 			},
 		}
 		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
@@ -1225,10 +1277,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
 				}
 				out := resolveConnextOutput(runtime, service, participantID, output)
-				return runtime.EdgeProvision.RequestIdentity(url, cert, key, ca, serverAddr, participantID, csrFile, out)
+				resolvedURL := resolveConnextURL(runtime, service, participantID, url)
+				return runtime.EdgeProvision.RequestIdentity(resolvedURL, cert, key, ca, serverAddr, participantID, csrFile, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1253,10 +1306,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
 				}
 				out := resolveConnextOutput(runtime, service, participantID, output)
-				return runtime.EdgeProvision.RequestPermissions(url, cert, key, ca, serverAddr, participantID, out)
+				resolvedURL := resolveConnextURL(runtime, service, participantID, url)
+				return runtime.EdgeProvision.RequestPermissions(resolvedURL, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1277,10 +1331,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
 				}
 				out := resolveConnextOutput(runtime, service, participantID, output)
-				return runtime.EdgeProvision.RequestPSK(url, cert, key, ca, serverAddr, out)
+				resolvedURL := resolveConnextURL(runtime, service, participantID, url)
+				return runtime.EdgeProvision.RequestPSK(resolvedURL, cert, key, ca, serverAddr, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1304,10 +1359,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
 				}
 				out := resolveConnextOutput(runtime, service, participantID, output)
-				return runtime.EdgeProvision.GetCRL(url, cert, key, ca, serverAddr, participantID, out)
+				resolvedURL := resolveConnextURL(runtime, service, participantID, url)
+				return runtime.EdgeProvision.GetCRL(resolvedURL, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
@@ -1327,10 +1383,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if runtime != nil && runtime.EdgeStore != nil {
 					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(service, participantID, cert, key, ca)
 				}
-				return runtime.EdgeProvision.DeviceStatus(url, cert, key, ca, serverAddr)
+				resolvedURL := resolveConnextURL(runtime, service, participantID, url)
+				return runtime.EdgeProvision.DeviceStatus(resolvedURL, cert, key, ca, serverAddr)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Provisioning Service device API base URL (e.g. https://alpha.devices.cloud.rti.com:8443)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
