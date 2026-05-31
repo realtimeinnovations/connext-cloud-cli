@@ -86,6 +86,9 @@ func (s *Store) WriteArtifacts(serviceID, participantID string, a EnrollArtifact
 		if err := s.WriteFile(s.CAChainPath(serviceID, participantID), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
+		if err := s.WriteFile(filepath.Join(connextDir, "ca-chain.pem"), a.CAChainPEM, 0o644); err != nil {
+			return err
+		}
 	}
 	if len(a.PrivateKeyPEM) > 0 {
 		if err := s.WriteFile(s.PrivateKeyPath(serviceID, participantID), a.PrivateKeyPEM, 0o600); err != nil {

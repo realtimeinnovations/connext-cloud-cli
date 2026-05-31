@@ -1105,6 +1105,15 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		if err := runner.EdgeStore.WriteArtifacts(edgeSystemID, participantID, arts); err != nil {
 			return err
 		}
+		// enroll_lease.json — written to connext_artifacts/ when the response
+		// contains a top-level "lease" or "server_time_utc" key.
+		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
+			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
+			leaseDest := filepath.Join(runner.EdgeStore.ConnextArtifactsDir(edgeSystemID, participantID), "enroll_lease.json")
+			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
+			}
+		}
 		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:     %s\n  Participant: %s\n  Store:       %s\n",
 			edgeSystemID, participantID, runner.EdgeStore.SlotDir(edgeSystemID, participantID))
 		return nil
@@ -1129,10 +1138,34 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		}
 		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", destPath)
 	}
+	if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
+		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
+		leaseDest := filepath.Join(outputDir, "enroll_lease.json")
+		if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", leaseDest)
+	}
 	return nil
 }
 
 func stringField(m map[string]any, key string) string {
 	v, _ := m[key].(string)
 	return v
+}
+
+// enrollExtractLease picks "lease" and "server_time_utc" from an enrollment
+// response, returning nil when neither key is present.
+func enrollExtractLease(result map[string]any) map[string]any {
+	out := map[string]any{}
+	if v, ok := result["lease"]; ok {
+		out["lease"] = v
+	}
+	if v, ok := result["server_time_utc"]; ok {
+		out["server_time_utc"] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

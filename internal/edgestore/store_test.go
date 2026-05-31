@@ -58,6 +58,7 @@ func TestWriteArtifacts(t *testing.T) {
 
 	check(s.DeviceCertPath("svc1", "pp1"), "CERT")
 	check(s.CAChainPath("svc1", "pp1"), "CHAIN")
+	check(filepath.Join(s.ConnextArtifactsDir("svc1", "pp1"), "ca-chain.pem"), "CHAIN")
 	check(s.PrivateKeyPath("svc1", "pp1"), "KEY")
 	check(filepath.Join(s.ConnextArtifactsDir("svc1", "pp1"), "governance.p7s"), "GOV")
 

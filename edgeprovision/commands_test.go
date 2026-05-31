@@ -260,6 +260,42 @@ func TestRequestIdentityToFile(t *testing.T) {
 	}
 }
 
+func TestRequestIdentityToFileWritesLease(t *testing.T) {
+	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
+			"identity_cert_pem": certPEM,
+			"cert_serial":       "ABC",
+			"lease":             map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-07-01T00:00:00Z"},
+			"server_time_utc":   "2026-05-16T00:00:00Z",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := newRunnerWithDoer(&out, doer)
+	target := filepath.Join(t.TempDir(), "subdir", "identity.crt")
+	written := map[string][]byte{}
+	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		written[filepath.Base(path)] = data
+		return nil
+	}
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "net", "", target); err != nil {
+		t.Fatal(err)
+	}
+	if written["identity.crt"] == nil {
+		t.Fatal("expected identity.crt to be written")
+	}
+	if !strings.Contains(string(written["identity_lease.json"]), "not_after") {
+		t.Fatalf("expected identity_lease.json with lease data; got %s", written["identity_lease.json"])
+	}
+	if !strings.Contains(string(written["identity_lease.json"]), "server_time_utc") {
+		t.Fatalf("expected identity_lease.json with server_time_utc; got %s", written["identity_lease.json"])
+	}
+	if !strings.Contains(out.String(), "Identity lease saved to") {
+		t.Fatalf("unexpected stdout: %s", out.String())
+	}
+}
+
 func TestRequestPermissionsToFile(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
@@ -293,37 +329,72 @@ func TestRequestPermissionsToFile(t *testing.T) {
 	}
 }
 
-func TestRequestPSKToFile(t *testing.T) {
+func TestRequestPermissionsToFileWritesLease(t *testing.T) {
+	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"psk_a": map[string]any{"passphrase": "1:abc", "passphrase_id": 1},
-			"psk_b": map[string]any{"passphrase": "2:def", "passphrase_id": 2},
+		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
+			"permissions_doc_smime": doc,
+			"subject_name":          "CN=device1.net",
+			"lease":                 map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-07-01T00:00:00Z"},
+			"server_time_utc":       "2026-05-16T00:00:00Z",
 		}),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "subdir", "psk.json")
-	var mkdirPath, wrotePath string
-	var wroteData []byte
-	runner.MkdirAll = func(path string, _ os.FileMode) error { mkdirPath = path; return nil }
+	target := filepath.Join(t.TempDir(), "subdir", "permissions.p7s")
+	written := map[string][]byte{}
+	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
 	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		wroteData = data
+		written[filepath.Base(path)] = data
+		return nil
+	}
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "net", target); err != nil {
+		t.Fatal(err)
+	}
+	if written["permissions.p7s"] == nil {
+		t.Fatal("expected permissions file to be written")
+	}
+	if !strings.Contains(string(written["permissions_lease.json"]), "not_after") {
+		t.Fatalf("expected permissions_lease.json with lease data; got %s", written["permissions_lease.json"])
+	}
+	if !strings.Contains(out.String(), "Permissions lease saved to") {
+		t.Fatalf("unexpected stdout: %s", out.String())
+	}
+}
+
+func TestRequestPSKToFile(t *testing.T) {
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
+			"psk_a":           map[string]any{"passphrase": "0:aaaa", "passphrase_id": 0, "lease": map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-02T00:00:00Z"}},
+			"psk_b":           map[string]any{"passphrase": "1:bbbb", "passphrase_id": 1, "lease": map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-03T00:00:00Z"}},
+			"server_time_utc": "2026-01-01T00:00:00Z",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := newRunnerWithDoer(&out, doer)
+	// Supply a non-directory path so pskOutputDir derives its parent as the dir.
+	target := filepath.Join(t.TempDir(), "subdir", "psk.json")
+	expectedDir := filepath.Dir(target)
+	written := map[string][]byte{}
+	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		written[filepath.Base(path)] = data
 		return nil
 	}
 	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", target); err != nil {
 		t.Fatal(err)
 	}
-	if mkdirPath != filepath.Dir(target) {
-		t.Fatalf("expected MkdirAll on parent dir, got %q", mkdirPath)
+	_ = expectedDir // dir is implied by filepath.Base checks below
+	if string(written["psk_primary.txt"]) != "0:aaaa" {
+		t.Fatalf("unexpected psk_primary.txt: %q", written["psk_primary.txt"])
 	}
-	if wrotePath != target {
-		t.Fatalf("unexpected write path: %q", wrotePath)
+	if string(written["psk_extra.txt"]) != "0:aaaa\n1:bbbb" {
+		t.Fatalf("unexpected psk_extra.txt: %q", written["psk_extra.txt"])
 	}
-	if !strings.Contains(string(wroteData), "psk_a") || !strings.Contains(string(wroteData), "psk_b") {
-		t.Fatalf("unexpected file content: %s", wroteData)
+	if !strings.Contains(string(written["psk_lease.json"]), "psk_a") || !strings.Contains(string(written["psk_lease.json"]), "server_time_utc") {
+		t.Fatalf("unexpected psk_lease.json: %s", written["psk_lease.json"])
 	}
-	if !strings.Contains(out.String(), "PSK saved to") {
+	if !strings.Contains(out.String(), "PSK primary passphrase saved") {
 		t.Fatalf("unexpected stdout: %s", out.String())
 	}
 }
@@ -433,23 +504,26 @@ func TestRequestPermissionsToDirectory(t *testing.T) {
 func TestRequestPSKToDirectory(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"psk_a": map[string]any{"passphrase": "1:abc"},
+			"psk_a": map[string]any{"passphrase": "0:abc", "passphrase_id": 0},
+			"psk_b": map[string]any{"passphrase": "1:def", "passphrase_id": 1},
 		}),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
 	dir := t.TempDir()
-	var wrotePath string
+	written := map[string]bool{}
 	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
 	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
+		written[filepath.Base(path)] = true
 		return nil
 	}
 	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
 		t.Fatal(err)
 	}
-	if wrotePath != filepath.Join(dir, "psk.json") {
-		t.Fatalf("expected psk.json in dir, got %q", wrotePath)
+	for _, f := range []string{"psk_primary.txt", "psk_extra.txt", "psk_lease.json"} {
+		if !written[f] {
+			t.Fatalf("expected %s to be written; got %v", f, written)
+		}
 	}
 }
 

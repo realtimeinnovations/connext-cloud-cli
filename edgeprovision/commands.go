@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
@@ -134,6 +135,38 @@ func (runner *Runner) saveToFile(outputPath string, data []byte) error {
 	return runner.WriteFile(outputPath, data, 0o644)
 }
 
+// extractLease builds a summary map containing only the "lease" and
+// "server_time_utc" keys from a JSON response.  Returns nil when neither key
+// is present.
+func extractLease(result map[string]any) map[string]any {
+	out := map[string]any{}
+	if v, ok := result["lease"]; ok {
+		out["lease"] = v
+	}
+	if v, ok := result["server_time_utc"]; ok {
+		out["server_time_utc"] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// pskOutputDir returns the directory in which the PSK output files should be
+// written.  Unlike resolveOutputPath it always treats the argument as a
+// directory reference: if output already ends with the path separator or
+// points to an existing directory it is used as-is; otherwise the parent
+// directory of the supplied path is returned.
+func pskOutputDir(output string) string {
+	if strings.HasSuffix(output, string(filepath.Separator)) {
+		return strings.TrimSuffix(output, string(filepath.Separator))
+	}
+	if info, err := os.Stat(output); err == nil && info.IsDir() {
+		return output
+	}
+	return filepath.Dir(output)
+}
+
 // resolveOutputPath returns a concrete file path for the given output value.
 // If output ends with the OS path separator, or points to an existing
 // directory, it is treated as a directory and defaultFilename is appended.
@@ -189,6 +222,14 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Identity certificate saved to %s\n", dest)
+	if leaseData := extractLease(result); leaseData != nil {
+		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
+		leaseDest := filepath.Join(filepath.Dir(dest), "identity_lease.json")
+		if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "Identity lease saved to %s\n", leaseDest)
+	}
 	return nil
 }
 
@@ -224,12 +265,26 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Permissions document saved to %s\n", dest)
+	if leaseData := extractLease(result); leaseData != nil {
+		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
+		leaseDest := filepath.Join(filepath.Dir(dest), "permissions_lease.json")
+		if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "Permissions lease saved to %s\n", leaseDest)
+	}
 	return nil
 }
 
-// RequestPSK calls POST /psk to issue or rotate the Provisioning Service PSK (mTLS
-// required).  If output is non-empty the full JSON response is written to
-// that path; otherwise it is printed to stdout.
+// RequestPSK calls POST /psk to issue or rotate the Provisioning Service PSK
+// (mTLS required).  When output is non-empty three files are written to the
+// output directory:
+//
+//	psk_primary.txt  — passphrase of the entry with the lower passphrase_id
+//	psk_extra.txt    — all passphrases, sorted by passphrase_id, one per line
+//	psk_lease.json   — lease windows for both slots + server_time_utc
+//
+// When output is empty the full JSON response is printed to stdout.
 func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
@@ -248,16 +303,72 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
 		return nil
 	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
 		return err
 	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	dest := resolveOutputPath(output, "psk.json")
-	if err := runner.saveToFile(dest, append(formatted, '\n')); err != nil {
+
+	type pskSlot struct {
+		key          string
+		passphraseID float64
+		passphrase   string
+		lease        any
+	}
+	parseSlot := func(key string) (pskSlot, bool) {
+		m, ok := result[key].(map[string]any)
+		if !ok {
+			return pskSlot{}, false
+		}
+		id, _ := m["passphrase_id"].(float64)
+		pass, _ := m["passphrase"].(string)
+		return pskSlot{key: key, passphraseID: id, passphrase: pass, lease: m["lease"]}, true
+	}
+	var slots []pskSlot
+	for _, k := range []string{"psk_a", "psk_b"} {
+		if s, ok := parseSlot(k); ok {
+			slots = append(slots, s)
+		}
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i].passphraseID < slots[j].passphraseID })
+
+	outDir := pskOutputDir(output)
+
+	// psk_primary.txt — passphrase of the lower-id slot
+	if len(slots) > 0 {
+		primaryDest := filepath.Join(outDir, "psk_primary.txt")
+		if err := runner.saveToFile(primaryDest, []byte(slots[0].passphrase)); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(runner.Out, "PSK primary passphrase saved to %s\n", primaryDest)
+	}
+
+	// psk_extra.txt — all passphrases (sorted by passphrase_id), one per line
+	var passphrases []string
+	for _, s := range slots {
+		passphrases = append(passphrases, s.passphrase)
+	}
+	extraDest := filepath.Join(outDir, "psk_extra.txt")
+	if err := runner.saveToFile(extraDest, []byte(strings.Join(passphrases, "\n"))); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(runner.Out, "PSK saved to %s\n", dest)
+	_, _ = fmt.Fprintf(runner.Out, "PSK extra passphrases saved to %s\n", extraDest)
+
+	// psk_lease.json — lease windows per slot + server_time_utc
+	leasePayload := map[string]any{}
+	for _, s := range slots {
+		if s.lease != nil {
+			leasePayload[s.key] = map[string]any{"lease": s.lease}
+		}
+	}
+	if v, ok := result["server_time_utc"]; ok {
+		leasePayload["server_time_utc"] = v
+	}
+	leaseJSON, _ := json.MarshalIndent(leasePayload, "", "  ")
+	leaseDest := filepath.Join(outDir, "psk_lease.json")
+	if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "PSK lease saved to %s\n", leaseDest)
 	return nil
 }
 
