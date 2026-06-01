@@ -147,8 +147,8 @@ func (runner *Runner) QueryDatabus(name string) error {
 	return nil
 }
 
-func (runner *Runner) CreateDatabus(name string, replicas int, observabilityServiceName string, systemDesigner bool, networkName string) error {
-	payload := map[string]any{"name": name, "replicas": replicas, "system_designer": systemDesigner, "network_name": networkName}
+func (runner *Runner) CreateDatabus(name string, replicas int, observabilityServiceName string, networkName string, secure bool) error {
+	payload := map[string]any{"name": name, "replicas": replicas, "network_name": networkName, "secure": secure}
 	if observabilityServiceName != "" {
 		payload["observability_service_name"] = observabilityServiceName
 	}
@@ -176,8 +176,8 @@ func (runner *Runner) CreateDatabus(name string, replicas int, observabilityServ
 	return nil
 }
 
-func (runner *Runner) CreateObsService(name string, networkName string) error {
-	payload := map[string]any{"name": name, "replicas": 0, "enable_edge_observability": true}
+func (runner *Runner) CreateObsService(name string, networkName string, secure bool) error {
+	payload := map[string]any{"name": name, "replicas": 0, "enable_edge_observability": true, "secure": secure}
 	if networkName != "" {
 		payload["network_name"] = networkName
 	}

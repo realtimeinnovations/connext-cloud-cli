@@ -22,6 +22,9 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 		!strings.Contains(out.String(), "--version") {
 		t.Fatalf("unexpected root help: %s", out.String())
 	}
+	if strings.Contains(out.String(), "--disable-ssl-verify") {
+		t.Fatalf("deprecated disable SSL flag should not be exposed: %s", out.String())
+	}
 	if strings.Contains(out.String(), "\n  version") {
 		t.Fatalf("version should only be exposed as --version: %s", out.String())
 	}
@@ -40,8 +43,17 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil for databus create --help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "--replicas") || !strings.Contains(out.String(), "--observability-service") {
+	if !strings.Contains(out.String(), "--replicas") || !strings.Contains(out.String(), "--observability-service") || !strings.Contains(out.String(), "--non-secure") {
 		t.Fatalf("unexpected databus create help: %s", out.String())
+	}
+
+	out.Reset()
+	err = Execute([]string{"observability", "create", "--help"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for observability create --help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "--network-name") || !strings.Contains(out.String(), "--non-secure") {
+		t.Fatalf("unexpected observability create help: %s", out.String())
 	}
 }
 

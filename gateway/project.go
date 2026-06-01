@@ -381,6 +381,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	terminal.PrepareProcess(cmd)
 	cmd.Dir = app.CollectorDir()
 	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
 	cmd.Stdout = logFile
@@ -548,7 +549,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 			if cmd.Process != nil {
 				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
-					_ = cmd.Process.Kill()
+					terminal.KillProcess(cmd.Process)
 				})
 			}
 		}
@@ -789,7 +790,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			if cmd.Process != nil {
 				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
-					_ = cmd.Process.Kill()
+					terminal.KillProcess(cmd.Process)
 				})
 			}
 		}

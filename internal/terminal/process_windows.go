@@ -4,8 +4,12 @@ package terminal
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 )
+
+// PrepareProcess is a no-op on Windows.
+func PrepareProcess(_ *exec.Cmd) {}
 
 // InterruptSignals returns the OS signals that indicate a user interrupt.
 // On Windows, only os.Interrupt (Ctrl+C) is available.
@@ -15,6 +19,14 @@ func InterruptSignals() []os.Signal {
 
 // SendInterrupt is a no-op on Windows; the 2-second kill timer handles teardown.
 func SendInterrupt(_ *os.Process) {}
+
+// KillProcess forcefully stops the subprocess.
+func KillProcess(p *os.Process) {
+	if p == nil {
+		return
+	}
+	_ = p.Kill()
+}
 
 // ProcessRunning reports whether the process with the given PID is alive.
 // On Windows, os.FindProcess returns an error for non-existent PIDs.
