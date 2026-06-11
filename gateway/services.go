@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
@@ -90,6 +91,10 @@ func ValidateCollectorInstall(path string) (ConnextInstall, error) {
 
 func DiscoverCollectorInstall(env map[string]string) (ConnextInstall, error) {
 	return connext.DiscoverInstall(env, collectorInstallOptions())
+}
+
+func EnsureCollectorServiceLite(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+	return connext.EnsureCollectorServiceLite(install, selectFunc, out)
 }
 
 func connextOptions() connext.DiscoveryOptions {
