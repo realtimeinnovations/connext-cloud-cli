@@ -45,9 +45,8 @@ type rtiVersionInstallation struct {
 }
 
 var (
-	PackageInstaller      = runPackageInstaller
-	packageInstallerStdin = io.Reader(os.Stdin)
-	versionPartsRE        = regexp.MustCompile(`\d+`)
+	PackageInstaller = runPackageInstaller
+	versionPartsRE   = regexp.MustCompile(`\d+`)
 )
 
 func HasExecutable(install Install, executableName string) bool {
@@ -67,13 +66,7 @@ func HasEnhancedDDSSpy(install Install) bool {
 	if version == "" {
 		version = VersionFromPath(install.Path)
 	}
-	if CompareVersion(version, "7.7.0") > 0 {
-		return true
-	}
-	if isPatchableCloudExtrasVersion(version) {
-		return HasCloudExtras(install)
-	}
-	return false
+	return HasCloudExtras(install) || isConnext770PatchRelease(version)
 }
 
 func HasCloudExtras(install Install) bool {
@@ -151,7 +144,7 @@ func EnsureCollectorServiceLite(install Install, selectFunc func(message string,
 
 func EnsureEnhancedDDSSpy(install Install, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
 	return ensureCloudExtrasCapability(install, capabilityPatch{
-		Name:        "Enhanced RTI DDS Spy",
+		Name:        "enhanced RTI DDS Spy",
 		CommandName: "spy",
 		Check:       HasEnhancedDDSSpy,
 	}, selectFunc, out)
@@ -170,7 +163,7 @@ func ensureCloudExtrasCapability(install Install, patch capabilityPatch, selectF
 		return nil
 	}
 	if !isPatchableCloudExtrasVersion(version) {
-		return common.UserError{Message: fmt.Sprintf("%s is missing from Connext Pro %s at %s.", patch.Name, version, install.Path)}
+		return common.UserError{Message: fmt.Sprintf("%s is missing from Connext Pro %s at %s.\nAutomatic installation of the Connext Cloud Extras package is available only for Connext Pro 7.7.0 installations. This is unexpected for Connext Pro %s.", patch.Name, version, install.Path, version)}
 	}
 	if selectFunc == nil {
 		return common.UserError{Message: fmt.Sprintf("%s is missing from Connext Pro %s at %s.\nRun rticloud %s in an interactive terminal to install the Connext Cloud Extras package.", patch.Name, version, install.Path, patch.CommandName)}
@@ -190,23 +183,15 @@ func ensureCloudExtrasCapability(install Install, patch capabilityPatch, selectF
 	if out == nil {
 		out = io.Discard
 	}
-	_, _ = fmt.Fprint(out, renderInfoMessage(fmt.Sprintf("Installing Connext Cloud Extras package from %s", packagePath)))
+	_, _ = fmt.Fprintf(out, "Installing Connext Cloud Extras package from %s\n", packagePath)
 	if err := PackageInstaller(install, packagePath, out); err != nil {
 		return err
 	}
 	if !patch.Check(install) {
 		return common.UserError{Message: fmt.Sprintf("Installed Connext Cloud Extras package from %s, but %s is still missing from %s.", packagePath, patch.Name, install.Path)}
 	}
-	_, _ = fmt.Fprint(out, renderSuccessMessage("Connext Cloud Extras package installed."))
+	_, _ = fmt.Fprintf(out, "Connext Cloud Extras package installed.\n")
 	return nil
-}
-
-func renderInfoMessage(message string) string {
-	return fmt.Sprintf("\x1b[38;5;110m•\x1b[0m %s\n", message)
-}
-
-func renderSuccessMessage(message string) string {
-	return fmt.Sprintf("\x1b[32m✓\x1b[0m %s\n", message)
 }
 
 func DownloadCloudExtrasPackage(out io.Writer) (string, error) {
@@ -262,6 +247,11 @@ func isPatchableCloudExtrasVersion(version string) bool {
 	return parts[0] == "7" && parts[1] == "7" && parts[2] == "0"
 }
 
+func isConnext770PatchRelease(version string) bool {
+	parts := versionPartsRE.FindAllString(version, -1)
+	return len(parts) > 3 && parts[0] == "7" && parts[1] == "7" && parts[2] == "0"
+}
+
 func runPackageInstaller(install Install, packagePath string, out io.Writer) error {
 	executable := Executable(install.Path, "rtipkginstall")
 	if _, err := os.Stat(executable); err != nil {
@@ -269,8 +259,9 @@ func runPackageInstaller(install Install, packagePath string, out io.Writer) err
 	}
 	command := terminal.PrepareCommand([]string{executable, packagePath})
 	cmd := exec.Command(command[0], command[1:]...)
+	terminal.PrepareProcess(cmd)
 	cmd.Dir = install.Path
-	cmd.Stdin = packageInstallerStdin
+	cmd.Stdin = strings.NewReader("y\n")
 	if out == nil {
 		out = io.Discard
 	}

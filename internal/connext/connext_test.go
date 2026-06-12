@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -204,24 +203,19 @@ func TestHasCloudExtrasDetectsPackageMetadata(t *testing.T) {
 	if HasEnhancedDDSSpy(Install{Path: base, Version: "7.7.0"}) {
 		t.Fatal("did not expect enhanced rtiddsspy")
 	}
-}
-
-func TestHasEnhancedDDSSpyDoesNotRequireCloudExtrasMetadataAfter77(t *testing.T) {
-	missingExecutable := createConnextInstall(t, t.TempDir(), "7.7.1")
-	if HasEnhancedDDSSpy(Install{Path: missingExecutable, Version: "7.7.1"}) {
-		t.Fatal("did not expect enhanced rtiddsspy without rtiddsspy executable")
-	}
-
-	install := createConnextInstall(t, t.TempDir(), "7.7.1", "rtiddsspy")
-	if !HasEnhancedDDSSpy(Install{Path: install, Version: "7.7.1"}) {
-		t.Fatal("expected newer Connext install with rtiddsspy to skip cloud extras metadata checks")
-	}
-}
-
-func TestEnsureEnhancedDDSSpyAfter77SkipsCloudExtrasMetadata(t *testing.T) {
-	install := createConnextInstall(t, t.TempDir(), "7.7.1", "rtiddsspy")
-	if err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.1"}, nil, nil); err != nil {
-		t.Fatalf("expected newer Connext install with rtiddsspy to skip cloud extras metadata checks: %v", err)
+	patchRelease := createConnextInstall(t, t.TempDir(), "7.7.0.1", "rtiddsspy")
+	writeVersions(t, patchRelease, `
+<rti>
+  <utils-bin>
+    <installation>
+      <architecture>arm64Darwin23clang16.0</architecture>
+      <version>7.7.0.1</version>
+      <installer_name>rti_connext_dds-7.7.0.1-lm-target-arm64Darwin23clang16.0.rtipkg</installer_name>
+    </installation>
+  </utils-bin>
+</rti>`)
+	if !HasEnhancedDDSSpy(Install{Path: patchRelease, Version: "7.7.0.1"}) {
+		t.Fatal("expected 7.7.0.x rtiddsspy to be treated as enhanced")
 	}
 }
 
@@ -298,46 +292,21 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 	if !selected {
 		t.Fatal("expected install prompt")
 	}
-	if !strings.Contains(out.String(), "•") || !strings.Contains(out.String(), "Installing Connext Cloud Extras package") || !strings.Contains(out.String(), "✓") || !strings.Contains(out.String(), "Connext Cloud Extras package installed") {
+	if !strings.Contains(out.String(), "Connext Cloud Extras package installed") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
 
-func TestEnsureEnhancedDDSSpyPromptUsesCapitalizedName(t *testing.T) {
-	install := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
+func TestEnsureEnhancedDDSSpySkipsPatchForConnext770PatchRelease(t *testing.T) {
+	install := createConnextInstall(t, t.TempDir(), "7.7.0.1", "rtiddsspy")
 	writeVersions(t, install, `<rti></rti>`)
-	var promptMessage string
-	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
-		promptMessage = message
-		return CancelPackageInstallLabel, nil
-	}, io.Discard)
-	if err == nil {
-		t.Fatal("expected cancellation error")
-	}
-	if !strings.Contains(promptMessage, "Enhanced RTI DDS Spy") || strings.Contains(promptMessage, "enhanced RTI DDS Spy") {
-		t.Fatalf("unexpected prompt capitalization: %q", promptMessage)
-	}
-}
 
-func TestRunPackageInstallerUsesCallerInput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script installer stub is Unix-only")
-	}
-	install := createConnextInstall(t, t.TempDir(), "7.7.0")
-	installer := filepath.Join(install, "bin", "rtipkginstall")
-	if err := os.WriteFile(installer, []byte("#!/bin/sh\ncat\n"), 0o755); err != nil {
+	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0.1"}, func(message string, choices []string) (string, error) {
+		t.Fatalf("did not expect patch prompt for 7.7.0.x install: %s %#v", message, choices)
+		return "", nil
+	}, nil)
+	if err != nil {
 		t.Fatal(err)
-	}
-	previousStdin := packageInstallerStdin
-	packageInstallerStdin = strings.NewReader("typed-by-user\n")
-	t.Cleanup(func() { packageInstallerStdin = previousStdin })
-
-	var out bytes.Buffer
-	if err := runPackageInstaller(Install{Path: install, Version: "7.7.0"}, "package.rtipkg", &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "typed-by-user\n" {
-		t.Fatalf("expected installer to receive caller input, got %q", out.String())
 	}
 }
 
@@ -347,7 +316,7 @@ func TestEnsureCloudExtrasRejectsUnsupportedVersions(t *testing.T) {
 		t.Fatalf("unexpected old-version error: %v", err)
 	}
 	newer := Install{Path: "/tmp/rti_connext_dds-7.7.1", Version: "7.7.1"}
-	if err := EnsureCollectorServiceLite(newer, nil, nil); err == nil || err.Error() != "RTI Collector Service Lite is missing from Connext Pro 7.7.1 at /tmp/rti_connext_dds-7.7.1." {
+	if err := EnsureCollectorServiceLite(newer, nil, nil); err == nil || !strings.Contains(err.Error(), "unexpected for Connext Pro 7.7.1") {
 		t.Fatalf("unexpected new-version error: %v", err)
 	}
 }
