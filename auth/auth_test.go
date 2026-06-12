@@ -40,6 +40,12 @@ func TestNewUsesRticloudCredentialsPath(t *testing.T) {
 	}
 }
 
+func TestDefaultWorkspacesCredentialsPath(t *testing.T) {
+	if got := DefaultWorkspacesCredentialsPath(); !strings.HasSuffix(got, filepath.Join(".rticloud", "workspaces_credentials.json")) {
+		t.Fatalf("DefaultWorkspacesCredentialsPath() = %q", got)
+	}
+}
+
 func TestSaveAccessTokenCreatesRticloudDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	tokenPath := filepath.Join(tmpDir, ".rticloud", "credentials.json")
@@ -257,6 +263,71 @@ func TestLoginRejectsMismatchedState(t *testing.T) {
 		t.Fatalf("Login() token = %q, want empty", token)
 	}
 	if err.Error() != "Error: Invalid OAuth state parameter." {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoginReturnsOAuthCallbackError(t *testing.T) {
+	manager := New(staticConfigProvider{values: map[string]string{
+		"api_host": "https://example.test/api/v1",
+	}}, filepath.Join(t.TempDir(), "credentials.json"))
+	manager.OpenBrowser = func(target string) error {
+		parsedURL, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		state := parsedURL.Query().Get("state")
+		callbackURL := parsedURL.Query().Get("redirect_uri")
+		_, err = http.Get(callbackURL + "?error=access_denied&error_description=bad+audience&state=" + url.QueryEscape(state))
+		return err
+	}
+	manager.HTTPClient = roundTripClient(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("token exchange should not run for callback error")
+	})
+
+	token, err := manager.Login()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if token != "" {
+		t.Fatalf("Login() token = %q, want empty", token)
+	}
+	if !strings.Contains(err.Error(), "access_denied: bad audience") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoginReturnsOAuthTokenExchangeDetails(t *testing.T) {
+	manager := New(staticConfigProvider{values: map[string]string{
+		"api_host":     "https://example.test/api/v1",
+		"auth0_domain": "auth.example.test",
+	}}, filepath.Join(t.TempDir(), "credentials.json"))
+	manager.OpenBrowser = func(target string) error {
+		parsedURL, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		state := parsedURL.Query().Get("state")
+		callbackURL := parsedURL.Query().Get("redirect_uri")
+		_, err = http.Get(callbackURL + "?code=auth-code&state=" + url.QueryEscape(state))
+		return err
+	}
+	manager.HTTPClient = roundTripClient(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"bad verifier"}`)),
+		}, nil
+	})
+
+	token, err := manager.Login()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if token != "" {
+		t.Fatalf("Login() token = %q, want empty", token)
+	}
+	if !strings.Contains(err.Error(), "invalid_grant: bad verifier") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

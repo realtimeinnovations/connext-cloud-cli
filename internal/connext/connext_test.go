@@ -224,6 +224,51 @@ func TestHasCloudExtrasDetectsPackageMetadata(t *testing.T) {
 	}
 }
 
+func TestLicenseManagedInstallDetectionAndLicenseAvailability(t *testing.T) {
+	install := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
+	writeVersions(t, install, `
+<rti>
+  <host>
+    <installation_type>LM</installation_type>
+  </host>
+</rti>`)
+	connextInstall := Install{Path: install, Version: "7.7.0"}
+	if !IsLicenseManaged(connextInstall) {
+		t.Fatal("expected LM installation")
+	}
+	if HasLicenseAvailable(connextInstall) {
+		t.Fatal("did not expect license before writing one")
+	}
+	if err := WriteLicenseFile(connextInstall, []byte("license-body")); err != nil {
+		t.Fatal(err)
+	}
+	if !HasLicenseAvailable(connextInstall) {
+		t.Fatal("expected license file in installation directory")
+	}
+	nonLM := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
+	writeVersions(t, nonLM, `
+<rti>
+  <host>
+    <installation_type>HOST</installation_type>
+  </host>
+</rti>`)
+	if IsLicenseManaged(Install{Path: nonLM, Version: "7.7.0"}) {
+		t.Fatal("did not expect non-LM installation")
+	}
+}
+
+func TestHasLicenseAvailableUsesRTILicenseFile(t *testing.T) {
+	install := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
+	licensePath := filepath.Join(t.TempDir(), "rti_license.dat")
+	if err := os.WriteFile(licensePath, []byte("license-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RTI_LICENSE_FILE", licensePath)
+	if !HasLicenseAvailable(Install{Path: install, Version: "7.7.0"}) {
+		t.Fatal("expected RTI_LICENSE_FILE to satisfy license check")
+	}
+}
+
 func TestCloudExtrasPackageURLSelectsPlatformPackage(t *testing.T) {
 	previousPlatform := Platform
 	t.Cleanup(func() { Platform = previousPlatform })

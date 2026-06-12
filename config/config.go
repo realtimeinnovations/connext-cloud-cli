@@ -23,6 +23,7 @@ var RegionURLMap = map[string]string{
 }
 
 var defaultClientID = ""
+var defaultWorkspacesClientID = ""
 
 const previewWarning = "⚠ Connext Cloud is in preview. Do not use in production."
 
@@ -122,6 +123,18 @@ func (manager *Manager) GetClientID() string {
 		}
 	}
 	return defaultClientID
+}
+
+func GetWorkspacesClientID(env func(string) string) string {
+	if env != nil {
+		if value := env("CONNEXT_WORKSPACES_CLI_CLIENT_ID"); value != "" {
+			return value
+		}
+		if value := env("WORKSPACES_AUTH0_CLIENT_ID"); value != "" {
+			return value
+		}
+	}
+	return defaultWorkspacesClientID
 }
 
 func (manager *Manager) IsConfigured() bool {

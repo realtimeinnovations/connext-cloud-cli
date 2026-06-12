@@ -178,6 +178,30 @@ func TestGetClientIDFallsBackToBuildTimeDefault(t *testing.T) {
 	}
 }
 
+func TestGetWorkspacesClientIDUsesEnvironmentFirst(t *testing.T) {
+	previousDefault := defaultWorkspacesClientID
+	defaultWorkspacesClientID = "build-workspaces-client"
+	t.Cleanup(func() { defaultWorkspacesClientID = previousDefault })
+	got := GetWorkspacesClientID(func(key string) string {
+		if key == "CONNEXT_WORKSPACES_CLI_CLIENT_ID" {
+			return "env-workspaces-client"
+		}
+		return ""
+	})
+	if got != "env-workspaces-client" {
+		t.Fatalf("GetWorkspacesClientID() = %q, want env-workspaces-client", got)
+	}
+}
+
+func TestGetWorkspacesClientIDFallsBackToBuildTimeDefault(t *testing.T) {
+	previousDefault := defaultWorkspacesClientID
+	defaultWorkspacesClientID = "build-workspaces-client"
+	t.Cleanup(func() { defaultWorkspacesClientID = previousDefault })
+	if got := GetWorkspacesClientID(func(string) string { return "" }); got != "build-workspaces-client" {
+		t.Fatalf("GetWorkspacesClientID() = %q, want build-workspaces-client", got)
+	}
+}
+
 func TestWriteConfigCreatesRticloudDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(filepath.Join(tmpDir, ".rticloud", "config.json"))

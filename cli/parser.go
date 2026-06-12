@@ -203,7 +203,7 @@ func newLogoutCommand(runtime *app.Runtime) *cobra.Command {
 		Short: "Logout from Connext Cloud",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Auth.Logout()
+			return runtime.Logout()
 		},
 	}
 }
@@ -693,7 +693,7 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 				if cmd.Flags().Changed("expiration-days") {
 					days = &expirationDays
 				}
-				return runtime.Commands.GetLicense(days, output)
+				return runtime.License.GetLicense(days, output)
 			},
 		}
 		c.Flags().IntVar(&expirationDays, "expiration-days", 0, "License expiration days")
