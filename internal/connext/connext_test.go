@@ -203,7 +203,7 @@ func TestHasCloudExtrasDetectsPackageMetadata(t *testing.T) {
 	if HasEnhancedDDSSpy(Install{Path: base, Version: "7.7.0"}) {
 		t.Fatal("did not expect enhanced rtiddsspy")
 	}
-	patchRelease := createConnextInstall(t, t.TempDir(), "7.7.0.1", "rtiddsspy")
+	patchRelease := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
 	writeVersions(t, patchRelease, `
 <rti>
   <utils-bin>
@@ -214,8 +214,13 @@ func TestHasCloudExtrasDetectsPackageMetadata(t *testing.T) {
     </installation>
   </utils-bin>
 </rti>`)
-	if !HasEnhancedDDSSpy(Install{Path: patchRelease, Version: "7.7.0.1"}) {
+	if !HasEnhancedDDSSpy(Install{Path: patchRelease, Version: "7.7.0"}) {
 		t.Fatal("expected 7.7.0.x rtiddsspy to be treated as enhanced")
+	}
+	newer := createConnextInstall(t, t.TempDir(), "7.7.1", "rtiddsspy")
+	writeVersions(t, newer, `<rti></rti>`)
+	if !HasEnhancedDDSSpy(Install{Path: newer, Version: "7.7.1"}) {
+		t.Fatal("expected 7.7.1+ rtiddsspy to be treated as enhanced")
 	}
 }
 
@@ -298,11 +303,31 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 }
 
 func TestEnsureEnhancedDDSSpySkipsPatchForConnext770PatchRelease(t *testing.T) {
-	install := createConnextInstall(t, t.TempDir(), "7.7.0.1", "rtiddsspy")
+	install := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiddsspy")
+	writeVersions(t, install, `
+<rti>
+  <core>
+    <installation>
+      <version>7.7.0.1</version>
+    </installation>
+  </core>
+</rti>`)
+
+	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
+		t.Fatalf("did not expect patch prompt for 7.7.0.x install: %s %#v", message, choices)
+		return "", nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureEnhancedDDSSpySkipsPatchForConnext771OrNewer(t *testing.T) {
+	install := createConnextInstall(t, t.TempDir(), "7.7.1", "rtiddsspy")
 	writeVersions(t, install, `<rti></rti>`)
 
-	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0.1"}, func(message string, choices []string) (string, error) {
-		t.Fatalf("did not expect patch prompt for 7.7.0.x install: %s %#v", message, choices)
+	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.1"}, func(message string, choices []string) (string, error) {
+		t.Fatalf("did not expect patch prompt for 7.7.1+ install: %s %#v", message, choices)
 		return "", nil
 	}, nil)
 	if err != nil {

@@ -66,7 +66,10 @@ func HasEnhancedDDSSpy(install Install) bool {
 	if version == "" {
 		version = VersionFromPath(install.Path)
 	}
-	return HasCloudExtras(install) || isConnext770PatchRelease(version)
+	if CompareVersion(version, "7.7.1") >= 0 {
+		return true
+	}
+	return HasCloudExtras(install) || isConnext770PatchRelease(version) || hasConnext770PatchReleaseMetadata(install.Path)
 }
 
 func HasCloudExtras(install Install) bool {
@@ -248,8 +251,25 @@ func isPatchableCloudExtrasVersion(version string) bool {
 }
 
 func isConnext770PatchRelease(version string) bool {
-	parts := versionPartsRE.FindAllString(version, -1)
-	return len(parts) > 3 && parts[0] == "7" && parts[1] == "7" && parts[2] == "0"
+	match := versionRE.FindString(version)
+	if match == "" {
+		return false
+	}
+	parts := strings.Split(match, ".")
+	return len(parts) == 4 && parts[0] == "7" && parts[1] == "7" && parts[2] == "0"
+}
+
+func hasConnext770PatchReleaseMetadata(installPath string) bool {
+	components, err := InstalledComponents(installPath)
+	if err != nil {
+		return false
+	}
+	for _, component := range components {
+		if isConnext770PatchRelease(component.Version) {
+			return true
+		}
+	}
+	return false
 }
 
 func runPackageInstaller(install Install, packagePath string, out io.Writer) error {
