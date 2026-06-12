@@ -19,12 +19,14 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	MinConnextVersion      = "7.7.0"
 	RTICloudSpyAppName     = "rticloud_spy"
+	RTICloudSpyAppPort     = 7281
 	CreateRTICloudSpyApp   = "__create_rticloud_spy_app__"
 	CreateRTICloudSpyLabel = "Create rticloud_spy cloud application"
 	CreateNewApp           = "__create_new_app__"
@@ -181,6 +183,10 @@ func DiscoverConnextInstallWithPrompt(env map[string]string, prompt bool, select
 	return connext.DiscoverInstallWithPrompt(env, prompt, selectFunc, inputFunc, connextOptions())
 }
 
+func EnsureEnhancedDDSSpy(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+	return connext.EnsureEnhancedDDSSpy(install, selectFunc, out)
+}
+
 func connextOptions() connext.DiscoveryOptions {
 	return connext.DiscoveryOptions{MinVersion: MinConnextVersion, ExecutableName: "rtiddsspy", CommandName: "spy"}
 }
@@ -253,7 +259,7 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(app.Out, "Downloaded cloud application template: %s\n", target)
+		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", target)))
 	}
 	return nil
 }
@@ -328,7 +334,7 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 	if !common.IsSecure(databus) {
 		return false, nil
 	}
-	_, _ = fmt.Fprintln(app.Out, "Secure Databus detected.")
+	_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Secure Databus detected."))
 	clients, _ := config["clients"].(map[string]any)
 	clientID, _ := clients["app_client_id"].(string)
 	if clientID == "" {
@@ -342,8 +348,7 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 
 func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string, targetDir string) error {
 	if common.LocalSecureFilesExist(targetDir) {
-		_, _ = fmt.Fprintln(app.Out, "Reusing local spy credentials")
-		_, _ = fmt.Fprintln(app.Out)
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Reusing local spy credentials"))
 		return nil
 	}
 	if app.GenerateCSRFunc == nil || app.APIPost == nil {
@@ -367,9 +372,8 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(app.Out, "Registered spy client credentials")
-	_, _ = fmt.Fprintf(app.Out, "Saved spy credentials to %s\n", targetDir)
-	_, _ = fmt.Fprintln(app.Out)
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage("Registered spy client credentials"))
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Saved spy credentials to %s", targetDir)))
 	return nil
 }
 
@@ -736,15 +740,43 @@ func attr(element xml.StartElement, name string) string {
 }
 
 func RenderSetupIntro(databusCount int) string {
-	return fmt.Sprintf("\nConnext Cloud Spy setup\n\nDatabuses available: %d\nUse arrow keys to choose and Enter to confirm.\n\n", databusCount)
+	rows := []string{
+		"Connext Cloud Spy setup",
+		"Create a project-local spy configuration for this workspace.",
+		"",
+		fmt.Sprintf("Databuses available: %d", databusCount),
+		"",
+		"Use arrow keys to choose and Enter to confirm.",
+	}
+	width := 0
+	for _, row := range rows {
+		if rowWidth := tui.DisplayWidth(row); rowWidth > width {
+			width = rowWidth
+		}
+	}
+	top := "╭" + strings.Repeat("─", width+2) + "╮"
+	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
+	lines := []string{"", "\x1b[38;5;110m" + top + "\x1b[0m"}
+	for index, row := range rows {
+		content := tui.PadDisplay(row, width)
+		switch index {
+		case 0:
+			content = tui.StyleTitle(content)
+		case 1, 5:
+			content = tui.Dim(content)
+		}
+		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", content))
+	}
+	lines = append(lines, "\x1b[38;5;110m"+bottom+"\x1b[0m", "")
+	return strings.Join(lines, "\n")
 }
 
 func RenderInfoMessage(message string) string {
-	return fmt.Sprintf("• %s\n\n", message)
+	return fmt.Sprintf("\x1b[38;5;110m•\x1b[0m %s\n", message)
 }
 
 func RenderSuccessMessage(message string) string {
-	return fmt.Sprintf("✓ %s\n\n", message)
+	return fmt.Sprintf("\x1b[32m✓\x1b[0m %s\n", message)
 }
 
 func DashboardURL(zone string, resourceName string) string {
@@ -800,7 +832,7 @@ func (app *App) createRTICloudSpyApp(databusName string) (string, error) {
 	_, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications", databusName), map[string]any{
 		"kind":        "app",
 		"client_name": RTICloudSpyAppName,
-		"port":        7777,
+		"port":        RTICloudSpyAppPort,
 		"topic_data": map[string]any{
 			"0": map[string]any{
 				"domainId":      0,

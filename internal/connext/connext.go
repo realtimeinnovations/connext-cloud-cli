@@ -74,11 +74,11 @@ var (
 	HTTPGet        = http.Get
 	CurrentWorkDir = os.Getwd
 	Platform       = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
-	versionRE      = regexp.MustCompile(`(\d+\.\d+\.\d+)`)
+	versionRE      = regexp.MustCompile(`(\d+\.\d+\.\d+(?:\.\d+)?)`)
 )
 
 func ParseVersion(version string) []int {
-	parts := regexp.MustCompile(`\d+`).FindAllString(version, 3)
+	parts := regexp.MustCompile(`\d+`).FindAllString(version, -1)
 	if len(parts) == 0 {
 		return []int{0}
 	}
@@ -203,17 +203,18 @@ func DiscoverInstallWithPrompt(env map[string]string, prompt bool, selectFunc fu
 		return candidates[0], nil
 	}
 	message := "Select Connext installation:"
-	choices := make([]string, 0, len(candidates)+1)
+	choices := make([]string, 0, len(candidates)+2)
 	for _, candidate := range candidates {
 		choices = append(choices, candidate.Path)
 	}
-	choices = append(choices, EnterConnextPathLabel)
+	choices = append(choices, EnterConnextPathLabel, DownloadConnextLabel)
 	for {
 		selected, err := selectFunc(message, choices)
 		if err != nil {
 			return Install{}, err
 		}
-		if selected == EnterConnextPathLabel {
+		switch selected {
+		case EnterConnextPathLabel:
 			if inputFunc == nil {
 				return Install{}, common.UserError{Message: "Connext path entry is not configured."}
 			}
@@ -227,8 +228,11 @@ func DiscoverInstallWithPrompt(env map[string]string, prompt bool, selectFunc fu
 				continue
 			}
 			return Install{}, err
+		case DownloadConnextLabel:
+			return Install{}, downloadInstallerMessage(options)
+		default:
+			return ValidateInstall(selected, options)
 		}
-		return ValidateInstall(selected, options)
 	}
 }
 
@@ -257,17 +261,21 @@ func resolveMissingInstall(selectFunc func(message string, choices []string) (st
 			}
 			return Install{}, err
 		case DownloadConnextLabel:
-			installerPath, err := DownloadInstaller()
-			if err != nil {
-				return Install{}, err
-			}
-			return Install{}, common.UserError{Message: fmt.Sprintf("Downloaded Connext Professional installer to:\n  %s\n\nRun the installer, then rerun:\n  rticloud %s", installerPath, options.CommandName)}
+			return Install{}, downloadInstallerMessage(options)
 		case CancelConnextSelectionLabel:
 			return Install{}, common.UserError{Message: "Connext selection cancelled."}
 		default:
 			return Install{}, common.UserError{Message: fmt.Sprintf("Unsupported selection: %s", selected)}
 		}
 	}
+}
+
+func downloadInstallerMessage(options DiscoveryOptions) error {
+	installerPath, err := DownloadInstaller()
+	if err != nil {
+		return err
+	}
+	return common.UserError{Message: fmt.Sprintf("Downloaded Connext Professional installer to:\n  %s\n\nRun the installer, then rerun:\n  rticloud %s", installerPath, options.CommandName)}
 }
 
 func missingInstallTitle(options DiscoveryOptions) string {
@@ -347,13 +355,17 @@ func uniqueDownloadPath(targetPath string) string {
 }
 
 func downloadFile(url string, targetPath string) error {
+	return downloadFileWithDescription(url, targetPath, "Connext Professional")
+}
+
+func downloadFileWithDescription(url string, targetPath string, description string) error {
 	response, err := HTTPGet(url)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return common.UserError{Message: fmt.Sprintf("Connext Professional download failed: %s", response.Status)}
+		return common.UserError{Message: fmt.Sprintf("%s download failed: %s", description, response.Status)}
 	}
 	file, err := os.Create(targetPath)
 	if err != nil {

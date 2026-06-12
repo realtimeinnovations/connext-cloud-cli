@@ -74,7 +74,7 @@ func TestDownloadArtifactsWritesGatewayAndCollectorXML(t *testing.T) {
 	if got := readFile(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "collector.xml")); got != "<collector/>" {
 		t.Fatalf("unexpected collector xml: %s", got)
 	}
-	if !strings.Contains(out.String(), "Downloaded gateway template") || !strings.Contains(out.String(), "Downloaded collector template") {
+	if strings.Count(out.String(), "✓") < 2 || !strings.Contains(out.String(), "Downloaded gateway template") || !strings.Contains(out.String(), "Downloaded collector template") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -477,7 +477,8 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
 		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
-		!strings.Contains(logLines[0], "-cfgName coll1") {
+		!strings.Contains(logLines[0], "-cfgName coll1") ||
+		!strings.Contains(logLines[0], "-locationTag coll1") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
 	}
 }
@@ -514,7 +515,8 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
 		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
-		!strings.Contains(logLines[0], "-cfgName coll1") {
+		!strings.Contains(logLines[0], "-cfgName coll1") ||
+		!strings.Contains(logLines[0], "-locationTag coll1") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
 	}
 	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {

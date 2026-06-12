@@ -69,6 +69,16 @@ func TestPlainEventLinesFormatsSpyEvents(t *testing.T) {
 	}
 }
 
+func TestRenderSetupIntroUsesGatewayStylePanel(t *testing.T) {
+	rendered := RenderSetupIntro(3)
+	checks := []string{"╭", "Connext Cloud Spy setup", "Create a project-local spy configuration for this workspace.", "Databuses available: 3", "Use arrow keys to choose and Enter to confirm.", "╰"}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in %s", check, rendered)
+		}
+	}
+}
+
 func TestSpyStateRemovesDeletedParticipants(t *testing.T) {
 	state := NewSpyState(5)
 	state.Update(`2026-05-26T20:31:35Z [spy] 2026-05-26 20:24:38.405954 New participant    from 172.31.38.177  : name="RTI Persistence Service: core: defaultParticipant" hostName="rti-persistence-6d58996bf5-76728" processId="123"`)
@@ -175,7 +185,7 @@ func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
 		if path != "/databuses/inventory/applications" {
 			return nil, UserError{Message: path}
 		}
-		if payload["kind"] != "app" || payload["client_name"] != RTICloudSpyAppName || payload["port"] != 7777 {
+		if payload["kind"] != "app" || payload["client_name"] != RTICloudSpyAppName || payload["port"] != RTICloudSpyAppPort {
 			t.Fatalf("unexpected create payload: %#v", payload)
 		}
 		topicData, ok := payload["topic_data"].(map[string]any)
@@ -302,7 +312,7 @@ func TestDownloadArtifactsWritesCloudApplicationXML(t *testing.T) {
 	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "app_1.xml")); got != "<dds/>" {
 		t.Fatalf("unexpected app xml: %s", got)
 	}
-	if !strings.Contains(out.String(), "Downloaded cloud application template") {
+	if !strings.Contains(out.String(), "✓") || !strings.Contains(out.String(), "Downloaded cloud application template") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -363,6 +373,10 @@ func TestSecureSpyCredentialsSavedNextToAppXML(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "client.crt")); got != "cert" {
 		t.Fatalf("unexpected client.crt: %s", got)
+	}
+	output := out.String()
+	if !strings.Contains(output, "•") || !strings.Contains(output, "Secure Databus detected.") || strings.Count(output, "✓") < 2 || !strings.Contains(output, "Registered spy client credentials") || !strings.Contains(output, "Saved spy credentials to ") {
+		t.Fatalf("unexpected output: %s", output)
 	}
 }
 
