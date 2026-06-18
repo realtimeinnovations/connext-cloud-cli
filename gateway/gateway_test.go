@@ -189,6 +189,24 @@ func TestRoutingStateSetsEndpointSpecificTopicStatuses(t *testing.T) {
 	}
 }
 
+func TestRoutingStateTreatsRematchedRunningRouteAsLive(t *testing.T) {
+	state := NewRoutingState(RoutingLiveLogLines)
+	lines := []string{
+		"LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED|/sessions/default_session|/routes/route_0_all_edge_to_cloud@Square] Input1 matched publication stream=Square",
+		"LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED|/sessions/default_session|/routes/route_0_all_edge_to_cloud@Square] Output1 matched subscription stream=Square",
+		"LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_session/routes/route_0_all_edge_to_cloud@Square|RUN]",
+		"LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISPOSED|/sessions/default_session|/routes/route_0_all_edge_to_cloud@Square] Output1 lost subscription stream=Square",
+		"LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED|/sessions/default_session|/routes/route_0_all_edge_to_cloud@Square] Output1 matched subscription stream=Square",
+	}
+	for _, line := range lines {
+		state.Update(line)
+	}
+	row := topicRowsByTopic(state.TopicRows())["Square"]
+	if row.EdgeToCloud != "live" || TopicStatusLabel(row) != "routing upstream" {
+		t.Fatalf("unexpected rematched row: %#v", row)
+	}
+}
+
 func TestRoutingStatePreservesProblemStatusOverEndpointMatch(t *testing.T) {
 	state := NewRoutingState(RoutingLiveLogLines)
 	lines := []string{

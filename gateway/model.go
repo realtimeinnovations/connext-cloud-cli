@@ -662,6 +662,8 @@ func laneState(routes []*RouteState, direction string) string {
 		return "waiting"
 	}
 	switch {
+	case hasLiveRoute(routes, direction):
+		return "live"
 	case states["RUN"]:
 		return "live"
 	case states["START"]:
@@ -677,6 +679,15 @@ func laneState(routes []*RouteState, direction string) string {
 	default:
 		return "waiting"
 	}
+}
+
+func hasLiveRoute(routes []*RouteState, direction string) bool {
+	for _, route := range routes {
+		if route.Direction == direction && route.InputMatched && route.OutputMatched && route.State != "STOPPING" && route.State != "STOPPED" && route.State != "DELETED" {
+			return true
+		}
+	}
+	return false
 }
 
 func MaxRouteState(current string, next string) string {
