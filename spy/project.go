@@ -432,7 +432,9 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		if strings.TrimSpace(line) == "" {
 			return
 		}
-		_, _ = fmt.Fprintf(logFile, "%s [spy] %s\n", app.Now().UTC().Format(time.RFC3339), line)
+		if shouldWriteSpyLogLine(line) {
+			_, _ = fmt.Fprintf(logFile, "%s [spy] %s\n", app.Now().UTC().Format(time.RFC3339), line)
+		}
 		liveView.HandleLine(line)
 		if options.TextOutput {
 			for _, eventLine := range PlainEventLines(line) {
@@ -605,6 +607,10 @@ done:
 	}
 	app.printRestartHint()
 	return 0, nil
+}
+
+func shouldWriteSpyLogLine(line string) bool {
+	return spyDataRE.FindStringSubmatch(line) == nil
 }
 
 func (app *App) spyEnv() []string {
