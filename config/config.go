@@ -122,10 +122,7 @@ func (manager *Manager) GetAPIURLSafe() string {
 	if err != nil {
 		return ""
 	}
-	if apiHost := config["api_host"]; apiHost != "" {
-		return apiHost
-	}
-	return ""
+	return config["api_host"]
 }
 
 func (manager *Manager) GetClientID() string {

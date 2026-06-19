@@ -114,6 +114,26 @@ func (runner *Runner) emitJSON(resp *http.Response) error {
 	return nil
 }
 
+// decodeResult consumes resp and returns the decoded JSON object on a 200
+// response.  On a non-200 status it prints a normalized "Error: …" line and
+// returns an error, mirroring emitJSON's failure behaviour.  Use this for
+// handlers that need to pick individual fields out of the body before writing
+// them to disk.
+func (runner *Runner) decodeResult(resp *http.Response) (map[string]any, error) {
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // SignCSR calls POST /internal/sign with a base64-encoded CSR.
 func (runner *Runner) SignCSR(url string, csrBase64 string) error {
 	client, err := runner.plainClient(url, "")
@@ -220,15 +240,8 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	if output == "" {
 		return runner.emitJSON(resp)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := runner.decodeResult(resp)
+	if err != nil {
 		return err
 	}
 	certPEM, _ := result["identity_cert_pem"].(string)
@@ -264,15 +277,8 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	if output == "" {
 		return runner.emitJSON(resp)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := runner.decodeResult(resp)
+	if err != nil {
 		return err
 	}
 	docSMIME, _ := result["permissions_doc_smime"].(string)
@@ -313,15 +319,8 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	if output == "" {
 		return runner.emitJSON(resp)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := runner.decodeResult(resp)
+	if err != nil {
 		return err
 	}
 
@@ -447,15 +446,8 @@ func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr
 	if output == "" {
 		return runner.emitJSON(resp)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := runner.decodeResult(resp)
+	if err != nil {
 		return err
 	}
 	certPEM, _ := result["certificate"].(string)

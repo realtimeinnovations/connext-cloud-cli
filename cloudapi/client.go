@@ -76,6 +76,10 @@ func (client *Client) requestWithHeaders(method string, path string, payload any
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	return client.send(request)
+}
+
+func (client *Client) send(request *http.Request) (*http.Response, error) {
 	httpClient := client.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -140,31 +144,7 @@ func (client *Client) requestWithExplicitHeaders(method string, path string, pay
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	httpClient := client.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	if !client.SSLVerify {
-		client.warningOnce.Do(func() {
-			if client.Stderr != nil {
-				_, _ = fmt.Fprintln(client.Stderr, "WARNING: SSL certificate verification disabled")
-			}
-		})
-		client.insecureOnce.Do(func() {
-			transport := insecureTransport(httpClient.Transport)
-			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-			insecureClient := *httpClient
-			insecureClient.Transport = transport
-			if insecureClient.Timeout == 0 {
-				insecureClient.Timeout = 30 * time.Second
-			}
-			client.insecureClient = &insecureClient
-		})
-		httpClient = client.insecureClient
-	}
-	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
-	defer stopSpinner()
-	return httpClient.Do(request)
+	return client.send(request)
 }
 
 func insecureTransport(roundTripper http.RoundTripper) *http.Transport {
