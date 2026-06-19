@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -740,13 +741,8 @@ func (runner *Runner) ListEdgeSystems() error {
 	return nil
 }
 
-func (runner *Runner) CreateEdgeSystem(name string, governanceFile string, description string) error {
-	data, err := runner.ReadFile(governanceFile)
-	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading governance file: %v\n", err)
-		return nil
-	}
-	payload := map[string]any{"name": name, "governanceXml": string(data)}
+func (runner *Runner) CreateEdgeSystem(name string, description string) error {
+	payload := map[string]any{"name": name}
 	if description != "" {
 		payload["description"] = description
 	}
@@ -804,20 +800,16 @@ func (runner *Runner) DeleteEdgeSystem(name string) error {
 	return nil
 }
 
-// ── Participant Profiles ────────────────────────────────────────────────────────
+// ── Governance Templates ─────────────────────────────────────────────────────
 
-func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissionsFile string, effectiveRevocationSeconds int) error {
-	data, err := runner.ReadFile(permissionsFile)
+func (runner *Runner) CreateGovernanceTemplate(edgeSystem string, name string, xmlFile string) error {
+	data, err := runner.ReadFile(xmlFile)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading permissions file: %v\n", err)
+		_, _ = fmt.Fprintf(runner.Out, "Error reading governance XML file: %v\n", err)
 		return nil
 	}
-	payload := map[string]any{
-		"name":                       name,
-		"permissionsXml":             string(data),
-		"effectiveRevocationSeconds": effectiveRevocationSeconds,
-	}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participants", payload)
+	payload := map[string]any{"name": name, "xmlContent": string(data)}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/governance-templates", payload)
 	if err != nil {
 		return err
 	}
@@ -836,8 +828,8 @@ func (runner *Runner) CreateParticipant(edgeSystem string, name string, permissi
 	return nil
 }
 
-func (runner *Runner) ListParticipants(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants")
+func (runner *Runner) ListGovernanceTemplates(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/governance-templates")
 	if err != nil {
 		return err
 	}
@@ -856,8 +848,71 @@ func (runner *Runner) ListParticipants(edgeSystem string) error {
 	return nil
 }
 
-func (runner *Runner) QueryParticipant(edgeSystem string, participantID string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID)
+func (runner *Runner) DeleteGovernanceTemplate(edgeSystem string, templateName string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/governance-templates/" + templateName)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Governance template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Permissions Templates ─────────────────────────────────────────────────────
+
+func (runner *Runner) CreatePermissionsTemplate(edgeSystem string, name string, xmlFile string) error {
+	data, err := runner.ReadFile(xmlFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading permissions XML file: %v\n", err)
+		return nil
+	}
+	payload := map[string]any{"name": name, "xmlContent": string(data)}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/permissions-templates", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusCreated {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListPermissionsTemplates(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/permissions-templates")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) GetPermissionsTemplate(edgeSystem string, templateName string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/permissions-templates/" + templateName)
 	if err != nil {
 		return err
 	}
@@ -876,15 +931,171 @@ func (runner *Runner) QueryParticipant(edgeSystem string, participantID string) 
 	return nil
 }
 
-func (runner *Runner) DeleteParticipant(edgeSystem string, participantID string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID)
+func (runner *Runner) DeletePermissionsTemplate(edgeSystem string, templateName string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/permissions-templates/" + templateName)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Participant '%s' deleted from Provisioning Service '%s'.\n", participantID, edgeSystem)
+		_, _ = fmt.Fprintf(runner.Out, "Permissions template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Domain Templates ──────────────────────────────────────────────────────────
+
+func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, governanceTemplate string, domainTag string, customGovernanceFile string, customGovernanceName string) error {
+	payload := map[string]any{"domainId": domainID, "governanceTemplate": governanceTemplate}
+	if domainTag != "" {
+		payload["domainTag"] = domainTag
+	}
+	if customGovernanceFile != "" {
+		data, err := runner.ReadFile(customGovernanceFile)
+		if err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Error reading custom governance XML file: %v\n", err)
+			return nil
+		}
+		payload["customGovernanceXml"] = string(data)
+		if customGovernanceName != "" {
+			payload["customGovernanceName"] = customGovernanceName
+		}
+	}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/domain-templates", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusCreated {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListDomainTemplates(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/domain-templates")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) DeleteDomainTemplate(edgeSystem string, templateID string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/domain-templates/" + url.PathEscape(templateID))
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Domain template '%s' deleted from Provisioning Service '%s'.\n", templateID, edgeSystem)
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+// ── Participant Templates ─────────────────────────────────────────────────────
+
+func (runner *Runner) CreateParticipantTemplate(edgeSystem string, name string, permissionsRef string, artifactMaxTTLMinutes int) error {
+	payload := map[string]any{
+		"name":           name,
+		"permissionsRef": permissionsRef,
+	}
+	if artifactMaxTTLMinutes > 0 {
+		payload["artifactMaxTtlMinutes"] = artifactMaxTTLMinutes
+	}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participant-templates", payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusCreated {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var result any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) ListParticipantTemplates(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participant-templates")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	formatted, _ := json.MarshalIndent(payload, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return nil
+}
+
+func (runner *Runner) GetParticipantTemplate(edgeSystem string, templateName string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participant-templates/" + templateName)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		var payload any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return err
+		}
+		formatted, _ := json.MarshalIndent(payload, "", "  ")
+		_, _ = fmt.Fprintln(runner.Out, string(formatted))
+		return nil
+	}
+	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+func (runner *Runner) DeleteParticipantTemplate(edgeSystem string, templateName string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participant-templates/" + templateName)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, _ = fmt.Fprintf(runner.Out, "Participant template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
@@ -917,27 +1128,27 @@ func parseDevicesFromCSV(data []byte) ([]any, error) {
 	return devices, nil
 }
 
-func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, devicesFile string) error {
-	data, err := runner.ReadFile(devicesFile)
+func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, enrollmentList string, domainTemplateID string) error {
+	data, err := runner.ReadFile(enrollmentList)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading devices file: %v\n", err)
+		_, _ = fmt.Fprintf(runner.Out, "Error reading enrollment list: %v\n", err)
 		return nil
 	}
 	var devices []any
-	if strings.HasSuffix(strings.ToLower(devicesFile), ".csv") {
+	if strings.HasSuffix(strings.ToLower(enrollmentList), ".csv") {
 		devices, err = parseDevicesFromCSV(data)
 		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid CSV in file '%s': %v\n", devicesFile, err)
+			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid CSV in file '%s': %v\n", enrollmentList, err)
 			return nil
 		}
 	} else {
 		if err := json.Unmarshal(data, &devices); err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid JSON in file '%s': %v\n", devicesFile, err)
+			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid JSON in file '%s': %v\n", enrollmentList, err)
 			return nil
 		}
 	}
-	payload := map[string]any{"devices": devices}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participants/"+participantID+"/campaigns", payload)
+	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID, "participantTemplateId": participantID}
+	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/campaigns", payload)
 	if err != nil {
 		return err
 	}
@@ -956,8 +1167,8 @@ func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, de
 	return nil
 }
 
-func (runner *Runner) ListCampaigns(edgeSystem string, participantID string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns")
+func (runner *Runner) ListCampaigns(edgeSystem string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/campaigns")
 	if err != nil {
 		return err
 	}
@@ -976,8 +1187,8 @@ func (runner *Runner) ListCampaigns(edgeSystem string, participantID string) err
 	return nil
 }
 
-func (runner *Runner) ListCampaignDevices(edgeSystem string, participantID string, campaignID string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID + "/devices")
+func (runner *Runner) ListCampaignDevices(edgeSystem string, campaignID string) error {
+	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/campaigns/" + campaignID + "/devices")
 	if err != nil {
 		return err
 	}
@@ -996,8 +1207,8 @@ func (runner *Runner) ListCampaignDevices(edgeSystem string, participantID strin
 	return nil
 }
 
-func (runner *Runner) DeleteCampaign(edgeSystem string, participantID string, campaignID string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID)
+func (runner *Runner) DeleteCampaign(edgeSystem string, campaignID string) error {
+	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/campaigns/" + campaignID)
 	if err != nil {
 		return err
 	}
@@ -1055,18 +1266,22 @@ var enrollArtifacts = []struct{ field, filename string }{
 	{"governance_p7s", "signed_governance.p7s"},
 }
 
-func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, keyFile string, campaignToken string, outputDir string) error {
+// EnrollDevice enrolls a device with the Provisioning Service and persists
+// the resulting security artifacts.  It returns the domain_template_id from
+// the enrollment response so callers can route subsequent operations to the
+// correct store slot (<domain_template_id>/<participant_template_id>/).
+func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, keyFile string, campaignToken string, outputDir string) (string, error) {
 	data, err := runner.ReadFile(csrFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-		return nil
+		return "", fmt.Errorf("reading CSR file: %w", err)
 	}
 	payload := map[string]any{
 		"serial": serial,
 		"macs":   macs,
 		"csr":    string(data),
 	}
-	path := "/edge-systems/" + edgeSystemID + "/participants/" + participantID + "/enroll"
+	path := "/edge-systems/" + edgeSystemID + "/enroll"
 	var response *http.Response
 	if campaignToken != "" {
 		response, err = runner.API.PostWithBearerToken(path, payload, campaignToken)
@@ -1074,21 +1289,30 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		response, err = runner.API.Post(path, payload)
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK {
 		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+		return "", fmt.Errorf("HTTP %d: enrollment rejected", response.StatusCode)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
-		return err
+		return "", err
 	}
+
+	// Extract the domain_template_id returned by the server.  This becomes
+	// the top-level directory for all on-disk artifacts for this profile:
+	//   .connext/<domain_template_id>/<participant_template_id>/
+	domainTemplateID := stringField(result, "domain_template_id")
 
 	// Write to the local artifact store when available.
 	if runner.EdgeStore != nil && edgeSystemID != "" && participantID != "" {
+		// participantID is used directly as the store slot.  The caller
+		// (agent) passes storePart = participantID/deviceName when a device
+		// name is present, so no outputDir-based derivation is needed.
+		storeSlot := participantID
 		arts := edgestore.EnrollArtifacts{
 			DeviceCertPEM: []byte(stringField(result, "certificate")),
 			CAChainPEM:    []byte(stringField(result, "ca_chain")),
@@ -1102,30 +1326,36 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 				arts.PrivateKeyPEM = keyData
 			}
 		}
-		if err := runner.EdgeStore.WriteArtifacts(edgeSystemID, participantID, arts); err != nil {
-			return err
+		// Use domainTemplateID as the first path segment when available;
+		// fall back to edgeSystemID for backward compatibility.
+		firstSeg := domainTemplateID
+		if firstSeg == "" {
+			firstSeg = edgeSystemID
+		}
+		if err := runner.EdgeStore.WriteArtifacts(serial, firstSeg, storeSlot, arts); err != nil {
+			return domainTemplateID, err
 		}
 		// enroll_lease.json — written to connext_artifacts/ when the response
 		// contains a top-level "lease" or "server_time_utc" key.
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-			leaseDest := filepath.Join(runner.EdgeStore.ConnextArtifactsDir(edgeSystemID, participantID), "enroll_lease.json")
+			leaseDest := filepath.Join(runner.EdgeStore.ConnextArtifactsDir(serial, firstSeg, storeSlot), "enroll_lease.json")
 			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
-		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:     %s\n  Participant: %s\n  Store:       %s\n",
-			edgeSystemID, participantID, runner.EdgeStore.SlotDir(edgeSystemID, participantID))
-		return nil
+		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:          %s\n  Domain Template:  %s\n  Participant:      %s\n  Store:            %s\n",
+			edgeSystemID, firstSeg, participantID, runner.EdgeStore.SlotDir(serial, firstSeg, storeSlot))
+		return domainTemplateID, nil
 	}
 
 	if outputDir == "" {
 		formatted, _ := json.MarshalIndent(result, "", "  ")
 		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
+		return domainTemplateID, nil
 	}
 	if err := runner.MkdirAll(outputDir, 0o755); err != nil {
-		return err
+		return domainTemplateID, err
 	}
 	for _, a := range enrollArtifacts {
 		val, ok := result[a.field].(string)
@@ -1134,7 +1364,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		}
 		destPath := filepath.Join(outputDir, a.filename)
 		if err := runner.WriteFile(destPath, []byte(val), 0o644); err != nil {
-			return err
+			return domainTemplateID, err
 		}
 		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", destPath)
 	}
@@ -1142,11 +1372,11 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 		leaseDest := filepath.Join(outputDir, "enroll_lease.json")
 		if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
-			return err
+			return domainTemplateID, err
 		}
 		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", leaseDest)
 	}
-	return nil
+	return domainTemplateID, nil
 }
 
 func stringField(m map[string]any, key string) string {

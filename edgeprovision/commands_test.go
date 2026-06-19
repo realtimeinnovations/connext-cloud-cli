@@ -65,30 +65,6 @@ func TestNewClientTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
-func TestHealthz(t *testing.T) {
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /healthz": newJSONResponse(http.StatusOK, map[string]any{"status": "ok", "healthy": true}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.Healthz("http://localhost:8080"); err != nil {
-		t.Fatal(err)
-	}
-	if doer.lastMethod != http.MethodGet || doer.lastPath != "/healthz" {
-		t.Fatalf("unexpected request: %s %s", doer.lastMethod, doer.lastPath)
-	}
-	if !strings.Contains(out.String(), "ok") || !strings.Contains(out.String(), "healthy") {
-		t.Fatalf("unexpected output: %s", out.String())
-	}
-}
-
-func TestHealthzRequiresURL(t *testing.T) {
-	runner := newRunnerWithDoer(io.Discard, &fakeDoer{})
-	if err := runner.Healthz(""); err == nil || !strings.Contains(err.Error(), "--url is required") {
-		t.Fatalf("expected --url required error, got %v", err)
-	}
-}
-
 func TestSignCSR(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /internal/sign": newJSONResponse(http.StatusOK, map[string]any{
@@ -551,12 +527,13 @@ func TestGetCRLToDirectory(t *testing.T) {
 
 func TestErrorResponseUsesFormatError(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /healthz": newTextResponse(http.StatusInternalServerError, `{"error":"signing failed"}`),
+		"POST /internal/sign": newTextResponse(http.StatusInternalServerError, `{"error":"signing failed"}`),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.Healthz("http://localhost:8080"); err != nil {
-		t.Fatal(err)
+	err := runner.SignCSR("http://localhost:8080", "dGVzdA==")
+	if err == nil {
+		t.Fatal("expected error from HTTP 500 response")
 	}
 	// Should render via httputil.FormatError — i.e. extract "signing failed",
 	// not dump the raw JSON body with the status code prefix.
@@ -566,5 +543,124 @@ func TestErrorResponseUsesFormatError(t *testing.T) {
 	}
 	if strings.Contains(output, "(HTTP 500)") {
 		t.Fatalf("expected normalized error (no raw (HTTP nnn) prefix), got: %s", output)
+	}
+}
+
+func TestRenewDeviceCert(t *testing.T) {
+	const certPEM = "-----BEGIN CERTIFICATE-----\nnewcert\n-----END CERTIFICATE-----"
+	const caPEM = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate": certPEM,
+			"ca_chain":    caPEM,
+		}),
+	}}
+	var out bytes.Buffer
+	runner := newRunnerWithDoer(&out, doer)
+	runner.ReadFile = func(_ string) ([]byte, error) {
+		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ncsr\n-----END CERTIFICATE REQUEST-----"), nil
+	}
+	if err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if doer.lastMethod != http.MethodPost || doer.lastPath != "/device/renew-cert" {
+		t.Fatalf("unexpected request: %s %s", doer.lastMethod, doer.lastPath)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(doer.lastBody, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["csr"]; !ok {
+		t.Fatal("expected 'csr' key in request payload")
+	}
+	if _, ok := payload["validity_minutes"]; ok {
+		t.Fatal("validity_minutes should not be sent when 0")
+	}
+	if !strings.Contains(out.String(), "newcert") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRenewDeviceCertWithValidityMinutes(t *testing.T) {
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate": "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
+			"ca_chain":    "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
+		}),
+	}}
+	runner := newRunnerWithDoer(io.Discard, doer)
+	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
+	if err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 1440, ""); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(doer.lastBody, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["validity_minutes"] != float64(1440) {
+		t.Fatalf("expected validity_minutes=1440, got %v", payload["validity_minutes"])
+	}
+}
+
+func TestRenewDeviceCertToDirectory(t *testing.T) {
+	const certPEM = "-----BEGIN CERTIFICATE-----\nnewcert\n-----END CERTIFICATE-----"
+	const caPEM = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate": certPEM,
+			"ca_chain":    caPEM,
+		}),
+	}}
+	var out bytes.Buffer
+	runner := newRunnerWithDoer(&out, doer)
+	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
+	dir := t.TempDir()
+	written := map[string][]byte{}
+	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		written[filepath.Base(path)] = data
+		return nil
+	}
+	if err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 0, dir); err != nil {
+		t.Fatal(err)
+	}
+	if string(written["device.crt"]) != certPEM {
+		t.Fatalf("unexpected device.crt: %s", written["device.crt"])
+	}
+	if string(written["ca-chain.pem"]) != caPEM {
+		t.Fatalf("unexpected ca-chain.pem: %s", written["ca-chain.pem"])
+	}
+	if !strings.Contains(out.String(), "Device certificate saved to") {
+		t.Fatalf("unexpected stdout: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "CA chain saved to") {
+		t.Fatalf("unexpected stdout: %s", out.String())
+	}
+}
+
+func TestRenewDeviceCertRequiresMTLS(t *testing.T) {
+	runner := newRunnerWithDoer(io.Discard, &fakeDoer{})
+	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
+	err := runner.RenewDeviceCert("https://x:8443", "", "", "", "", "device.csr", 0, "")
+	if err == nil || !strings.Contains(err.Error(), "--cert, --key, and --ca are required") {
+		t.Fatalf("expected mTLS flags error, got %v", err)
+	}
+}
+
+func TestRenewDeviceCertHTTPError(t *testing.T) {
+	doer := &fakeDoer{responses: map[string]*http.Response{
+		"POST /device/renew-cert": newJSONResponse(http.StatusUnprocessableEntity, map[string]any{
+			"error": "Invalid request.",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := newRunnerWithDoer(&out, doer)
+	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
+	err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 0, "/tmp/out/")
+	if err == nil {
+		t.Fatal("expected error from HTTP 422")
+	}
+	if !strings.Contains(out.String(), "Error:") {
+		t.Fatalf("expected error message in output: %s", out.String())
 	}
 }

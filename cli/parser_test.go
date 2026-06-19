@@ -130,14 +130,14 @@ func TestParserEdgeProvisioningServiceHelp(t *testing.T) {
 	}
 }
 
-func TestParserEdgeProvisioningProfileHelp(t *testing.T) {
+func TestParserEdgeProvisioningParticipantTemplateHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"edge-provisioning", "profile"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "participant-template"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for edge-provisioning profile help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning participant-template help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Manage Participant Profiles") || !strings.Contains(out.String(), "create") {
-		t.Fatalf("unexpected edge-provisioning profile help: %s", out.String())
+	if !strings.Contains(out.String(), "Manage Participant Templates") || !strings.Contains(out.String(), "create") {
+		t.Fatalf("unexpected edge-provisioning participant-template help: %s", out.String())
 	}
 }
 
@@ -169,7 +169,7 @@ func TestParserEdgeSyncHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil for edge-sync help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Sync security artifacts") || !strings.Contains(out.String(), "healthz") {
+	if !strings.Contains(out.String(), "Sync security artifacts") {
 		t.Fatalf("unexpected edge-sync help: %s", out.String())
 	}
 }
@@ -196,7 +196,7 @@ func TestParserEdgeSyncIdentityRequiresParticipantID(t *testing.T) {
 }
 
 func TestParserEdgeSyncRejectsDisableSSLVerify(t *testing.T) {
-	err := Execute([]string{"--disable-ssl-verify", "edge-sync", "healthz", "--url", "http://localhost:8080"}, io.Discard, io.Discard, nil)
+	err := Execute([]string{"--disable-ssl-verify", "edge-sync", "crl", "--service", "svc"}, io.Discard, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot be used with edge-sync") {
 		t.Fatalf("expected disable-ssl-verify rejection, got: %v", err)
 	}

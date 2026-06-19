@@ -106,10 +106,65 @@ func (client *Client) requestWithHeaders(method string, path string, payload any
 // PostWithBearerToken sends a POST using an explicit Bearer token instead of
 // the token produced by HeadersProvider.  Use this when the endpoint requires
 // a different JWT audience (e.g. a campaign enrollment token).
+// HeadersProvider is intentionally NOT called so that no ambient login flow
+// is triggered for requests that carry their own token.
 func (client *Client) PostWithBearerToken(path string, payload any, bearerToken string) (*http.Response, error) {
-	return client.requestWithHeaders(http.MethodPost, path, payload, map[string]string{
+	return client.requestWithExplicitHeaders(http.MethodPost, path, payload, map[string]string{
 		"Authorization": "Bearer " + bearerToken,
 	})
+}
+
+// requestWithExplicitHeaders sends a request using only the provided headers,
+// bypassing HeadersProvider entirely.  Use for endpoints that authenticate
+// with a caller-supplied token rather than the stored user credentials.
+func (client *Client) requestWithExplicitHeaders(method string, path string, payload any, headers map[string]string) (*http.Response, error) {
+	baseURL, err := client.BaseURLProvider()
+	if err != nil {
+		return nil, err
+	}
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(data)
+	}
+	request, err := http.NewRequest(method, strings.TrimRight(baseURL, "/")+path, body)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	httpClient := client.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	if !client.SSLVerify {
+		client.warningOnce.Do(func() {
+			if client.Stderr != nil {
+				_, _ = fmt.Fprintln(client.Stderr, "WARNING: SSL certificate verification disabled")
+			}
+		})
+		client.insecureOnce.Do(func() {
+			transport := insecureTransport(httpClient.Transport)
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			insecureClient := *httpClient
+			insecureClient.Transport = transport
+			if insecureClient.Timeout == 0 {
+				insecureClient.Timeout = 30 * time.Second
+			}
+			client.insecureClient = &insecureClient
+		})
+		httpClient = client.insecureClient
+	}
+	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
+	defer stopSpinner()
+	return httpClient.Do(request)
 }
 
 func insecureTransport(roundTripper http.RoundTripper) *http.Transport {

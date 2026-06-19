@@ -1,6 +1,7 @@
 package edgeprovision
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,8 @@ import (
 type Runner struct {
 	Out       io.Writer
 	SSLVerify bool
+	// Debug, when true, logs every HTTP request and response body to Out.
+	Debug bool
 
 	// Injectable file I/O for testability — mirrors commands.Runner.
 	ReadFile  func(string) ([]byte, error)
@@ -27,8 +30,9 @@ type Runner struct {
 	MkdirAll  func(string, os.FileMode) error
 
 	// Client factories — overridable in tests with a fake Doer.
-	NewClient     func(baseURL string, sslVerify bool) *Client
-	NewMTLSClient func(baseURL, certFile, keyFile, caFile, serverAddr string, sslVerify bool) (*Client, error)
+	NewClient       func(baseURL string, sslVerify bool) *Client
+	NewClientWithCA func(baseURL, caFile string, sslVerify bool) (*Client, error)
+	NewMTLSClient   func(baseURL, certFile, keyFile, caFile, serverAddr string, sslVerify bool) (*Client, error)
 }
 
 // NewRunner creates a Runner with sensible defaults.  SSLVerify defaults to
@@ -36,22 +40,38 @@ type Runner struct {
 // is passed.
 func NewRunner(out io.Writer) *Runner {
 	return &Runner{
-		Out:           out,
-		SSLVerify:     true,
-		ReadFile:      os.ReadFile,
-		WriteFile:     os.WriteFile,
-		MkdirAll:      os.MkdirAll,
-		NewClient:     NewClient,
-		NewMTLSClient: NewMTLSClient,
+		Out:             out,
+		SSLVerify:       true,
+		ReadFile:        os.ReadFile,
+		WriteFile:       os.WriteFile,
+		MkdirAll:        os.MkdirAll,
+		NewClient:       NewClient,
+		NewClientWithCA: NewClientWithCA,
+		NewMTLSClient:   NewMTLSClient,
 	}
 }
 
 // plainClient builds a non-mTLS client (used for /healthz and /internal/sign).
-func (runner *Runner) plainClient(url string) (*Client, error) {
+// caFile, when non-empty, configures the transport to trust the given CA chain
+// for server certificate verification (instead of system roots).
+func (runner *Runner) plainClient(url, caFile string) (*Client, error) {
 	if url == "" {
 		return nil, fmt.Errorf("--url is required")
 	}
-	return runner.NewClient(url, runner.SSLVerify), nil
+	var c *Client
+	if caFile != "" {
+		var err error
+		c, err = runner.NewClientWithCA(url, caFile, runner.SSLVerify)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		c = runner.NewClient(url, runner.SSLVerify)
+	}
+	if runner.Debug {
+		c.DebugOut = runner.Out
+	}
+	return c, nil
 }
 
 // mtlsClient builds an mTLS client for the device-facing endpoints.  All three
@@ -64,7 +84,14 @@ func (runner *Runner) mtlsClient(url, certFile, keyFile, caFile, serverAddr stri
 	if certFile == "" || keyFile == "" || caFile == "" {
 		return nil, fmt.Errorf("--cert, --key, and --ca are required for mTLS endpoints")
 	}
-	return runner.NewMTLSClient(url, certFile, keyFile, caFile, serverAddr, runner.SSLVerify)
+	c, err := runner.NewMTLSClient(url, certFile, keyFile, caFile, serverAddr, runner.SSLVerify)
+	if err != nil {
+		return nil, err
+	}
+	if runner.Debug {
+		c.DebugOut = runner.Out
+	}
+	return c, nil
 }
 
 // emitJSON consumes resp, prints either the formatted JSON body on success or
@@ -74,8 +101,9 @@ func (runner *Runner) emitJSON(resp *http.Response) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
-		return nil
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -86,22 +114,9 @@ func (runner *Runner) emitJSON(resp *http.Response) error {
 	return nil
 }
 
-// Healthz calls GET /healthz on the signing app (port 8080).
-func (runner *Runner) Healthz(url string) error {
-	client, err := runner.plainClient(url)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Get("/healthz")
-	if err != nil {
-		return err
-	}
-	return runner.emitJSON(resp)
-}
-
 // SignCSR calls POST /internal/sign with a base64-encoded CSR.
 func (runner *Runner) SignCSR(url string, csrBase64 string) error {
-	client, err := runner.plainClient(url)
+	client, err := runner.plainClient(url, "")
 	if err != nil {
 		return err
 	}
@@ -194,8 +209,7 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	if csrFile != "" {
 		data, err := runner.ReadFile(csrFile)
 		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-			return nil
+			return fmt.Errorf("reading CSR file: %w", err)
 		}
 		payload["csr_pem"] = string(data)
 	}
@@ -209,8 +223,9 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
-		return nil
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -252,8 +267,9 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
-		return nil
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -280,8 +296,8 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 // (mTLS required).  When output is non-empty three files are written to the
 // output directory:
 //
-//	psk_primary.txt  — passphrase of the entry with the lower passphrase_id
-//	psk_extra.txt    — all passphrases, sorted by passphrase_id, one per line
+//	psk_primary.txt  — passphrase of the psk_a slot (active seed)
+//	psk_extra.txt    — psk_a and psk_b passphrases only (max 2 lines; DDS limit)
 //	psk_lease.json   — lease windows for both slots + server_time_utc
 //
 // When output is empty the full JSON response is printed to stdout.
@@ -300,8 +316,9 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
-		return nil
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -324,28 +341,49 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 		return pskSlot{key: key, passphraseID: id, passphrase: pass, lease: m["lease"]}, true
 	}
 	var slots []pskSlot
-	for _, k := range []string{"psk_a", "psk_b"} {
+	for _, k := range []string{"psk_a", "psk_b", "psk"} {
 		if s, ok := parseSlot(k); ok {
 			slots = append(slots, s)
 		}
 	}
 	sort.Slice(slots, func(i, j int) bool { return slots[i].passphraseID < slots[j].passphraseID })
 
+	// Prefer the explicit psk_a slot as the active primary; fall back to the
+	// lowest-id slot for servers that only return the legacy "psk" key.
+	primarySlot := slots[0]
+	for _, s := range slots {
+		if s.key == "psk_a" {
+			primarySlot = s
+			break
+		}
+	}
+
 	outDir := pskOutputDir(output)
 
-	// psk_primary.txt — passphrase of the lower-id slot
+	// psk_primary.txt — active passphrase (psk_a, or lowest-id fallback).
 	if len(slots) > 0 {
 		primaryDest := filepath.Join(outDir, "psk_primary.txt")
-		if err := runner.saveToFile(primaryDest, []byte(slots[0].passphrase)); err != nil {
+		if err := runner.saveToFile(primaryDest, []byte(primarySlot.passphrase)); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(runner.Out, "PSK primary passphrase saved to %s\n", primaryDest)
 	}
 
-	// psk_extra.txt — all passphrases (sorted by passphrase_id), one per line
+	// psk_extra.txt — at most two passphrases: psk_a and psk_b only.
+	// DDS supports a maximum of two extra passphrases (one matching the primary
+	// and one different); writing more causes a fatal initialisation error.
 	var passphrases []string
 	for _, s := range slots {
-		passphrases = append(passphrases, s.passphrase)
+		if s.key == "psk_a" || s.key == "psk_b" {
+			passphrases = append(passphrases, s.passphrase)
+		}
+	}
+	if len(passphrases) == 0 {
+		// Legacy server with only a "psk" slot — use it as the sole extra entry.
+		for _, s := range slots {
+			passphrases = append(passphrases, s.passphrase)
+			break
+		}
 	}
 	extraDest := filepath.Join(outDir, "psk_extra.txt")
 	if err := runner.saveToFile(extraDest, []byte(strings.Join(passphrases, "\n"))); err != nil {
@@ -372,6 +410,69 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	return nil
 }
 
+// RenewDeviceCert calls POST /device/renew-cert to renew the mTLS device
+// certificate using the same key pair (mTLS required).  The device presents
+// its current certificate via mTLS; the server verifies that the CSR subject
+// and public key match the current certificate before signing.
+//
+// csrFile is a PEM-encoded PKCS#10 CSR generated from the same private key
+// currently in use by the device.  validityMinutes, when > 0, requests a
+// specific certificate lifetime; the server may cap or ignore the value.
+//
+// When output is non-empty the response is written as two files:
+//
+//	<output>/device.crt     — the newly signed certificate
+//	<output>/ca-chain.pem   — the CA chain
+//
+// When output is empty the raw JSON response is printed to stdout.
+func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr, csrFile string, validityMinutes int, output string) error {
+	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
+	if err != nil {
+		return err
+	}
+	csrData, err := runner.ReadFile(csrFile)
+	if err != nil {
+		return fmt.Errorf("reading CSR file: %w", err)
+	}
+	payload := map[string]any{
+		"csr": base64.StdEncoding.EncodeToString(csrData),
+	}
+	if validityMinutes > 0 {
+		payload["validity_minutes"] = validityMinutes
+	}
+	resp, err := client.Post("/device/renew-cert", payload)
+	if err != nil {
+		return err
+	}
+	if output == "" {
+		return runner.emitJSON(resp)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	certPEM, _ := result["certificate"].(string)
+	caDest := resolveOutputPath(output, "ca-chain.pem")
+	certDest := resolveOutputPath(output, "device.crt")
+	if err := runner.saveToFile(certDest, []byte(certPEM)); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "Device certificate saved to %s\n", certDest)
+	caChainPEM, _ := result["ca_chain"].(string)
+	if err := runner.saveToFile(caDest, []byte(caChainPEM)); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(runner.Out, "CA chain saved to %s\n", caDest)
+	return nil
+}
+
 // GetCRL calls GET /{participantID}/crl to fetch the current Certificate
 // Revocation List (mTLS required).  If output is non-empty the CRL is saved
 // to that path (parent directory created if needed); otherwise it is printed
@@ -388,8 +489,9 @@ func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, partici
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", httputil.FormatError(resp.StatusCode, body))
-		return nil
+		msg := httputil.FormatError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	if output == "" {
 		_, _ = fmt.Fprintln(runner.Out, string(body))

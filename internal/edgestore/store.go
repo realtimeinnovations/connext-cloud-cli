@@ -33,42 +33,46 @@ func New(baseDir string) *Store {
 	}
 }
 
-// SlotDir returns the root directory for a service+participant pair.
-func (s *Store) SlotDir(serviceID, participantID string) string {
-	return filepath.Join(s.BaseDir, serviceID, participantID)
+// SlotDir returns the root directory for a serial+domain_template+participant triple.
+//
+// Layout:
+//
+//	.connext/<serial>/<domain_template_id>/<participant_id>/
+func (s *Store) SlotDir(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.BaseDir, serial, domainTemplateID, participantID)
 }
 
 // MTLSDir returns the directory that holds the mTLS credentials.
-func (s *Store) MTLSDir(serviceID, participantID string) string {
-	return filepath.Join(s.SlotDir(serviceID, participantID), "mtls_artifacts")
+func (s *Store) MTLSDir(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.SlotDir(serial, domainTemplateID, participantID), "mtls_artifacts")
 }
 
 // ConnextArtifactsDir returns the directory that holds the DDS/Connext artifacts.
-func (s *Store) ConnextArtifactsDir(serviceID, participantID string) string {
-	return filepath.Join(s.SlotDir(serviceID, participantID), "connext_artifacts")
+func (s *Store) ConnextArtifactsDir(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.SlotDir(serial, domainTemplateID, participantID), "connext_artifacts")
 }
 
 // DeviceCertPath is the mTLS leaf certificate path.
-func (s *Store) DeviceCertPath(serviceID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serviceID, participantID), "device.crt")
+func (s *Store) DeviceCertPath(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "device.crt")
 }
 
 // PrivateKeyPath is the device private key path.
-func (s *Store) PrivateKeyPath(serviceID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serviceID, participantID), "device.key")
+func (s *Store) PrivateKeyPath(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "device.key")
 }
 
 // CAChainPath is the Provisioning Service CA chain path.
-func (s *Store) CAChainPath(serviceID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serviceID, participantID), "ca-chain.pem")
+func (s *Store) CAChainPath(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "ca-chain.pem")
 }
 
 // WriteArtifacts persists enrollment artifacts into the correct slot,
 // creating the directory structure as needed.
 // Fields with nil or empty bytes are silently skipped.
-func (s *Store) WriteArtifacts(serviceID, participantID string, a EnrollArtifacts) error {
-	mtlsDir := s.MTLSDir(serviceID, participantID)
-	connextDir := s.ConnextArtifactsDir(serviceID, participantID)
+func (s *Store) WriteArtifacts(serial, domainTemplateID, participantID string, a EnrollArtifacts) error {
+	mtlsDir := s.MTLSDir(serial, domainTemplateID, participantID)
+	connextDir := s.ConnextArtifactsDir(serial, domainTemplateID, participantID)
 
 	if err := s.MkdirAll(mtlsDir, 0o755); err != nil {
 		return err
@@ -78,12 +82,12 @@ func (s *Store) WriteArtifacts(serviceID, participantID string, a EnrollArtifact
 	}
 
 	if len(a.DeviceCertPEM) > 0 {
-		if err := s.WriteFile(s.DeviceCertPath(serviceID, participantID), a.DeviceCertPEM, 0o644); err != nil {
+		if err := s.WriteFile(s.DeviceCertPath(serial, domainTemplateID, participantID), a.DeviceCertPEM, 0o644); err != nil {
 			return err
 		}
 	}
 	if len(a.CAChainPEM) > 0 {
-		if err := s.WriteFile(s.CAChainPath(serviceID, participantID), a.CAChainPEM, 0o644); err != nil {
+		if err := s.WriteFile(s.CAChainPath(serial, domainTemplateID, participantID), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
 		if err := s.WriteFile(filepath.Join(connextDir, "ca-chain.pem"), a.CAChainPEM, 0o644); err != nil {
@@ -91,7 +95,7 @@ func (s *Store) WriteArtifacts(serviceID, participantID string, a EnrollArtifact
 		}
 	}
 	if len(a.PrivateKeyPEM) > 0 {
-		if err := s.WriteFile(s.PrivateKeyPath(serviceID, participantID), a.PrivateKeyPEM, 0o600); err != nil {
+		if err := s.WriteFile(s.PrivateKeyPath(serial, domainTemplateID, participantID), a.PrivateKeyPEM, 0o600); err != nil {
 			return err
 		}
 	}
@@ -106,23 +110,23 @@ func (s *Store) WriteArtifacts(serviceID, participantID string, a EnrollArtifact
 
 // ResolveMTLSDefaults fills cert, key, and ca from the store when the caller
 // did not supply them and the stored files exist on disk.
-// serviceID or participantID being empty is a no-op.
-func (s *Store) ResolveMTLSDefaults(serviceID, participantID, cert, key, ca string) (string, string, string) {
-	if serviceID == "" || participantID == "" {
+// domainTemplateID or participantID being empty is a no-op.
+func (s *Store) ResolveMTLSDefaults(serial, domainTemplateID, participantID, cert, key, ca string) (string, string, string) {
+	if domainTemplateID == "" || participantID == "" {
 		return cert, key, ca
 	}
 	if cert == "" {
-		if p := s.DeviceCertPath(serviceID, participantID); s.fileExists(p) {
+		if p := s.DeviceCertPath(serial, domainTemplateID, participantID); s.fileExists(p) {
 			cert = p
 		}
 	}
 	if key == "" {
-		if p := s.PrivateKeyPath(serviceID, participantID); s.fileExists(p) {
+		if p := s.PrivateKeyPath(serial, domainTemplateID, participantID); s.fileExists(p) {
 			key = p
 		}
 	}
 	if ca == "" {
-		if p := s.CAChainPath(serviceID, participantID); s.fileExists(p) {
+		if p := s.CAChainPath(serial, domainTemplateID, participantID); s.fileExists(p) {
 			ca = p
 		}
 	}
@@ -135,26 +139,26 @@ func (s *Store) fileExists(path string) bool {
 }
 
 // DeviceURLPath is the path of the stored device endpoint URL for a slot.
-func (s *Store) DeviceURLPath(serviceID, participantID string) string {
-	return filepath.Join(s.SlotDir(serviceID, participantID), "device_url")
+func (s *Store) DeviceURLPath(serial, domainTemplateID, participantID string) string {
+	return filepath.Join(s.SlotDir(serial, domainTemplateID, participantID), "device_url")
 }
 
 // WriteDeviceURL persists the device endpoint URL for a slot, creating the
 // slot directory as needed.  An empty url is silently ignored.
-func (s *Store) WriteDeviceURL(serviceID, participantID, deviceURL string) error {
+func (s *Store) WriteDeviceURL(serial, domainTemplateID, participantID, deviceURL string) error {
 	if deviceURL == "" {
 		return nil
 	}
-	if err := s.MkdirAll(s.SlotDir(serviceID, participantID), 0o755); err != nil {
+	if err := s.MkdirAll(s.SlotDir(serial, domainTemplateID, participantID), 0o755); err != nil {
 		return err
 	}
-	return s.WriteFile(s.DeviceURLPath(serviceID, participantID), []byte(deviceURL), 0o644)
+	return s.WriteFile(s.DeviceURLPath(serial, domainTemplateID, participantID), []byte(deviceURL), 0o644)
 }
 
 // ResolveDeviceURL returns the stored device endpoint URL for a slot,
 // or "" if none has been saved yet.
-func (s *Store) ResolveDeviceURL(serviceID, participantID string) string {
-	p := s.DeviceURLPath(serviceID, participantID)
+func (s *Store) ResolveDeviceURL(serial, domainTemplateID, participantID string) string {
+	p := s.DeviceURLPath(serial, domainTemplateID, participantID)
 	if !s.fileExists(p) {
 		return ""
 	}

@@ -32,6 +32,9 @@ type Client struct {
 	// configured with a tls.Config that provides the client cert and trusts
 	// the Provisioning Service CA.
 	HTTPClient Doer
+	// DebugOut, when non-nil, receives verbose request/response logging for
+	// every HTTP call.  Sensitive fields (keys, passphrases) are not redacted.
+	DebugOut io.Writer
 }
 
 // NewClient creates a plain (non-mTLS) client for the signing/healthcheck
@@ -46,6 +49,28 @@ func NewClient(baseURL string, sslVerify bool) *Client {
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: transport},
 	}
+}
+
+// NewClientWithCA creates a plain (non-mTLS) client that trusts the given CA
+// chain PEM file for server certificate verification.
+func NewClientWithCA(baseURL string, caFile string, sslVerify bool) (*Client, error) {
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA file: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to parse CA certificate from %s", caFile)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: !sslVerify,
+	}
+	return &Client{
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: transport},
+	}, nil
 }
 
 // NewMTLSClient creates a client that presents a client certificate for mTLS
@@ -98,13 +123,15 @@ func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile strin
 }
 
 func (client *Client) request(method string, path string, payload any) (*http.Response, error) {
+	var bodyBytes []byte
 	var body io.Reader
 	if payload != nil {
-		data, err := json.Marshal(payload)
+		var err error
+		bodyBytes, err = json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
-		body = bytes.NewReader(data)
+		body = bytes.NewReader(bodyBytes)
 	}
 	req, err := http.NewRequest(method, client.BaseURL+path, body)
 	if err != nil {
@@ -113,7 +140,24 @@ func (client *Client) request(method string, path string, payload any) (*http.Re
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return client.HTTPClient.Do(req)
+	if client.DebugOut != nil {
+		_, _ = fmt.Fprintf(client.DebugOut, "DEBUG request: %s %s\n", method, client.BaseURL+path)
+		if bodyBytes != nil {
+			_, _ = fmt.Fprintf(client.DebugOut, "DEBUG request body: %s\n", string(bodyBytes))
+		}
+	}
+	resp, err := client.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if client.DebugOut != nil {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		_, _ = fmt.Fprintf(client.DebugOut, "DEBUG response: %d %s\n", resp.StatusCode, resp.Status)
+		_, _ = fmt.Fprintf(client.DebugOut, "DEBUG response body: %s\n", string(respBody))
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	}
+	return resp, nil
 }
 
 func (client *Client) Get(path string) (*http.Response, error) {

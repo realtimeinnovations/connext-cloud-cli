@@ -216,18 +216,15 @@ func TestCreateEdgeSystem(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.ReadFile = func(path string) ([]byte, error) {
-		if path != "gov.xml" {
-			t.Fatalf("unexpected governance file path: %s", path)
-		}
-		return []byte("<governance/>"), nil
-	}
-	if err := runner.CreateEdgeSystem("alpha", "gov.xml", "test"); err != nil {
+	if err := runner.CreateEdgeSystem("alpha", "test"); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
-	if payload["name"] != "alpha" || payload["governanceXml"] != "<governance/>" || payload["description"] != "test" {
+	if payload["name"] != "alpha" || payload["description"] != "test" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if _, hasGov := payload["governanceXml"]; hasGov {
+		t.Fatal("governanceXml must not be sent in create request")
 	}
 	if !strings.Contains(out.String(), "ces-alpha-123") {
 		t.Fatalf("unexpected output: %s", out.String())
@@ -240,8 +237,7 @@ func TestCreateEdgeSystemError(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(""), nil }
-	if err := runner.CreateEdgeSystem("", "gov.xml", ""); err != nil {
+	if err := runner.CreateEdgeSystem("", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Error") {
@@ -277,28 +273,22 @@ func TestDeleteEdgeSystem(t *testing.T) {
 	}
 }
 
-// ── Edge Participant Tests ───────────────────────────────────────────────────
+// ── Edge Participant Template Tests ──────────────────────────────────────────
 
-func TestCreateParticipant(t *testing.T) {
+func TestCreateParticipantTemplate(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /edge-systems/alpha/participants": newJSONResponse(http.StatusCreated, map[string]any{
-			"participant_id": "sensor-net",
+		"POST /edge-systems/alpha/participant-templates": newJSONResponse(http.StatusCreated, map[string]any{
+			"participant_id": "sensor-net-a1b2c3d4",
 			"name":           "sensor-net",
 		}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.ReadFile = func(path string) ([]byte, error) {
-		if path != "perms.xml" {
-			t.Fatalf("unexpected permissions file path: %s", path)
-		}
-		return []byte("<permissions/>"), nil
-	}
-	if err := runner.CreateParticipant("alpha", "sensor-net", "perms.xml", 3600); err != nil {
+	if err := runner.CreateParticipantTemplate("alpha", "sensor-net", "permissions-allow-all-v1", 1440); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
-	if payload["name"] != "sensor-net" || payload["permissionsXml"] != "<permissions/>" {
+	if payload["name"] != "sensor-net" || payload["permissionsRef"] != "permissions-allow-all-v1" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 	if !strings.Contains(out.String(), "sensor-net") {
@@ -306,15 +296,15 @@ func TestCreateParticipant(t *testing.T) {
 	}
 }
 
-func TestListParticipants(t *testing.T) {
+func TestListParticipantTemplates(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"GET /edge-systems/alpha/participants": newJSONResponse(http.StatusOK, map[string]any{
-			"participants": []any{map[string]any{"name": "sensor-net"}},
+		"GET /edge-systems/alpha/participant-templates": newJSONResponse(http.StatusOK, map[string]any{
+			"participant_templates": []any{map[string]any{"name": "sensor-net"}},
 		}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.ListParticipants("alpha"); err != nil {
+	if err := runner.ListParticipantTemplates("alpha"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "sensor-net") {
@@ -322,15 +312,15 @@ func TestListParticipants(t *testing.T) {
 	}
 }
 
-func TestQueryParticipant(t *testing.T) {
+func TestGetParticipantTemplate(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"GET /edge-systems/alpha/participants/sensor-net": newJSONResponse(http.StatusOK, map[string]any{
-			"name": "sensor-net", "participant_id": "sensor-net",
+		"GET /edge-systems/alpha/participant-templates/sensor-net": newJSONResponse(http.StatusOK, map[string]any{
+			"name": "sensor-net", "participant_id": "sensor-net-a1b2c3d4",
 		}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.QueryParticipant("alpha", "sensor-net"); err != nil {
+	if err := runner.GetParticipantTemplate("alpha", "sensor-net"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "sensor-net") {
@@ -338,16 +328,16 @@ func TestQueryParticipant(t *testing.T) {
 	}
 }
 
-func TestDeleteParticipant(t *testing.T) {
+func TestDeleteParticipantTemplate(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"DELETE /edge-systems/alpha/participants/sensor-net": newTextResponse(http.StatusOK, "{}"),
+		"DELETE /edge-systems/alpha/participant-templates/sensor-net": newTextResponse(http.StatusOK, "{}"),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.DeleteParticipant("alpha", "sensor-net"); err != nil {
+	if err := runner.DeleteParticipantTemplate("alpha", "sensor-net"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Participant 'sensor-net' deleted") {
+	if !strings.Contains(out.String(), "Participant template 'sensor-net' deleted") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -356,7 +346,7 @@ func TestDeleteParticipant(t *testing.T) {
 
 func TestCreateCampaign(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /edge-systems/alpha/participants/sensor-net/campaigns": newJSONResponse(http.StatusCreated, map[string]any{
+		"POST /edge-systems/alpha/campaigns": newJSONResponse(http.StatusCreated, map[string]any{
 			"campaign_id": "camp-123",
 			"written":     2,
 		}),
@@ -366,8 +356,15 @@ func TestCreateCampaign(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte(`[{"serial":"SN001","macs":["AA:BB:CC:DD:EE:FF"]}]`), nil
 	}
-	if err := runner.CreateCampaign("alpha", "sensor-net", "devices.json"); err != nil {
+	if err := runner.CreateCampaign("alpha", "sensor-net", "devices.json", "edge-default-tag"); err != nil {
 		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["domainTemplateId"] != "edge-default-tag" {
+		t.Fatalf("expected domainTemplateId in payload, got: %#v", payload)
+	}
+	if payload["participantTemplateId"] != "sensor-net" {
+		t.Fatalf("expected participantTemplateId in payload, got: %#v", payload)
 	}
 	if !strings.Contains(out.String(), "camp-123") {
 		t.Fatalf("unexpected output: %s", out.String())
@@ -376,7 +373,7 @@ func TestCreateCampaign(t *testing.T) {
 
 func TestCreateCampaignCSV(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /edge-systems/alpha/participants/sensor-net/campaigns": newJSONResponse(http.StatusCreated, map[string]any{
+		"POST /edge-systems/alpha/campaigns": newJSONResponse(http.StatusCreated, map[string]any{
 			"campaign_id": "camp-456",
 			"written":     3,
 		}),
@@ -386,7 +383,7 @@ func TestCreateCampaignCSV(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("SN-001,\"AA:BB:CC:DD:EE:11,11:22:33:44:55:11\",pump-sensor\nSN-002,\"AA:BB:CC:DD:EE:22,11:22:33:44:55:22,11:22:33:44:22:22\",pump-sensor2\nSN-003,AA:BB:CC:DD:EE:33\n"), nil
 	}
-	if err := runner.CreateCampaign("alpha", "sensor-net", "devices.csv"); err != nil {
+	if err := runner.CreateCampaign("alpha", "sensor-net", "devices.csv", "edge-default-tag"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "camp-456") {
@@ -396,13 +393,13 @@ func TestCreateCampaignCSV(t *testing.T) {
 
 func TestListCampaigns(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"GET /edge-systems/alpha/participants/sensor-net/campaigns": newJSONResponse(http.StatusOK, map[string]any{
+		"GET /edge-systems/alpha/campaigns": newJSONResponse(http.StatusOK, map[string]any{
 			"campaigns": []any{map[string]any{"campaign_id": "camp-123"}},
 		}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.ListCampaigns("alpha", "sensor-net"); err != nil {
+	if err := runner.ListCampaigns("alpha"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "camp-123") {
@@ -412,13 +409,13 @@ func TestListCampaigns(t *testing.T) {
 
 func TestListCampaignDevices(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"GET /edge-systems/alpha/participants/sensor-net/campaigns/camp-123/devices": newJSONResponse(http.StatusOK, map[string]any{
+		"GET /edge-systems/alpha/campaigns/camp-123/devices": newJSONResponse(http.StatusOK, map[string]any{
 			"devices": []any{map[string]any{"serial": "SN001", "status": "pending"}},
 		}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.ListCampaignDevices("alpha", "sensor-net", "camp-123"); err != nil {
+	if err := runner.ListCampaignDevices("alpha", "camp-123"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "SN001") {
@@ -428,11 +425,11 @@ func TestListCampaignDevices(t *testing.T) {
 
 func TestDeleteCampaign(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"DELETE /edge-systems/alpha/participants/sensor-net/campaigns/camp-123": newTextResponse(http.StatusOK, "{}"),
+		"DELETE /edge-systems/alpha/campaigns/camp-123": newTextResponse(http.StatusOK, "{}"),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.DeleteCampaign("alpha", "sensor-net", "camp-123"); err != nil {
+	if err := runner.DeleteCampaign("alpha", "camp-123"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Campaign 'camp-123' deleted") {
@@ -474,7 +471,7 @@ func TestRevokeDevice(t *testing.T) {
 
 func TestEnrollDevice(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /edge-systems/ces-alpha-123/participants/sensor-net/enroll": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /edge-systems/ces-alpha-123/enroll": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate":    "-----BEGIN CERTIFICATE-----\nMIIB...",
 			"ca_chain":       "-----BEGIN CERTIFICATE-----\nMIIC...",
 			"governance_p7s": "MIME-Version: 1.0\ncontent",
@@ -486,7 +483,7 @@ func TestEnrollDevice(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", ""); err != nil {
+	if _, err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -500,7 +497,7 @@ func TestEnrollDevice(t *testing.T) {
 
 func TestEnrollDeviceToDirectory(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /edge-systems/ces-alpha-123/participants/sensor-net/enroll": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /edge-systems/ces-alpha-123/enroll": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate":    "-----BEGIN CERTIFICATE-----\nMIIB...",
 			"ca_chain":       "-----BEGIN CERTIFICATE-----\nMIIC...",
 			"governance_p7s": "MIME-Version: 1.0\nGov...",
@@ -519,7 +516,7 @@ func TestEnrollDeviceToDirectory(t *testing.T) {
 		written[filepath.Base(path)] = string(data)
 		return nil
 	}
-	if err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", outputDir); err != nil {
+	if _, err := runner.EnrollDevice("ces-alpha-123", "sensor-net", "SN001", []string{"AA:BB:CC:DD:EE:FF"}, "device.csr", "", "", outputDir); err != nil {
 		t.Fatal(err)
 	}
 	if written["identity.crt"] == "" {
