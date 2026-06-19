@@ -219,7 +219,7 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 				if err := app.downloadTemplate(databus, gatewayTemplate, target); err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintf(app.Out, "Downloaded gateway template: %s\n", target)
+				_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded gateway template: %s", target)))
 			}
 		}
 	}
@@ -230,7 +230,7 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 				if err := app.downloadTemplate(observability, collectorTemplate, target); err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintf(app.Out, "Downloaded collector template: %s\n", target)
+				_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded collector template: %s", target)))
 			}
 		}
 	}
@@ -283,7 +283,7 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 	collectorSecure := common.IsSecure(observability)
 	clients, _ := config["clients"].(map[string]any)
 	if databusSecure {
-		_, _ = fmt.Fprintln(app.Out, "Secure Databus detected.")
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Secure Databus detected."))
 		clientID, _ := clients["gateway_client_id"].(string)
 		if clientID == "" {
 			clientID = common.GenerateClientID()
@@ -293,7 +293,7 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 		}
 	}
 	if collectorSecure {
-		_, _ = fmt.Fprintln(app.Out, "Secure Observability Service detected.")
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Secure Observability Service detected."))
 		clientID, _ := clients["collector_client_id"].(string)
 		if clientID == "" {
 			clientID = common.GenerateClientID()
@@ -307,8 +307,7 @@ func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool,
 
 func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName string, clientID string, targetDir string, label string) error {
 	if common.LocalSecureFilesExist(targetDir) {
-		_, _ = fmt.Fprintf(app.Out, "Reusing local %s credentials\n", label)
-		_, _ = fmt.Fprintln(app.Out)
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage(fmt.Sprintf("Reusing local %s credentials", label)))
 		return nil
 	}
 	if app.GenerateCSRFunc == nil || app.APIPost == nil {
@@ -332,9 +331,8 @@ func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName
 	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(app.Out, "Registered %s client credentials\n", label)
-	_, _ = fmt.Fprintf(app.Out, "Saved %s credentials to %s\n", label, targetDir)
-	_, _ = fmt.Fprintln(app.Out)
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Registered %s client credentials", label)))
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Saved %s credentials to %s", label, targetDir)))
 	return nil
 }
 
@@ -370,6 +368,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 		CollectorExecutable(connext.Path),
 		"-cfgFile", xmlPath,
 		"-cfgName", collectorTemplate,
+		"-locationTag", collectorTemplate,
 	}
 	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return nil, err
@@ -378,8 +377,10 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	if err != nil {
 		return nil, err
 	}
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	terminal.PrepareProcess(cmd)
 	cmd.Dir = app.CollectorDir()
 	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
 	cmd.Stdout = logFile
@@ -416,6 +417,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 		collectorExe,
 		"-cfgFile", xmlPath,
 		"-cfgName", collectorTemplate,
+		"-locationTag", collectorTemplate,
 	}
 	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
@@ -425,6 +427,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	liveView := NewRoutingLiveView(config)
 	liveView.CollectorStatus = "running"
 	liveView.CollectorSecure = collectorSecure
@@ -546,7 +549,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 			if cmd.Process != nil {
 				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
-					_ = cmd.Process.Kill()
+					terminal.KillProcess(cmd.Process)
 				})
 			}
 		}
@@ -620,6 +623,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.RoutingDir()
@@ -786,7 +790,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			if cmd.Process != nil {
 				terminal.SendInterrupt(cmd.Process)
 				killTimer = time.AfterFunc(2*time.Second, func() {
-					_ = cmd.Process.Kill()
+					terminal.KillProcess(cmd.Process)
 				})
 			}
 		}
@@ -830,6 +834,24 @@ func (app *GatewayApp) routingEnv() []string {
 	return env
 }
 
+func formatCommandLine(command []string) string {
+	quoted := make([]string, 0, len(command))
+	for _, arg := range command {
+		quoted = append(quoted, quoteCommandArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteCommandArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\n\"'\\") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+}
+
 func mergeEnv(base []string, overrides ...string) []string {
 	merged := append([]string{}, base...)
 	for _, override := range overrides {
@@ -855,6 +877,7 @@ func mergeEnv(base []string, overrides ...string) []string {
 }
 
 func (app *GatewayApp) printGatewayRestartHint() {
+	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud gateway' from this directory to start this gateway again.")
 }
 
@@ -1239,7 +1262,7 @@ func (app *GatewayApp) selectCollectorOrCreate(obsName, selectMsg string, templa
 	if selected != createNewCollector {
 		return selected, nil
 	}
-	name, err := app.InputFunc("Collector name:")
+	name, err := app.InputFunc("Collector name")
 	if err != nil {
 		return "", err
 	}

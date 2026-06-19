@@ -106,7 +106,7 @@ func TestGatewayLiveHeaderAndResources(t *testing.T) {
 	}
 	header := GatewayLiveHeader(config, "running, waiting for discovered topics", 0, 0)
 	resources := GatewayLiveResources(config, "running")
-	if header.Label != "data" || !strings.Contains(header.Status, "waiting topics") || header.Target != "db / gw" {
+	if header.Label != "databus" || !strings.Contains(header.Status, "waiting topics") || header.Target != "db / gw" {
 		t.Fatalf("unexpected header: %#v", header)
 	}
 	if GatewayPanelTitle() != "[bold] Connext Cloud Gateway  [/bold]" {
@@ -440,7 +440,7 @@ func TestDiscoverConnextPromptsForExistingInstallations(t *testing.T) {
 	if gotMessage != "Select Connext installation:" {
 		t.Fatalf("unexpected prompt: %s", gotMessage)
 	}
-	if len(gotChoices) < 2 || gotChoices[0] != newer || gotChoices[1] != older {
+	if len(gotChoices) != 4 || gotChoices[0] != newer || gotChoices[1] != older || gotChoices[2] != connext.EnterConnextPathLabel || gotChoices[3] != connext.DownloadConnextLabel {
 		t.Fatalf("unexpected choices: %#v", gotChoices)
 	}
 	if result.Path != older {
@@ -486,7 +486,7 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 	if layout.Border != tui.RTIOrange || layout.Title != GatewayPanelTitle() {
 		t.Fatalf("unexpected layout shell: %#v", layout)
 	}
-	if layout.Header.Label != "data" || !strings.Contains(layout.Header.Status, "routing 1 topic") || layout.Header.Target != "db / gw" {
+	if layout.Header.Label != "databus" || !strings.Contains(layout.Header.Status, "routing 1 topic") || layout.Header.Target != "db / gw" {
 		t.Fatalf("unexpected header: %#v", layout.Header)
 	}
 	if layout.Header.Warning != "not secure" {
@@ -506,7 +506,7 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 	view := RenderedView{
 		Title:    GatewayPanelTitle(),
-		Header:   RenderedSummaryLine{Label: "data", Status: "[green]● running[/green]", Target: "db / gw"},
+		Header:   RenderedSummaryLine{Label: "databus", Status: "[green]● running[/green]", Target: "db / gw"},
 		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "obs / collector"},
 	}
 	rendered := renderANSI(view)
@@ -531,7 +531,7 @@ func TestRenderSetupIntroIncludesWelcomeBoxAndHint(t *testing.T) {
 func TestRenderANSIForSizeKeepsSummaryVisibleInShortTerminal(t *testing.T) {
 	view := RenderedView{
 		Title:    GatewayPanelTitle(),
-		Header:   RenderedSummaryLine{Label: "data", Status: "[green]● routing 4 topics[/green]", Target: "db / gw"},
+		Header:   RenderedSummaryLine{Label: "databus", Status: "[green]● routing 4 topics[/green]", Target: "db / gw"},
 		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "none / none"},
 		Routes:   make([]RenderedRoute, 0, 16),
 		LogLines: make([]string, 0, 18),
@@ -547,7 +547,7 @@ func TestRenderANSIForSizeKeepsSummaryVisibleInShortTerminal(t *testing.T) {
 	if len(lines) > 20 {
 		t.Fatalf("render exceeded terminal height: %d lines\n%s", len(lines), rendered)
 	}
-	checks := []string{"Connext Cloud Gateway", "DATA", "OBSERVABILITY", "Routes"}
+	checks := []string{"Connext Cloud Gateway", "DATABUS", "OBSERVABILITY", "Routes"}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {
 			t.Fatalf("missing %q in rendered output: %s", check, rendered)

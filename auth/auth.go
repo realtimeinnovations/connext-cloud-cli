@@ -240,7 +240,7 @@ func (manager *Manager) Login() (string, error) {
 	}
 	scope := configValues["scope"]
 	if scope == "" {
-		scope = "openid profile email list:databus query:databus create:databus delete:databus create:databus_client"
+		scope = "openid profile email list:databus query:databus create:databus delete:databus create:databus_client create:workspace"
 	}
 	listener, redirectURI, err := listenForCallback()
 	if err != nil {

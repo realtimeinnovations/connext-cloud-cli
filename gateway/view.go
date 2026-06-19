@@ -248,7 +248,7 @@ func TopicStatusLabel(row TopicRouteRow) string {
 }
 
 func GatewayLiveHeader(config map[string]any, status string, routedTopicCount int, pulseFrame int) RenderedSummaryLine {
-	return gatewaySummaryLine("data", RoutingSummaryChip(status, routedTopicCount, pulseFrame), gatewayResourceTarget(config, "databus"))
+	return gatewaySummaryLine("databus", RoutingSummaryChip(status, routedTopicCount, pulseFrame), gatewayResourceTarget(config, "databus"))
 }
 
 func GatewayPanelTitle() string {

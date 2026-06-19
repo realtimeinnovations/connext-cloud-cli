@@ -125,8 +125,12 @@ func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 	var out bytes.Buffer
 	runner := New(api, &out)
 	runner.Sleep = func(time.Duration) {}
-	if err := runner.CreateDatabus("inventory", 2, "", false, ""); err != nil {
+	if err := runner.CreateDatabus("inventory", 2, "", "", true); err != nil {
 		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["secure"] != true {
+		t.Fatalf("expected secure databus payload, got %#v", payload)
 	}
 	output := out.String()
 	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  ready") {
@@ -145,9 +149,60 @@ func TestCreateDatabusTimesOutWaitingForStatusChange(t *testing.T) {
 	var out bytes.Buffer
 	runner := New(api, &out)
 	runner.Sleep = func(time.Duration) {}
-	err := runner.CreateDatabus("inventory", 2, "", false, "")
+	err := runner.CreateDatabus("inventory", 2, "", "", true)
 	if err == nil || !strings.Contains(err.Error(), "timed out waiting for databus \"inventory\" to leave \"creating\"") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateDatabusSupportsNonSecurePayload(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /databuses":          newTextResponse(http.StatusCreated, "{}"),
+		"GET /databuses/inventory": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.Sleep = func(time.Duration) {}
+	if err := runner.CreateDatabus("inventory", 2, "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["secure"] != false {
+		t.Fatalf("expected non-secure databus payload, got %#v", payload)
+	}
+}
+
+func TestCreateObsServiceSecureByDefault(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.Sleep = func(time.Duration) {}
+	if err := runner.CreateObsService("obs", "network-a", true); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["secure"] != true || payload["network_name"] != "network-a" || payload["enable_edge_observability"] != true {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestCreateObsServiceSupportsNonSecurePayload(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.Sleep = func(time.Duration) {}
+	if err := runner.CreateObsService("obs", "", false); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["secure"] != false {
+		t.Fatalf("expected non-secure observability payload, got %#v", payload)
 	}
 }
 

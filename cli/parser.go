@@ -27,15 +27,14 @@ var rootCommandGroups = []string{
 }
 
 func Execute(argv []string, out io.Writer, errOut io.Writer, runtime *app.Runtime) error {
-	var disableSSLVerify bool
-	root := newRootCommand(runtime, &disableSSLVerify)
+	root := newRootCommand(runtime)
 	root.SetArgs(argv)
 	root.SetOut(out)
 	root.SetErr(errOut)
 	return root.Execute()
 }
 
-func newRootCommand(runtime *app.Runtime, disableSSLVerify *bool) *cobra.Command {
+func newRootCommand(runtime *app.Runtime) *cobra.Command {
 	var versionFlag bool
 	root := &cobra.Command{
 		Use:           "rticloud [command]",
@@ -61,7 +60,6 @@ func newRootCommand(runtime *app.Runtime, disableSSLVerify *bool) *cobra.Command
 			return cmd.Help()
 		},
 	}
-	root.PersistentFlags().BoolVar(disableSSLVerify, "disable-ssl-verify", false, "Disable SSL certificate verification")
 	root.Flags().BoolVar(&versionFlag, "version", false, "Print version and build metadata")
 	root.SetHelpFunc(groupedRootHelp)
 
@@ -313,7 +311,7 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 	{ // create
 		var name, obsService, networkName string
 		var replicas int
-		var sysDesigner bool
+		var nonSecure bool
 		c := &cobra.Command{
 			Use:   "create",
 			Short: "Create a Databus",
@@ -322,14 +320,14 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 				if name == "" {
 					return fmt.Errorf("--name is required")
 				}
-				return runtime.Commands.CreateDatabus(name, replicas, obsService, sysDesigner, networkName)
+				return runtime.Commands.CreateDatabus(name, replicas, obsService, networkName, !nonSecure)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().IntVar(&replicas, "replicas", 2, "Number of replicas")
 		c.Flags().StringVar(&obsService, "observability-service", "", "Observability Service to link")
-		c.Flags().BoolVar(&sysDesigner, "system-designer", false, "Enable System Designer support")
 		c.Flags().StringVar(&networkName, "network-name", "", "Network name")
+		c.Flags().BoolVar(&nonSecure, "non-secure", false, "Create a non-secure Databus")
 		cmd.AddCommand(c)
 	}
 
@@ -513,6 +511,7 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 
 	{ // create
 		var name, networkName string
+		var nonSecure bool
 		c := &cobra.Command{
 			Use:   "create",
 			Short: "Create an Observability Service",
@@ -521,11 +520,12 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 				if name == "" {
 					return fmt.Errorf("--name is required")
 				}
-				return runtime.Commands.CreateObsService(name, networkName)
+				return runtime.Commands.CreateObsService(name, networkName, !nonSecure)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&networkName, "network-name", "", "Network name")
+		c.Flags().BoolVar(&nonSecure, "non-secure", false, "Create a non-secure Observability Service")
 		cmd.AddCommand(c)
 	}
 

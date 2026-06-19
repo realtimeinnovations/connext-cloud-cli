@@ -23,6 +23,7 @@ func StartProcess(cmd *exec.Cmd) (io.ReadCloser, io.ReadCloser, error) {
 	}
 	cmd.Stdout = slave
 	cmd.Stderr = slave
+	PrepareProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = slave.Close()
 		_ = master.Close()

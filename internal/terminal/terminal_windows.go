@@ -24,6 +24,7 @@ func StartProcess(cmd *exec.Cmd) (io.ReadCloser, io.ReadCloser, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	PrepareProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}

@@ -2,14 +2,10 @@ package cloudapi
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
@@ -22,12 +18,7 @@ type Client struct {
 	BaseURLProvider BaseURLProvider
 	HeadersProvider HeadersProvider
 	HTTPClient      *http.Client
-	SSLVerify       bool
-	Stderr          io.Writer
 	Out             io.Writer
-	warningOnce     sync.Once
-	insecureOnce    sync.Once
-	insecureClient  *http.Client
 }
 
 func New(baseURLProvider BaseURLProvider, headersProvider HeadersProvider) *Client {
@@ -35,8 +26,6 @@ func New(baseURLProvider BaseURLProvider, headersProvider HeadersProvider) *Clie
 		BaseURLProvider: baseURLProvider,
 		HeadersProvider: headersProvider,
 		HTTPClient:      &http.Client{Timeout: 30 * time.Second},
-		SSLVerify:       true,
-		Stderr:          os.Stderr,
 	}
 }
 
@@ -83,24 +72,6 @@ func (client *Client) send(request *http.Request) (*http.Response, error) {
 	httpClient := client.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	if !client.SSLVerify {
-		client.warningOnce.Do(func() {
-			if client.Stderr != nil {
-				_, _ = fmt.Fprintln(client.Stderr, "WARNING: SSL certificate verification disabled")
-			}
-		})
-		client.insecureOnce.Do(func() {
-			transport := insecureTransport(httpClient.Transport)
-			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-			insecureClient := *httpClient
-			insecureClient.Transport = transport
-			if insecureClient.Timeout == 0 {
-				insecureClient.Timeout = 30 * time.Second
-			}
-			client.insecureClient = &insecureClient
-		})
-		httpClient = client.insecureClient
 	}
 	stopSpinner := terminal.StartSpinner(client.Out, "Connecting to Connext Cloud...")
 	defer stopSpinner()

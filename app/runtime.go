@@ -312,6 +312,9 @@ func (runtime *Runtime) RunSpy(format string) error {
 	if err != nil {
 		return err
 	}
+	if err := spy.EnsureEnhancedDDSSpy(connext, runtime.Spy.SelectFunc, runtime.Out); err != nil {
+		return err
+	}
 	_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
 	_, err = runtime.Spy.RunWithOptions(configValues, connext, databusSecure, spy.RunOptions{TextOutput: runtime.liveTextOutput(format)})
 	return err
@@ -351,6 +354,11 @@ func (runtime *Runtime) RunGateway(format string) error {
 		if err != nil {
 			return err
 		}
+		if gateway.HasObservability(configValues) {
+			if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
+				return err
+			}
+		}
 		_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
 		// Start the collector as a background process alongside the routing service.
 		collectorPID := 0
@@ -362,21 +370,24 @@ func (runtime *Runtime) RunGateway(format string) error {
 			collectorPID = collectorCmd.Process.Pid
 			defer func() {
 				if collectorCmd.Process != nil {
-					_ = collectorCmd.Process.Kill()
+					terminal.KillProcess(collectorCmd.Process)
 				}
 			}()
 		}
 		_, err = runtime.Gateway.RunRoutingServiceWithOptions(configValues, connext, collectorPID, databusSecure, collectorSecure, gateway.RunOptions{TextOutput: runtime.liveTextOutput(format)})
 		return err
 	}
-	// Observability-only: discover Connext for rticollectorservicelite and run it in the foreground.
+	// Observability-only: discover a base Connext install, patch collector lite if needed, and run it in the foreground.
 	if gateway.HasObservability(configValues) {
 		if connextHome != "" {
-			connext, err = gateway.ValidateCollectorInstall(connextHome)
+			connext, err = gateway.ValidateConnextInstall(connextHome)
 		} else {
-			connext, err = gateway.DiscoverCollectorInstall(nil)
+			connext, err = gateway.DiscoverConnextInstall(nil)
 		}
 		if err != nil {
+			return err
+		}
+		if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)

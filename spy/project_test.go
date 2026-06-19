@@ -16,6 +16,9 @@ func TestSpyStateParsesTopicsSamplesAndStatistics(t *testing.T) {
 	state := NewSpyState(5)
 	lines := []string{
 		"rtiddsspy is listening for data, press CTRL+C to stop it.",
+		`2026-05-26T20:31:35Z [spy] 2026-05-26 20:24:38.405954 New participant    from 172.31.38.177  : name="RTI Persistence Service: core: defaultParticipant" hostName="rti-persistence-6d58996bf5-76728" processId="123"`,
+		`2026-05-26 20:24:39.405954 New participant    from 172.31.38.178  : name="Shape Publisher" hostName="shape-host" processId="456"`,
+		`2026-05-26 20:24:40.405954 New participant    from 172.31.38.179  : name="Shape Reader" hostName="shape-host" processId="789"`,
 		`2026-05-05 14:55:51.771722 New writer        from 10.0.0.114     : topic="Square" type="ShapeType"`,
 		`2026-05-05 14:55:51.772522 New reader        from 10.0.0.114     : topic="Square" type="ShapeType"`,
 		`2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic="Square" type="ShapeType" sample={"color":"BLUE","x":84}`,
@@ -38,6 +41,10 @@ func TestSpyStateParsesTopicsSamplesAndStatistics(t *testing.T) {
 	if state.ServiceState() != "stopped" {
 		t.Fatalf("unexpected service state: %s", state.ServiceState())
 	}
+	hosts := state.ConnectedHostNames()
+	if strings.Join(hosts, ",") != "rti-persistence-6d58996bf5-76728,shape-host" {
+		t.Fatalf("unexpected connected hosts: %#v", hosts)
+	}
 }
 
 func TestPlainEventLinesFormatsSpyEvents(t *testing.T) {
@@ -59,6 +66,28 @@ func TestPlainEventLinesFormatsSpyEvents(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(expected, "\n") {
 		t.Fatalf("unexpected lines:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func TestRenderSetupIntroUsesGatewayStylePanel(t *testing.T) {
+	rendered := RenderSetupIntro(3)
+	checks := []string{"╭", "Connext Cloud Spy setup", "Create a project-local spy configuration for this workspace.", "Databuses available: 3", "Use arrow keys to choose and Enter to confirm.", "╰"}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in %s", check, rendered)
+		}
+	}
+}
+
+func TestSpyStateRemovesDeletedParticipants(t *testing.T) {
+	state := NewSpyState(5)
+	state.Update(`2026-05-26T20:31:35Z [spy] 2026-05-26 20:24:38.405954 New participant    from 172.31.38.177  : name="RTI Persistence Service: core: defaultParticipant" hostName="rti-persistence-6d58996bf5-76728" processId="123"`)
+	state.Update(`2026-05-26 20:24:39.405954 New participant    from 172.31.38.178  : name="Shape Publisher" hostName="shape-host" processId="456"`)
+	state.Update(`2026-05-26T20:39:48Z [spy] xxxx-xx-xx xx:xx:xx.xxxxxx Deleted participant from 172.31.38.177  : name="RTI Persistence Service: core: defaultParticipant" hostName="rti-persistence-6d58996bf5-76728" processId="123"`)
+
+	hosts := state.ConnectedHostNames()
+	if strings.Join(hosts, ",") != "shape-host" {
+		t.Fatalf("unexpected connected hosts after delete: %#v", hosts)
 	}
 }
 
@@ -109,11 +138,16 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 		}
 		return true, nil
 	}
+	appSelectCalls := 0
 	app.SelectFunc = func(message string, choices []string) (string, error) {
 		switch message {
 		case "Select Databus:":
 			return "inventory", nil
 		case "Select Cloud Native application from inventory:":
+			appSelectCalls++
+			if appSelectCalls == 1 {
+				return CreateNewApp, nil
+			}
 			return "app_1", nil
 		default:
 			return "", UserError{Message: message}
@@ -129,6 +163,135 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, "Connext Cloud Spy setup") || !strings.Contains(output, "Create Cloud Native application") || !strings.Contains(output, "Configuration saved to "+filepath.Join(tmpDir, ".connext", "spy.yaml")) {
 		t.Fatalf("unexpected output: %s", output)
+	}
+}
+
+func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
+		return map[string]map[string]any{"inventory": {}}, nil, nil
+	}
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": "inventory", "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
+	}
+	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
+	}
+	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
+	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
+		if path != "/databuses/inventory/applications" {
+			return nil, UserError{Message: path}
+		}
+		if payload["kind"] != "app" || payload["client_name"] != RTICloudSpyAppName || payload["port"] != RTICloudSpyAppPort {
+			t.Fatalf("unexpected create payload: %#v", payload)
+		}
+		topicData, ok := payload["topic_data"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing topic_data: %#v", payload)
+		}
+		domain, ok := topicData["0"].(map[string]any)
+		if !ok || domain["configuration"] != "all" || domain["domainId"] != 0 || domain["tag"] != "" {
+			t.Fatalf("unexpected topic domain: %#v", topicData)
+		}
+		allTopics, ok := domain["allTopicsConfiguration"].(map[string]any)
+		if !ok || allTopics["cloudToEdgeDirection"] != true || allTopics["edgeToCloudDirection"] != false {
+			t.Fatalf("unexpected topic permissions: %#v", domain)
+		}
+		return map[string]any{}, nil
+	}
+	app.SelectFunc = func(message string, choices []string) (string, error) {
+		switch message {
+		case "Select Databus:":
+			return "inventory", nil
+		case "Select Cloud Native application from inventory:":
+			if !containsString(choices, CreateRTICloudSpyApp) {
+				t.Fatalf("expected create rticloud_spy choice in %#v", choices)
+			}
+			return CreateRTICloudSpyApp, nil
+		default:
+			return "", UserError{Message: message}
+		}
+	}
+	config, err := app.ConfigureFirstRun(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.NestedString(config, "templates", "app") != RTICloudSpyAppName {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+	if !strings.Contains(out.String(), "Created rticloud_spy cloud application") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestConfigureFirstRunDoesNotOfferCreateWhenRTICloudSpyExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
+		return map[string]map[string]any{"inventory": {}}, nil, nil
+	}
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": "inventory", "clients": map[string]any{
+			RTICloudSpyAppName: map[string]any{"kind": "app"},
+			"app_1":            map[string]any{"kind": "app"},
+		}}, nil
+	}
+	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
+	}
+	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
+	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
+		t.Fatalf("did not expect create call: %s %#v", path, payload)
+		return nil, nil
+	}
+	app.SelectFunc = func(message string, choices []string) (string, error) {
+		switch message {
+		case "Select Databus:":
+			return "inventory", nil
+		case "Select Cloud Native application from inventory:":
+			if containsString(choices, CreateRTICloudSpyApp) {
+				t.Fatalf("did not expect create rticloud_spy choice in %#v", choices)
+			}
+			return RTICloudSpyAppName, nil
+		default:
+			return "", UserError{Message: message}
+		}
+	}
+	config, err := app.ConfigureFirstRun(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.NestedString(config, "templates", "app") != RTICloudSpyAppName {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+}
+
+func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
+	}
+	created := false
+	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
+		if path != "/databuses/test-new/applications" || payload["client_name"] != RTICloudSpyAppName {
+			t.Fatalf("unexpected create call: %s %#v", path, payload)
+		}
+		created = true
+		return map[string]any{}, nil
+	}
+	config := map[string]any{"databus": "test-new", "templates": map[string]any{"app": RTICloudSpyAppName}}
+	if err := app.ValidateConfigResources(config); err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected rticloud_spy app to be created")
 	}
 }
 
@@ -149,8 +312,28 @@ func TestDownloadArtifactsWritesCloudApplicationXML(t *testing.T) {
 	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "app_1.xml")); got != "<dds/>" {
 		t.Fatalf("unexpected app xml: %s", got)
 	}
-	if !strings.Contains(out.String(), "Downloaded cloud application template") {
+	if !strings.Contains(out.String(), "✓") || !strings.Contains(out.String(), "Downloaded cloud application template") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestDownloadArtifactsExplainsMissingDatabusEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	app.APIGet = func(path string) (map[string]any, error) {
+		return nil, UserError{Message: "Error: Databus 'cdb-db-id' doesn't have an external endpoint configured."}
+	}
+	config := map[string]any{"databus": "test-new", "templates": map[string]any{"app": RTICloudSpyAppName}}
+	err := app.DownloadArtifacts(config, true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "Databus 'test-new' does not have an external endpoint yet") ||
+		!strings.Contains(message, "rticloud databus resume --name test-new") ||
+		!strings.Contains(message, "rticloud spy") {
+		t.Fatalf("unexpected error: %s", message)
 	}
 }
 
@@ -190,6 +373,10 @@ func TestSecureSpyCredentialsSavedNextToAppXML(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "client.crt")); got != "cert" {
 		t.Fatalf("unexpected client.crt: %s", got)
+	}
+	output := out.String()
+	if !strings.Contains(output, "•") || !strings.Contains(output, "Secure Databus detected.") || strings.Count(output, "✓") < 2 || !strings.Contains(output, "Registered spy client credentials") || !strings.Contains(output, "Saved spy credentials to ") {
+		t.Fatalf("unexpected output: %s", output)
 	}
 }
 
@@ -247,12 +434,27 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !common.FileExists(filepath.Join(tmpDir, ".connext", "spy", "runtime.json")) {
 		t.Fatal("runtime.json not written")
 	}
-	if !strings.Contains(readFile(t, filepath.Join(tmpDir, ".connext", "spy", "logs", "spy.log")), "New data") {
+	logContent := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "logs", "spy.log"))
+	logLines := strings.Split(logContent, "\n")
+	if !strings.HasPrefix(logLines[0], "Running ") ||
+		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiddsspy")) ||
+		!strings.Contains(logLines[0], "-domainId 100") ||
+		!strings.Contains(logLines[0], "-qosFile "+filepath.Join(tmpDir, ".connext", "spy", "app", "app_1.xml")) ||
+		!strings.Contains(logLines[0], "-qosProfile app_1_qos_lib::app_1_qos_profile") {
+		t.Fatalf("unexpected first spy log line: %q", logLines[0])
+	}
+	if !strings.Contains(logContent, "New data") {
 		t.Fatal("spy log missing data")
 	}
 	output := tui.StripANSIEscapes(out.String())
 	if !strings.Contains(output, "Connext Cloud Spy") || !strings.Contains(output, "Square") || !strings.Contains(output, "Discovered 1 DataWriters") {
 		t.Fatalf("unexpected output: %s", output)
+	}
+	if !strings.Contains(output, "• Logs saved under "+filepath.Join(tmpDir, ".connext", "spy", "logs")) {
+		t.Fatalf("missing logs hint: %s", output)
+	}
+	if !strings.Contains(output, "• Run 'rticloud spy' from this directory to start this spy again.") {
+		t.Fatalf("missing restart hint: %s", output)
 	}
 }
 
@@ -299,7 +501,7 @@ echo "2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic=\
 func TestRenderANSIUsesGatewayPanelColorThemes(t *testing.T) {
 	view := RenderedView{
 		Title:  SpyPanelTitle(),
-		Header: SummaryLine{Label: "databus", Status: "[green]● receiving 1 topic[/green]", Target: "db / app"},
+		Header: SummaryLine{Label: "databus", Status: "[green]● receiving samples[/green]", Target: "db / app", Hosts: []string{"rti-persistence-6d58996bf5-76728", "shape-host"}},
 		Topics: []RenderedTopic{{
 			Activity:   "[green]●[/green]",
 			Topic:      "Square",
@@ -316,6 +518,7 @@ func TestRenderANSIUsesGatewayPanelColorThemes(t *testing.T) {
 		"\x1b[1;38;5;110mTopics",
 		"\x1b[1;38;5;245mSamples",
 		"Last sample",
+		"rti-persistence-6d58996bf5-76728, shape-host",
 		"2026-05-08 00:06:58.475269",
 		`{"x":1}`,
 	}
@@ -326,9 +529,63 @@ func TestRenderANSIUsesGatewayPanelColorThemes(t *testing.T) {
 	}
 }
 
+func TestRenderANSIShowsWaitingHostsMessage(t *testing.T) {
+	rendered := renderANSI(RenderedView{
+		Title:  SpyPanelTitle(),
+		Header: SummaryLine{Label: "databus", Status: "[blue]○ not connected[/]", Target: "db / app"},
+		Topics: []RenderedTopic{{
+			Activity:   "[dim]○[/dim]",
+			Topic:      "waiting",
+			Type:       "No topics discovered yet",
+			LastSample: "-",
+		}},
+	})
+	if strings.Contains(rendered, "HOSTS") || !strings.Contains(rendered, "no participants discovered yet") {
+		t.Fatalf("missing waiting hosts message in %q", rendered)
+	}
+	lines := formatSummaryLines(SummaryLine{Label: "databus", Status: "[blue]○ not connected[/]", Target: "db / app"}, 100)
+	if len(lines) != 2 {
+		t.Fatalf("expected databus and participants summary lines: %#v", lines)
+	}
+	expectedPrefix := strings.Repeat(" ", spySummaryLabelWidth+spySummaryStatusWidth+4) + "no participants discovered yet"
+	if !strings.HasPrefix(tui.StripANSIEscapes(lines[1]), expectedPrefix) {
+		t.Fatalf("participants line is not aligned under target column: %q", tui.StripANSIEscapes(lines[1]))
+	}
+}
+
+func TestLiveViewDatabusStatusDistinguishesConnectedHostsFromSamples(t *testing.T) {
+	view := NewLiveView(map[string]any{"databus": "db", "templates": map[string]any{"app": "app"}})
+	view.State.serviceState = "running"
+	noHosts := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+	if !strings.Contains(noHosts, "○ not connected") {
+		t.Fatalf("expected not connected status, got %q", noHosts)
+	}
+
+	view.HandleLine(`2026-05-26 20:24:39.405954 New participant    from 172.31.38.178  : name="Shape Publisher" hostName="shape-host" processId="456"`)
+	connected := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+	if !strings.Contains(connected, "○ connected") {
+		t.Fatalf("expected connected status, got %q", connected)
+	}
+
+	view.HandleLine(`2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic="Square" type="ShapeType" sample={"color":"BLUE"}`)
+	receiving := tui.StripANSIEscapes(renderANSI(view.Render(1)))
+	if !strings.Contains(receiving, "◉ receiving samples") {
+		t.Fatalf("expected receiving samples status, got %q", receiving)
+	}
+}
+
 func stringValue(config map[string]any, key string) string {
 	value, _ := config[key].(string)
 	return value
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func readFile(t *testing.T, path string) string {

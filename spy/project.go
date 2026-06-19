@@ -19,11 +19,16 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	MinConnextVersion      = "7.7.0"
+	RTICloudSpyAppName     = "rticloud_spy"
+	RTICloudSpyAppPort     = 7281
+	CreateRTICloudSpyApp   = "__create_rticloud_spy_app__"
+	CreateRTICloudSpyLabel = "Create rticloud_spy cloud application"
 	CreateNewApp           = "__create_new_app__"
 	CreateNewAppLabel      = "Create new cloud application..."
 	ReloadAppListLabel     = "Reload application list"
@@ -178,6 +183,10 @@ func DiscoverConnextInstallWithPrompt(env map[string]string, prompt bool, select
 	return connext.DiscoverInstallWithPrompt(env, prompt, selectFunc, inputFunc, connextOptions())
 }
 
+func EnsureEnhancedDDSSpy(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+	return connext.EnsureEnhancedDDSSpy(install, selectFunc, out)
+}
+
 func connextOptions() connext.DiscoveryOptions {
 	return connext.DiscoveryOptions{MinVersion: MinConnextVersion, ExecutableName: "rtiddsspy", CommandName: "spy"}
 }
@@ -250,7 +259,7 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(app.Out, "Downloaded cloud application template: %s\n", target)
+		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", target)))
 	}
 	return nil
 }
@@ -261,6 +270,9 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	}
 	payload, err := app.APIGet(fmt.Sprintf("/databuses/%s/applications/%s", databusName, appName))
 	if err != nil {
+		if isMissingExternalEndpointError(err) {
+			return UserError{Message: fmt.Sprintf("Databus '%s' does not have an external endpoint yet, so spy cannot download the cloud application configuration.\n\nStart or resume the Databus and wait for it to be running:\n  rticloud databus resume --name %s\nThen rerun:\n  rticloud spy", databusName, databusName)}
+		}
 		return err
 	}
 	clientConfig := payload["client_config"]
@@ -281,6 +293,13 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	return os.WriteFile(target, []byte(content), 0o644)
 }
 
+func isMissingExternalEndpointError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "doesn't have an external endpoint configured")
+}
+
 func (app *App) ValidateConfigResources(config map[string]any) error {
 	if !HasDatabus(config) {
 		return UserError{Message: "No Databus or Cloud Native application is configured for this spy."}
@@ -291,6 +310,10 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 	}
 	appTemplate := common.NestedString(config, "templates", "app")
 	if !common.TemplateListContains(TemplateItems(databus, "app"), appTemplate) {
+		if appTemplate == RTICloudSpyAppName {
+			_, err := app.createRTICloudSpyApp(common.StringValue(config, "databus"))
+			return err
+		}
 		zone := common.StringValue(config, "zone")
 		if zone == "" {
 			zone = app.currentZone()
@@ -311,7 +334,7 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 	if !common.IsSecure(databus) {
 		return false, nil
 	}
-	_, _ = fmt.Fprintln(app.Out, "Secure Databus detected.")
+	_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Secure Databus detected."))
 	clients, _ := config["clients"].(map[string]any)
 	clientID, _ := clients["app_client_id"].(string)
 	if clientID == "" {
@@ -325,8 +348,7 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 
 func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string, targetDir string) error {
 	if common.LocalSecureFilesExist(targetDir) {
-		_, _ = fmt.Fprintln(app.Out, "Reusing local spy credentials")
-		_, _ = fmt.Fprintln(app.Out)
+		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Reusing local spy credentials"))
 		return nil
 	}
 	if app.GenerateCSRFunc == nil || app.APIPost == nil {
@@ -350,9 +372,8 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(app.Out, "Registered spy client credentials")
-	_, _ = fmt.Fprintf(app.Out, "Saved spy credentials to %s\n", targetDir)
-	_, _ = fmt.Fprintln(app.Out)
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage("Registered spy client credentials"))
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Saved spy credentials to %s", targetDir)))
 	return nil
 }
 
@@ -389,6 +410,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		return 0, err
 	}
 	defer logFile.Close()
+	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
@@ -653,6 +675,7 @@ func (app *App) PrintConfigSummary(config map[string]any) {
 }
 
 func (app *App) printRestartHint() {
+	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud spy' from this directory to start this spy again.")
 }
 
@@ -717,15 +740,43 @@ func attr(element xml.StartElement, name string) string {
 }
 
 func RenderSetupIntro(databusCount int) string {
-	return fmt.Sprintf("\nConnext Cloud Spy setup\n\nDatabuses available: %d\nUse arrow keys to choose and Enter to confirm.\n\n", databusCount)
+	rows := []string{
+		"Connext Cloud Spy setup",
+		"Create a project-local spy configuration for this workspace.",
+		"",
+		fmt.Sprintf("Databuses available: %d", databusCount),
+		"",
+		"Use arrow keys to choose and Enter to confirm.",
+	}
+	width := 0
+	for _, row := range rows {
+		if rowWidth := tui.DisplayWidth(row); rowWidth > width {
+			width = rowWidth
+		}
+	}
+	top := "╭" + strings.Repeat("─", width+2) + "╮"
+	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
+	lines := []string{"", "\x1b[38;5;110m" + top + "\x1b[0m"}
+	for index, row := range rows {
+		content := tui.PadDisplay(row, width)
+		switch index {
+		case 0:
+			content = tui.StyleTitle(content)
+		case 1, 5:
+			content = tui.Dim(content)
+		}
+		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", content))
+	}
+	lines = append(lines, "\x1b[38;5;110m"+bottom+"\x1b[0m", "")
+	return strings.Join(lines, "\n")
 }
 
 func RenderInfoMessage(message string) string {
-	return fmt.Sprintf("• %s\n\n", message)
+	return fmt.Sprintf("\x1b[38;5;110m•\x1b[0m %s\n", message)
 }
 
 func RenderSuccessMessage(message string) string {
-	return fmt.Sprintf("✓ %s\n\n", message)
+	return fmt.Sprintf("\x1b[32m✓\x1b[0m %s\n", message)
 }
 
 func DashboardURL(zone string, resourceName string) string {
@@ -745,23 +796,24 @@ func DashboardURL(zone string, resourceName string) string {
 
 func (app *App) selectAppOrCreate(databusName string, selectMessage string, templates []TemplateItem) (string, error) {
 	for {
-		if len(templates) == 0 {
-			resource, reloaded, err := app.waitForAppCreation(databusName)
-			if err != nil {
-				return "", err
-			}
-			_ = resource
-			templates = reloaded
-			continue
-		}
-		choices := make([]string, 0, len(templates)+1)
+		hasSpyApp := false
+		choices := make([]string, 0, len(templates)+2)
 		for _, item := range templates {
 			choices = append(choices, item.Name)
+			if item.Name == RTICloudSpyAppName {
+				hasSpyApp = true
+			}
+		}
+		if !hasSpyApp {
+			choices = append(choices, CreateRTICloudSpyApp)
 		}
 		choices = append(choices, CreateNewApp)
 		selected, err := app.choose(selectMessage, choices)
 		if err != nil {
 			return "", err
+		}
+		if selected == CreateRTICloudSpyApp {
+			return app.createRTICloudSpyApp(databusName)
 		}
 		if selected != CreateNewApp {
 			return selected, nil
@@ -771,6 +823,35 @@ func (app *App) selectAppOrCreate(databusName string, selectMessage string, temp
 			return "", err
 		}
 	}
+}
+
+func (app *App) createRTICloudSpyApp(databusName string) (string, error) {
+	if app.APIPost == nil {
+		return "", fmt.Errorf("API not configured")
+	}
+	_, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications", databusName), map[string]any{
+		"kind":        "app",
+		"client_name": RTICloudSpyAppName,
+		"port":        RTICloudSpyAppPort,
+		"topic_data": map[string]any{
+			"0": map[string]any{
+				"domainId":      0,
+				"tag":           "",
+				"configuration": "all",
+				"allTopicsConfiguration": map[string]any{
+					"cloudToEdgeDirection": true,
+					"cloudToEdgeHistory":   1,
+					"edgeToCloudDirection": false,
+					"edgeToCloudHistory":   1,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage("Created rticloud_spy cloud application with subscribe-only access to all topics"))
+	return RTICloudSpyAppName, nil
 }
 
 func (app *App) waitForAppCreation(databusName string) (map[string]any, []TemplateItem, error) {
@@ -894,7 +975,10 @@ func (app *App) selector() prompt.Selector {
 		In:            app.input(),
 		Out:           app.Out,
 		CancelMessage: "Spy configuration cancelled.",
-		SpecialLabels: map[string]string{CreateNewApp: CreateNewAppLabel},
+		SpecialLabels: map[string]string{
+			CreateRTICloudSpyApp: CreateRTICloudSpyLabel,
+			CreateNewApp:         CreateNewAppLabel,
+		},
 	}
 }
 
@@ -915,6 +999,24 @@ func (app *App) pidRunning(pid int) bool {
 		return app.PIDRunningFunc(pid)
 	}
 	return terminal.ProcessRunning(pid)
+}
+
+func formatCommandLine(command []string) string {
+	quoted := make([]string, 0, len(command))
+	for _, arg := range command {
+		quoted = append(quoted, quoteCommandArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteCommandArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\n\"'\\") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
 }
 
 func mergeEnv(base []string, overrides ...string) []string {
