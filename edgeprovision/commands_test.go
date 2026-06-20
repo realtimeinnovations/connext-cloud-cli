@@ -46,17 +46,17 @@ func newTextResponse(status int, payload string) *http.Response {
 // backed by the given fakeDoer, so no real HTTP traffic occurs.
 func newRunnerWithDoer(out io.Writer, doer *fakeDoer) *Runner {
 	runner := NewRunner(out)
-	runner.NewClient = func(baseURL string, _ bool) *Client {
+	runner.NewClient = func(baseURL string) *Client {
 		return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: doer}
 	}
-	runner.NewMTLSClient = func(baseURL, _, _, _, _ string, _ bool) (*Client, error) {
+	runner.NewMTLSClient = func(baseURL, _, _, _, _ string) (*Client, error) {
 		return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: doer}, nil
 	}
 	return runner
 }
 
 func TestNewClientTrimsTrailingSlash(t *testing.T) {
-	c := NewClient("http://localhost:8080/", true)
+	c := NewClient("http://localhost:8080/")
 	if c.BaseURL != "http://localhost:8080" {
 		t.Fatalf("unexpected base URL: %s", c.BaseURL)
 	}

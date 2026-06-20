@@ -166,9 +166,11 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	logger := io.Writer(&logBuf)
 
 	a := NewAgent(store, logger)
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, keyFile, _, output string) (string, error) {
+	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// output is connext_artifacts/ under the device slot; mtls_artifacts/ is alongside it.
+		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
+		// EnrollDevice store path); mtls_artifacts/ is alongside it.
+		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
@@ -318,7 +320,8 @@ func TestRehydrate_LoadsProfileAndSchedulesTimers(t *testing.T) {
 	now := time.Unix(0, 0)
 	notAfter := now.Add(100 * time.Second)
 	st := AgentState{
-		State: StateActive,
+		State:  StateActive,
+		Serial: "SN-001",
 		NotAfter: map[ArtifactID]time.Time{
 			ArtifactIdentity:    notAfter,
 			ArtifactPermissions: notAfter,
@@ -329,10 +332,11 @@ func TestRehydrate_LoadsProfileAndSchedulesTimers(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(st)
-	ffs.WriteFile("/connext/svc1/part1/dev1/agent_state.json", data, 0o644)
-	ffs.MkdirAll("/connext/svc1/part1/dev1", 0o755)
-	ffs.MkdirAll("/connext/svc1/part1", 0o755)
-	ffs.MkdirAll("/connext/svc1", 0o755)
+	ffs.WriteFile("/connext/SN-001/svc1/part1/dev1/agent_state.json", data, 0o644)
+	ffs.MkdirAll("/connext/SN-001/svc1/part1/dev1", 0o755)
+	ffs.MkdirAll("/connext/SN-001/svc1/part1", 0o755)
+	ffs.MkdirAll("/connext/SN-001/svc1", 0o755)
+	ffs.MkdirAll("/connext/SN-001", 0o755)
 
 	a.rehydrate()
 
@@ -356,10 +360,11 @@ func TestRehydrate_SkipsCorruptStateFile(t *testing.T) {
 		return time.AfterFunc(10*time.Hour, f)
 	}
 
-	ffs.WriteFile("/connext/svc1/part1/dev1/agent_state.json", []byte("not json"), 0o644)
-	ffs.MkdirAll("/connext/svc1/part1/dev1", 0o755)
-	ffs.MkdirAll("/connext/svc1/part1", 0o755)
-	ffs.MkdirAll("/connext/svc1", 0o755)
+	ffs.WriteFile("/connext/SN-001/svc1/part1/dev1/agent_state.json", []byte("not json"), 0o644)
+	ffs.MkdirAll("/connext/SN-001/svc1/part1/dev1", 0o755)
+	ffs.MkdirAll("/connext/SN-001/svc1/part1", 0o755)
+	ffs.MkdirAll("/connext/SN-001/svc1", 0o755)
+	ffs.MkdirAll("/connext/SN-001", 0o755)
 
 	a.rehydrate() // must not panic
 
@@ -473,9 +478,11 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	enrolled := make(chan struct{}, 1)
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, keyFile, _, output string) (string, error) {
+	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// output is connext_artifacts/ under the device slot; mtls_artifacts/ is alongside it.
+		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
+		// EnrollDevice store path); mtls_artifacts/ is alongside it.
+		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
@@ -568,7 +575,7 @@ func TestDrainInbox_SkipsTmpFiles(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	enrollCalled := false
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _, _ string) (string, error) {
+	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _ string) (string, error) {
 		enrollCalled = true
 		return "", nil
 	}
@@ -587,7 +594,7 @@ func TestDrainInbox_EnrollmentFailureMovesToFailed(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _, _ string) (string, error) {
+	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _ string) (string, error) {
 		return "", os.ErrPermission
 	}
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
@@ -694,10 +701,12 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	a.Now = func() time.Time { return time.Unix(0, 0) }
 
 	notAfter := time.Unix(0, 0).Add(100 * time.Second)
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, keyFile, _, output string) (string, error) {
+	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		// Simulate EnrollDevice writing the device key to the mTLS store.
 		keyData, _ := os.ReadFile(keyFile)
-		// output is connext_artifacts/ under the device slot; mtls_artifacts/ is alongside it.
+		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
+		// EnrollDevice store path); mtls_artifacts/ is alongside it.
+		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
@@ -742,7 +751,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 func TestEnrollProfile_EnrollErrorLeavesUnregistered(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _, _ string) (string, error) {
+	a.EnrollFunc = func(_, _, _ string, _ []string, _, _, _ string) (string, error) {
 		return "", os.ErrPermission
 	}
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
@@ -816,9 +825,11 @@ func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 	}
 
 	enrolled := make(chan struct{}, 1)
-	a.EnrollFunc = func(_, _, _ string, _ []string, _, keyFile, _, output string) (string, error) {
+	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// output is connext_artifacts/ under the device slot; mtls_artifacts/ is alongside it.
+		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
+		// EnrollDevice store path); mtls_artifacts/ is alongside it.
+		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)

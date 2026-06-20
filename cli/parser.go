@@ -1476,7 +1476,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	}
 
 	{ // enroll
-		var csrFile, keyFile, campaignToken, output string
+		var csrFile, keyFile, campaignToken string
 		var macs []string
 		c := &cobra.Command{
 			Use:   "enroll",
@@ -1516,7 +1516,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if effectiveParticipant == "" {
 					return fmt.Errorf("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
 				}
-				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken, output)
+				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken)
 				if err != nil {
 					return err
 				}
@@ -1542,7 +1542,6 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
 		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required by the enrollment endpoint)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save enrollment artifacts (identity.crt, identity-ca-chain.crt, signed_governance.p7s); prints JSON to stdout if not set")
 		cmd.AddCommand(c)
 	}
 

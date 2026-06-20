@@ -19,8 +19,7 @@ import (
 // command builds its own Client on demand (mTLS or plain) because cert/key/ca
 // and base URL come from the user on the command line.
 type Runner struct {
-	Out       io.Writer
-	SSLVerify bool
+	Out io.Writer
 	// Debug, when true, logs every HTTP request and response body to Out.
 	Debug bool
 
@@ -30,18 +29,17 @@ type Runner struct {
 	MkdirAll  func(string, os.FileMode) error
 
 	// Client factories — overridable in tests with a fake Doer.
-	NewClient       func(baseURL string, sslVerify bool) *Client
-	NewClientWithCA func(baseURL, caFile string, sslVerify bool) (*Client, error)
-	NewMTLSClient   func(baseURL, certFile, keyFile, caFile, serverAddr string, sslVerify bool) (*Client, error)
+	NewClient       func(baseURL string) *Client
+	NewClientWithCA func(baseURL, caFile string) (*Client, error)
+	NewMTLSClient   func(baseURL, certFile, keyFile, caFile, serverAddr string) (*Client, error)
 }
 
-// NewRunner creates a Runner with sensible defaults.  SSLVerify defaults to
-// true: all Provisioning Service endpoints use TLS and require certificate
-// verification, so it is never disabled.
+// NewRunner creates a Runner with sensible defaults.  All Provisioning Service
+// endpoints use TLS and require certificate verification, so verification is
+// always enabled.
 func NewRunner(out io.Writer) *Runner {
 	return &Runner{
 		Out:             out,
-		SSLVerify:       true,
 		ReadFile:        os.ReadFile,
 		WriteFile:       os.WriteFile,
 		MkdirAll:        os.MkdirAll,
@@ -61,12 +59,12 @@ func (runner *Runner) plainClient(url, caFile string) (*Client, error) {
 	var c *Client
 	if caFile != "" {
 		var err error
-		c, err = runner.NewClientWithCA(url, caFile, runner.SSLVerify)
+		c, err = runner.NewClientWithCA(url, caFile)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		c = runner.NewClient(url, runner.SSLVerify)
+		c = runner.NewClient(url)
 	}
 	if runner.Debug {
 		c.DebugOut = runner.Out
@@ -84,7 +82,7 @@ func (runner *Runner) mtlsClient(url, certFile, keyFile, caFile, serverAddr stri
 	if certFile == "" || keyFile == "" || caFile == "" {
 		return nil, fmt.Errorf("--cert, --key, and --ca are required for mTLS endpoints")
 	}
-	c, err := runner.NewMTLSClient(url, certFile, keyFile, caFile, serverAddr, runner.SSLVerify)
+	c, err := runner.NewMTLSClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return nil, err
 	}

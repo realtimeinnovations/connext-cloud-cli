@@ -85,36 +85,34 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	commandRunner.EdgeStore = edgeStoreRunner
 	agentApp := edgesyncagent.NewAgent(edgeStoreRunner, out)
 	agentApp.In = os.Stdin
-	agentApp.EnrollFunc = func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken, output string) (string, error) {
-		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken, output)
+	agentApp.EnrollFunc = func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error) {
+		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken)
 	}
 	agentApp.DeriveDeviceURLFunc = func(serviceID string) string {
 		return DeriveDeviceURL(configManager.GetAPIURLSafe(), serviceID)
 	}
-	agentApp.RequestIdentityFunc = func(url, cert, key, ca, serverAddr, participantID, csrFile, output string) error {
+	// newAgentEdgeRunner builds an edgeprovision.Runner configured for the agent
+	// (log-file output + current debug flag).  Each artifact closure below builds
+	// one on demand because cert/key/ca/URL come from the per-call store slot.
+	newAgentEdgeRunner := func() *edgeprovision.Runner {
 		r := edgeprovision.NewRunner(agentApp.LogOut)
 		r.Debug = agentApp.Debug
-		return r.RequestIdentity(url, cert, key, ca, serverAddr, participantID, csrFile, output)
+		return r
+	}
+	agentApp.RequestIdentityFunc = func(url, cert, key, ca, serverAddr, participantID, csrFile, output string) error {
+		return newAgentEdgeRunner().RequestIdentity(url, cert, key, ca, serverAddr, participantID, csrFile, output)
 	}
 	agentApp.RequestPermissionsFunc = func(url, cert, key, ca, serverAddr, participantID, output string) error {
-		r := edgeprovision.NewRunner(agentApp.LogOut)
-		r.Debug = agentApp.Debug
-		return r.RequestPermissions(url, cert, key, ca, serverAddr, participantID, output)
+		return newAgentEdgeRunner().RequestPermissions(url, cert, key, ca, serverAddr, participantID, output)
 	}
 	agentApp.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
-		r := edgeprovision.NewRunner(agentApp.LogOut)
-		r.Debug = agentApp.Debug
-		return r.RequestPSK(url, cert, key, ca, serverAddr, output)
+		return newAgentEdgeRunner().RequestPSK(url, cert, key, ca, serverAddr, output)
 	}
 	agentApp.GetCRLFunc = func(url, cert, key, ca, serverAddr, participantID, output string) error {
-		r := edgeprovision.NewRunner(agentApp.LogOut)
-		r.Debug = agentApp.Debug
-		return r.GetCRL(url, cert, key, ca, serverAddr, participantID, output)
+		return newAgentEdgeRunner().GetCRL(url, cert, key, ca, serverAddr, participantID, output)
 	}
 	agentApp.RenewDeviceCertFunc = func(url, cert, key, ca, serverAddr, csrFile string, validityMinutes int, output string) error {
-		r := edgeprovision.NewRunner(agentApp.LogOut)
-		r.Debug = agentApp.Debug
-		return r.RenewDeviceCert(url, cert, key, ca, serverAddr, csrFile, validityMinutes, output)
+		return newAgentEdgeRunner().RenewDeviceCert(url, cert, key, ca, serverAddr, csrFile, validityMinutes, output)
 	}
 	agentApp.GenerateKeyAndCSRFunc = generateAgentKeyAndCSR
 	agentApp.GenerateCSRFromKeyFunc = generateAgentCSRFromKey

@@ -38,13 +38,10 @@ type Client struct {
 }
 
 // NewClient creates a plain (non-mTLS) client for the signing/healthcheck
-// endpoints on port 8080.  When sslVerify is false the underlying transport
-// is configured with InsecureSkipVerify.
-func NewClient(baseURL string, sslVerify bool) *Client {
+// endpoints on port 8080.  All Provisioning Service endpoints use TLS with
+// certificate verification, which is always enabled.
+func NewClient(baseURL string) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if !sslVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
 	return &Client{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: transport},
@@ -53,7 +50,7 @@ func NewClient(baseURL string, sslVerify bool) *Client {
 
 // NewClientWithCA creates a plain (non-mTLS) client that trusts the given CA
 // chain PEM file for server certificate verification.
-func NewClientWithCA(baseURL string, caFile string, sslVerify bool) (*Client, error) {
+func NewClientWithCA(baseURL string, caFile string) (*Client, error) {
 	caCert, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("reading CA file: %w", err)
@@ -64,8 +61,7 @@ func NewClientWithCA(baseURL string, caFile string, sslVerify bool) (*Client, er
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{
-		RootCAs:            caCertPool,
-		InsecureSkipVerify: !sslVerify,
+		RootCAs: caCertPool,
 	}
 	return &Client{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
@@ -82,7 +78,7 @@ func NewClientWithCA(baseURL string, caFile string, sslVerify bool) (*Client, er
 // curl's --connect-to).  When non-empty the TLS dial target is overridden to
 // serverAddr while the TLS SNI / certificate verification use the URL hostname.
 // Use this to route through an NLB whose DNS is not yet globally resolvable.
-func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile string, serverAddr string, sslVerify bool) (*Client, error) {
+func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile string, serverAddr string) (*Client, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
@@ -98,9 +94,8 @@ func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile strin
 	}
 
 	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		RootCAs:            caCertPool,
-		InsecureSkipVerify: !sslVerify,
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
 	}
 
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
