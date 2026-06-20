@@ -1259,18 +1259,15 @@ func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, camp
 	return nil
 }
 
-// enrollArtifacts maps enrollment response fields to their output file names.
-var enrollArtifacts = []struct{ field, filename string }{
-	{"certificate", "identity.crt"},
-	{"ca_chain", "identity-ca-chain.crt"},
-	{"governance_p7s", "signed_governance.p7s"},
-}
-
 // EnrollDevice enrolls a device with the Provisioning Service and persists
 // the resulting security artifacts.  It returns the domain_template_id from
 // the enrollment response so callers can route subsequent operations to the
 // correct store slot (<domain_template_id>/<participant_template_id>/).
-func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, keyFile string, campaignToken string, outputDir string) (string, error) {
+//
+// When an EdgeStore is configured (the production path) the artifacts are
+// written directly to the device slot; otherwise the raw JSON response is
+// printed to runner.Out.
+func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, serial string, macs []string, csrFile string, keyFile string, campaignToken string) (string, error) {
 	data, err := runner.ReadFile(csrFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
@@ -1349,33 +1346,9 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		return domainTemplateID, nil
 	}
 
-	if outputDir == "" {
-		formatted, _ := json.MarshalIndent(result, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return domainTemplateID, nil
-	}
-	if err := runner.MkdirAll(outputDir, 0o755); err != nil {
-		return domainTemplateID, err
-	}
-	for _, a := range enrollArtifacts {
-		val, ok := result[a.field].(string)
-		if !ok || val == "" {
-			continue
-		}
-		destPath := filepath.Join(outputDir, a.filename)
-		if err := runner.WriteFile(destPath, []byte(val), 0o644); err != nil {
-			return domainTemplateID, err
-		}
-		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", destPath)
-	}
-	if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
-		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-		leaseDest := filepath.Join(outputDir, "enroll_lease.json")
-		if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
-			return domainTemplateID, err
-		}
-		_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", leaseDest)
-	}
+	// No local store configured (unit tests / dry run): print the raw response.
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
 	return domainTemplateID, nil
 }
 
