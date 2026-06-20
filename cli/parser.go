@@ -43,15 +43,6 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if runtime != nil {
-				runtime.CloudAPI.SSLVerify = !*disableSSLVerify
-				if runtime.EdgeProvision != nil {
-					runtime.EdgeProvision.SSLVerify = !*disableSSLVerify
-				}
-			}
-			return nil
-		},
 		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
 			if versionFlag {
 				_, _ = fmt.Fprint(cmd.OutOrStdout(), app.VersionString())
@@ -1468,13 +1459,8 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&serial, "serial", "", "Device serial number (selects the store slot under .connext/<serial>/)")
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Log HTTP request and response bodies to stdout (or to --log-file for the agent subcommand)")
 
-	// --disable-ssl-verify must not be used with edge-sync: all endpoints use
-	// mTLS and require certificate verification.  Reject it if supplied and
-	// hide it from help output (cobra inherits the help func to subcommands).
+	// All edge-sync endpoints use mTLS and require certificate verification.
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
-		if c.Root().PersistentFlags().Changed("disable-ssl-verify") {
-			return fmt.Errorf("--disable-ssl-verify cannot be used with edge-sync commands: mTLS requires certificate verification")
-		}
 		if runtime != nil && runtime.EdgeStore != nil && connextDir != "" {
 			runtime.EdgeStore.BaseDir = connextDir
 		}
@@ -1488,12 +1474,6 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		}
 		return nil
 	}
-	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
-		f := c.Root().PersistentFlags().Lookup("disable-ssl-verify")
-		f.Hidden = true
-		defer func() { f.Hidden = false }()
-		defaultHelp(c)
-	})
 
 	{ // enroll
 		var csrFile, keyFile, campaignToken, output string

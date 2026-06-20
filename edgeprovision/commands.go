@@ -36,8 +36,8 @@ type Runner struct {
 }
 
 // NewRunner creates a Runner with sensible defaults.  SSLVerify defaults to
-// true; the parser flips it via PersistentPreRunE when --disable-ssl-verify
-// is passed.
+// true: all Provisioning Service endpoints use TLS and require certificate
+// verification, so it is never disabled.
 func NewRunner(out io.Writer) *Runner {
 	return &Runner{
 		Out:             out,

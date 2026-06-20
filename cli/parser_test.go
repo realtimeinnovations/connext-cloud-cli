@@ -207,21 +207,6 @@ func TestParserEdgeSyncIdentityRequiresParticipantID(t *testing.T) {
 	}
 }
 
-func TestParserEdgeSyncRejectsDisableSSLVerify(t *testing.T) {
-	err := Execute([]string{"--disable-ssl-verify", "edge-sync", "crl", "--service", "svc"}, io.Discard, io.Discard, nil)
-	if err == nil || !strings.Contains(err.Error(), "cannot be used with edge-sync") {
-		t.Fatalf("expected disable-ssl-verify rejection, got: %v", err)
-	}
-}
-
-func TestParserEdgeSyncHelpHidesDisableSSLVerify(t *testing.T) {
-	var out bytes.Buffer
-	_ = Execute([]string{"edge-sync"}, &out, &out, nil)
-	if strings.Contains(out.String(), "disable-ssl-verify") {
-		t.Fatalf("disable-ssl-verify should not appear in edge-sync help: %s", out.String())
-	}
-}
-
 func TestRootHelpShowsOperatorCommands(t *testing.T) {
 	var out bytes.Buffer
 	_ = Execute(nil, &out, &out, nil)

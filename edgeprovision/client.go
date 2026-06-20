@@ -39,7 +39,7 @@ type Client struct {
 
 // NewClient creates a plain (non-mTLS) client for the signing/healthcheck
 // endpoints on port 8080.  When sslVerify is false the underlying transport
-// is configured with InsecureSkipVerify (matching --disable-ssl-verify).
+// is configured with InsecureSkipVerify.
 func NewClient(baseURL string, sslVerify bool) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if !sslVerify {
