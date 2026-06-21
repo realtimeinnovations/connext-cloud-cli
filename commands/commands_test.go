@@ -528,8 +528,8 @@ func TestEnrollDevice(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /edge-systems/ces-alpha-123/enroll": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate":    "-----BEGIN CERTIFICATE-----\nMIIB...",
-			"ca_chain":       "-----BEGIN CERTIFICATE-----\nMIIC...",
-			"governance_p7s": "MIME-Version: 1.0\ncontent",
+			"caChain":        "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"governanceP7s":  "MIME-Version: 1.0\ncontent",
 			"participant_id": "sensor-net",
 		}),
 	}}
@@ -545,7 +545,7 @@ func TestEnrollDevice(t *testing.T) {
 	if payload["serial"] != "SN001" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
-	if !strings.Contains(out.String(), "certificate") || !strings.Contains(out.String(), "governance_p7s") {
+	if !strings.Contains(out.String(), "certificate") || !strings.Contains(out.String(), "governanceP7s") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }

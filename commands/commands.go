@@ -1312,8 +1312,8 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		storeSlot := participantID
 		arts := edgestore.EnrollArtifacts{
 			DeviceCertPEM: []byte(stringField(result, "certificate")),
-			CAChainPEM:    []byte(stringField(result, "ca_chain")),
-			GovernanceP7S: []byte(stringField(result, "governance_p7s")),
+			CAChainPEM:    []byte(stringField(result, "caChain")),
+			GovernanceP7S: []byte(stringField(result, "governanceP7s")),
 		}
 		if keyFile != "" {
 			keyData, err := runner.ReadFile(keyFile)
@@ -1364,8 +1364,8 @@ func enrollExtractLease(result map[string]any) map[string]any {
 	if v, ok := result["lease"]; ok {
 		out["lease"] = v
 	}
-	if v, ok := result["server_time_utc"]; ok {
-		out["server_time_utc"] = v
+	if v, ok := result["serverTimeUtc"]; ok {
+		out["serverTimeUtc"] = v
 	}
 	if len(out) == 0 {
 		return nil

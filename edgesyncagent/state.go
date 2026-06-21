@@ -19,8 +19,8 @@ func (a *Agent) readLease(path string) (notBefore, notAfter time.Time) {
 	}
 	var wrapper struct {
 		Lease struct {
-			NotBefore time.Time `json:"not_before"`
-			NotAfter  time.Time `json:"not_after"`
+			NotBefore time.Time `json:"notBefore"`
+			NotAfter  time.Time `json:"notAfter"`
 		} `json:"lease"`
 	}
 	if err := json.Unmarshal(data, &wrapper); err != nil {
@@ -48,14 +48,14 @@ func (a *Agent) readPSKLeaseNotAfter(path string) time.Time {
 		return time.Time{}
 	}
 	var earliest time.Time
-	for _, key := range []string{"psk_a", "psk_b", "psk"} {
+	for _, key := range []string{"pskA", "pskB", "psk"} {
 		slotData, ok := raw[key]
 		if !ok {
 			continue
 		}
 		var slot struct {
 			Lease struct {
-				NotAfter time.Time `json:"not_after"`
+				NotAfter time.Time `json:"notAfter"`
 			} `json:"lease"`
 		}
 		if err := json.Unmarshal(slotData, &slot); err != nil {

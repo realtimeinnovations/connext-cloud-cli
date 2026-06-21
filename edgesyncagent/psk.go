@@ -358,7 +358,7 @@ func (a *Agent) readPSKABNotAfter(path string) (pskA, pskB time.Time) {
 		}
 		var slot struct {
 			Lease struct {
-				NotAfter time.Time `json:"not_after"`
+				NotAfter time.Time `json:"notAfter"`
 			} `json:"lease"`
 		}
 		if err := json.Unmarshal(slotData, &slot); err != nil {
@@ -366,7 +366,7 @@ func (a *Agent) readPSKABNotAfter(path string) (pskA, pskB time.Time) {
 		}
 		return slot.Lease.NotAfter
 	}
-	pskA = readSlot("psk_a")
-	pskB = readSlot("psk_b")
+	pskA = readSlot("pskA")
+	pskB = readSlot("pskB")
 	return
 }

@@ -176,8 +176,8 @@ func extractLease(result map[string]any) map[string]any {
 	if v, ok := result["lease"]; ok {
 		out["lease"] = v
 	}
-	if v, ok := result["server_time_utc"]; ok {
-		out["server_time_utc"] = v
+	if v, ok := result["serverTimeUtc"]; ok {
+		out["serverTimeUtc"] = v
 	}
 	if len(out) == 0 {
 		return nil
@@ -242,7 +242,7 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	if err != nil {
 		return err
 	}
-	certPEM, _ := result["identity_cert_pem"].(string)
+	certPEM, _ := result["identityCertPem"].(string)
 	dest := resolveOutputPath(output, "identity.crt")
 	if err := runner.saveToFile(dest, []byte(certPEM)); err != nil {
 		return err
@@ -279,7 +279,7 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	if err != nil {
 		return err
 	}
-	docSMIME, _ := result["permissions_doc_smime"].(string)
+	docSMIME, _ := result["permissionsDocSmime"].(string)
 	dest := resolveOutputPath(output, "signed_permissions.p7s")
 	if err := runner.saveToFile(dest, []byte(docSMIME)); err != nil {
 		return err
@@ -333,12 +333,12 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 		if !ok {
 			return pskSlot{}, false
 		}
-		id, _ := m["passphrase_id"].(float64)
+		id, _ := m["passphraseId"].(float64)
 		pass, _ := m["passphrase"].(string)
 		return pskSlot{key: key, passphraseID: id, passphrase: pass, lease: m["lease"]}, true
 	}
 	var slots []pskSlot
-	for _, k := range []string{"psk_a", "psk_b", "psk"} {
+	for _, k := range []string{"pskA", "pskB", "psk"} {
 		if s, ok := parseSlot(k); ok {
 			slots = append(slots, s)
 		}
@@ -349,7 +349,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	// lowest-id slot for servers that only return the legacy "psk" key.
 	primarySlot := slots[0]
 	for _, s := range slots {
-		if s.key == "psk_a" {
+		if s.key == "pskA" {
 			primarySlot = s
 			break
 		}
@@ -371,7 +371,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	// and one different); writing more causes a fatal initialisation error.
 	var passphrases []string
 	for _, s := range slots {
-		if s.key == "psk_a" || s.key == "psk_b" {
+		if s.key == "pskA" || s.key == "pskB" {
 			passphrases = append(passphrases, s.passphrase)
 		}
 	}
@@ -395,8 +395,8 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 			leasePayload[s.key] = map[string]any{"lease": s.lease}
 		}
 	}
-	if v, ok := result["server_time_utc"]; ok {
-		leasePayload["server_time_utc"] = v
+	if v, ok := result["serverTimeUtc"]; ok {
+		leasePayload["serverTimeUtc"] = v
 	}
 	leaseJSON, _ := json.MarshalIndent(leasePayload, "", "  ")
 	leaseDest := filepath.Join(outDir, "psk_lease.json")
@@ -455,7 +455,7 @@ func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Device certificate saved to %s\n", certDest)
-	caChainPEM, _ := result["ca_chain"].(string)
+	caChainPEM, _ := result["caChain"].(string)
 	if err := runner.saveToFile(caDest, []byte(caChainPEM)); err != nil {
 		return err
 	}

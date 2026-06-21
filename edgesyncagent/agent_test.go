@@ -232,8 +232,8 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 func leaseJSON(notBefore, notAfter time.Time) []byte {
 	type leasePayload struct {
 		Lease struct {
-			NotBefore time.Time `json:"not_before"`
-			NotAfter  time.Time `json:"not_after"`
+			NotBefore time.Time `json:"notBefore"`
+			NotAfter  time.Time `json:"notAfter"`
 		} `json:"lease"`
 	}
 	var p leasePayload

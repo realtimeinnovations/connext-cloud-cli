@@ -69,7 +69,7 @@ func TestSignCSR(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /internal/sign": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
-			"ca_chain":    "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
+			"caChain":     "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
 		}),
 	}}
 	var out bytes.Buffer
@@ -92,10 +92,10 @@ func TestSignCSR(t *testing.T) {
 func TestDeviceStatus(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"GET /device/status": newJSONResponse(http.StatusOK, map[string]any{
-			"status":      "ok",
-			"edge_system": "alpha",
-			"client_dn":   "CN=device1.sensor-net",
-			"pod":         "ces-alpha-abc",
+			"status":     "ok",
+			"edgeSystem": "alpha",
+			"clientDn":   "CN=device1.sensor-net",
+			"pod":        "ces-alpha-abc",
 		}),
 	}}
 	var out bytes.Buffer
@@ -119,10 +119,10 @@ func TestDeviceStatusRequiresMTLSFlags(t *testing.T) {
 func TestRequestIdentity(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /sensor-net/identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identity_cert_pem": "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----",
-			"cert_serial":       "ABCDEF",
-			"lease":             map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-07-01T00:00:00Z", "renew_after": "2026-05-01T00:00:00Z"},
-			"server_time_utc":   "2026-05-16T00:00:00Z",
+			"identityCertPem": "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----",
+			"certSerial":      "ABCDEF",
+			"lease":           map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z", "renewAfter": "2026-05-01T00:00:00Z"},
+			"serverTimeUtc":   "2026-05-16T00:00:00Z",
 		}),
 	}}
 	var out bytes.Buffer
@@ -148,8 +148,8 @@ func TestRequestIdentity(t *testing.T) {
 func TestRequestIdentityWithoutCSR(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /sensor-net/identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identity_cert_pem": "renewed",
-			"cert_serial":       "123",
+			"identityCertPem": "renewed",
+			"certSerial":      "123",
 		}),
 	}}
 	var out bytes.Buffer
@@ -172,8 +172,8 @@ func TestRequestIdentityWithoutCSR(t *testing.T) {
 func TestRequestPermissions(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /sensor-net/permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissions_doc_smime": "MIME-Version: 1.0...",
-			"subject_name":          "CN=device1.sensor-net",
+			"permissionsDocSmime": "MIME-Version: 1.0...",
+			"subjectName":         "CN=device1.sensor-net",
 		}),
 	}}
 	var out bytes.Buffer
@@ -181,7 +181,7 @@ func TestRequestPermissions(t *testing.T) {
 	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "sensor-net", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "permissions_doc_smime") {
+	if !strings.Contains(out.String(), "permissionsDocSmime") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -189,8 +189,8 @@ func TestRequestPermissions(t *testing.T) {
 func TestRequestPSK(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"psk_a": map[string]any{"passphrase": "1:abc", "passphrase_id": 1},
-			"psk_b": map[string]any{"passphrase": "2:def", "passphrase_id": 2},
+			"pskA": map[string]any{"passphrase": "1:abc", "passphraseId": 1},
+			"pskB": map[string]any{"passphrase": "2:def", "passphraseId": 2},
 		}),
 	}}
 	var out bytes.Buffer
@@ -198,7 +198,7 @@ func TestRequestPSK(t *testing.T) {
 	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "psk_a") || !strings.Contains(out.String(), "psk_b") {
+	if !strings.Contains(out.String(), "pskA") || !strings.Contains(out.String(), "pskB") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -207,8 +207,8 @@ func TestRequestIdentityToFile(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identity_cert_pem": certPEM,
-			"cert_serial":       "ABC",
+			"identityCertPem": certPEM,
+			"certSerial":      "ABC",
 		}),
 	}}
 	var out bytes.Buffer
@@ -240,10 +240,10 @@ func TestRequestIdentityToFileWritesLease(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identity_cert_pem": certPEM,
-			"cert_serial":       "ABC",
-			"lease":             map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-07-01T00:00:00Z"},
-			"server_time_utc":   "2026-05-16T00:00:00Z",
+			"identityCertPem": certPEM,
+			"certSerial":      "ABC",
+			"lease":           map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
+			"serverTimeUtc":   "2026-05-16T00:00:00Z",
 		}),
 	}}
 	var out bytes.Buffer
@@ -261,10 +261,10 @@ func TestRequestIdentityToFileWritesLease(t *testing.T) {
 	if written["identity.crt"] == nil {
 		t.Fatal("expected identity.crt to be written")
 	}
-	if !strings.Contains(string(written["identity_lease.json"]), "not_after") {
+	if !strings.Contains(string(written["identity_lease.json"]), "notAfter") {
 		t.Fatalf("expected identity_lease.json with lease data; got %s", written["identity_lease.json"])
 	}
-	if !strings.Contains(string(written["identity_lease.json"]), "server_time_utc") {
+	if !strings.Contains(string(written["identity_lease.json"]), "serverTimeUtc") {
 		t.Fatalf("expected identity_lease.json with server_time_utc; got %s", written["identity_lease.json"])
 	}
 	if !strings.Contains(out.String(), "Identity lease saved to") {
@@ -276,8 +276,8 @@ func TestRequestPermissionsToFile(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissions_doc_smime": doc,
-			"subject_name":          "CN=device1.net",
+			"permissionsDocSmime": doc,
+			"subjectName":         "CN=device1.net",
 		}),
 	}}
 	var out bytes.Buffer
@@ -309,10 +309,10 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissions_doc_smime": doc,
-			"subject_name":          "CN=device1.net",
-			"lease":                 map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-07-01T00:00:00Z"},
-			"server_time_utc":       "2026-05-16T00:00:00Z",
+			"permissionsDocSmime": doc,
+			"subjectName":         "CN=device1.net",
+			"lease":               map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
+			"serverTimeUtc":       "2026-05-16T00:00:00Z",
 		}),
 	}}
 	var out bytes.Buffer
@@ -330,7 +330,7 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 	if written["permissions.p7s"] == nil {
 		t.Fatal("expected permissions file to be written")
 	}
-	if !strings.Contains(string(written["permissions_lease.json"]), "not_after") {
+	if !strings.Contains(string(written["permissions_lease.json"]), "notAfter") {
 		t.Fatalf("expected permissions_lease.json with lease data; got %s", written["permissions_lease.json"])
 	}
 	if !strings.Contains(out.String(), "Permissions lease saved to") {
@@ -341,9 +341,9 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 func TestRequestPSKToFile(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"psk_a":           map[string]any{"passphrase": "0:aaaa", "passphrase_id": 0, "lease": map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-02T00:00:00Z"}},
-			"psk_b":           map[string]any{"passphrase": "1:bbbb", "passphrase_id": 1, "lease": map[string]any{"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-03T00:00:00Z"}},
-			"server_time_utc": "2026-01-01T00:00:00Z",
+			"pskA":          map[string]any{"passphrase": "0:aaaa", "passphraseId": 0, "lease": map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-01-02T00:00:00Z"}},
+			"pskB":          map[string]any{"passphrase": "1:bbbb", "passphraseId": 1, "lease": map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-01-03T00:00:00Z"}},
+			"serverTimeUtc": "2026-01-01T00:00:00Z",
 		}),
 	}}
 	var out bytes.Buffer
@@ -367,7 +367,7 @@ func TestRequestPSKToFile(t *testing.T) {
 	if string(written["psk_extra.txt"]) != "0:aaaa\n1:bbbb" {
 		t.Fatalf("unexpected psk_extra.txt: %q", written["psk_extra.txt"])
 	}
-	if !strings.Contains(string(written["psk_lease.json"]), "psk_a") || !strings.Contains(string(written["psk_lease.json"]), "server_time_utc") {
+	if !strings.Contains(string(written["psk_lease.json"]), "pskA") || !strings.Contains(string(written["psk_lease.json"]), "serverTimeUtc") {
 		t.Fatalf("unexpected psk_lease.json: %s", written["psk_lease.json"])
 	}
 	if !strings.Contains(out.String(), "PSK primary passphrase saved") {
@@ -428,7 +428,7 @@ func TestRequestIdentityToDirectory(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identity_cert_pem": certPEM,
+			"identityCertPem": certPEM,
 		}),
 	}}
 	var out bytes.Buffer
@@ -457,7 +457,7 @@ func TestRequestPermissionsToDirectory(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissions_doc_smime": doc,
+			"permissionsDocSmime": doc,
 		}),
 	}}
 	var out bytes.Buffer
@@ -480,8 +480,8 @@ func TestRequestPermissionsToDirectory(t *testing.T) {
 func TestRequestPSKToDirectory(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"psk_a": map[string]any{"passphrase": "0:abc", "passphrase_id": 0},
-			"psk_b": map[string]any{"passphrase": "1:def", "passphrase_id": 1},
+			"pskA": map[string]any{"passphrase": "0:abc", "passphraseId": 0},
+			"pskB": map[string]any{"passphrase": "1:def", "passphraseId": 1},
 		}),
 	}}
 	var out bytes.Buffer
@@ -552,7 +552,7 @@ func TestRenewDeviceCert(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate": certPEM,
-			"ca_chain":    caPEM,
+			"caChain":     caPEM,
 		}),
 	}}
 	var out bytes.Buffer
@@ -585,7 +585,7 @@ func TestRenewDeviceCertWithValidityMinutes(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate": "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
-			"ca_chain":    "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
+			"caChain":     "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
 		}),
 	}}
 	runner := newRunnerWithDoer(io.Discard, doer)
@@ -608,7 +608,7 @@ func TestRenewDeviceCertToDirectory(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
 			"certificate": certPEM,
-			"ca_chain":    caPEM,
+			"caChain":     caPEM,
 		}),
 	}}
 	var out bytes.Buffer

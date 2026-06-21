@@ -1577,7 +1577,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save identity_cert_pem to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
@@ -1612,7 +1612,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save permissions_doc_smime to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
 		cmd.AddCommand(c)
 	}
 
