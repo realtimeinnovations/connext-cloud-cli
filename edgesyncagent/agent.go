@@ -183,10 +183,10 @@ type Agent struct {
 	// EnrollFunc calls the enrollment API and returns the domain_template_id
 	// from the server response (empty string if not present in the response).
 	EnrollFunc             func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error)
-	RequestIdentityFunc    func(url, cert, key, ca, serverAddr, participantID, csrFile, output string) error
-	RequestPermissionsFunc func(url, cert, key, ca, serverAddr, participantID, output string) error
+	RequestIdentityFunc    func(url, cert, key, ca, serverAddr, csrFile, output string) error
+	RequestPermissionsFunc func(url, cert, key, ca, serverAddr, output string) error
 	RequestPSKFunc         func(url, cert, key, ca, serverAddr, output string) error
-	GetCRLFunc             func(url, cert, key, ca, serverAddr, participantID, output string) error
+	GetCRLFunc             func(url, cert, key, ca, serverAddr, output string) error
 	RenewDeviceCertFunc    func(url, cert, key, ca, serverAddr, csrFile string, validityMinutes int, output string) error
 	GenerateKeyAndCSRFunc  func(commonName, org, tmpDir string) (keyPath, csrPath string, err error)
 	GenerateCSRFromKeyFunc func(commonName, org string, keyPEM []byte, tmpDir string) (csrPath string, err error)
@@ -687,13 +687,13 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		return fmt.Errorf("identity: %w", err)
 	}
 
-	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", req.ParticipantID, output); err != nil {
+	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", output); err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
 	if err := a.RequestPSKFunc(url, cert, key, ca, "", output); err != nil {
 		return fmt.Errorf("psk: %w", err)
 	}
-	if err := a.GetCRLFunc(url, cert, key, ca, "", req.ParticipantID, output); err != nil {
+	if err := a.GetCRLFunc(url, cert, key, ca, "", output); err != nil {
 		return fmt.Errorf("crl: %w", err)
 	}
 

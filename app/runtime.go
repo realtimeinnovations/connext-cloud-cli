@@ -99,17 +99,17 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		r.Debug = agentApp.Debug
 		return r
 	}
-	agentApp.RequestIdentityFunc = func(url, cert, key, ca, serverAddr, participantID, csrFile, output string) error {
-		return newAgentEdgeRunner().RequestIdentity(url, cert, key, ca, serverAddr, participantID, csrFile, output)
+	agentApp.RequestIdentityFunc = func(url, cert, key, ca, serverAddr, csrFile, output string) error {
+		return newAgentEdgeRunner().RequestIdentity(url, cert, key, ca, serverAddr, csrFile, output)
 	}
-	agentApp.RequestPermissionsFunc = func(url, cert, key, ca, serverAddr, participantID, output string) error {
-		return newAgentEdgeRunner().RequestPermissions(url, cert, key, ca, serverAddr, participantID, output)
+	agentApp.RequestPermissionsFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		return newAgentEdgeRunner().RequestPermissions(url, cert, key, ca, serverAddr, output)
 	}
 	agentApp.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
 		return newAgentEdgeRunner().RequestPSK(url, cert, key, ca, serverAddr, output)
 	}
-	agentApp.GetCRLFunc = func(url, cert, key, ca, serverAddr, participantID, output string) error {
-		return newAgentEdgeRunner().GetCRL(url, cert, key, ca, serverAddr, participantID, output)
+	agentApp.GetCRLFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		return newAgentEdgeRunner().GetCRL(url, cert, key, ca, serverAddr, output)
 	}
 	agentApp.RenewDeviceCertFunc = func(url, cert, key, ca, serverAddr, csrFile string, validityMinutes int, output string) error {
 		return newAgentEdgeRunner().RenewDeviceCert(url, cert, key, ca, serverAddr, csrFile, validityMinutes, output)

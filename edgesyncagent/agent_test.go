@@ -177,15 +177,15 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 		ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), keyData, 0o600)
 		return "", nil
 	}
-	a.RequestIdentityFunc = func(_, _, _, _, _, _, _, output string) error {
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
 		// Write a fake identity cert so renewIdentity can copy it to device.crt.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
 		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("FAKE-CERT"), 0o644)
 		return nil
 	}
-	a.RequestPermissionsFunc = func(_, _, _, _, _, _, _ string) error { return nil }
+	a.RequestPermissionsFunc = func(_, _, _, _, _, _ string) error { return nil }
 	a.RequestPSKFunc = func(_, _, _, _, _, _ string) error { return nil }
-	a.GetCRLFunc = func(_, _, _, _, _, _, _ string) error { return nil }
+	a.GetCRLFunc = func(_, _, _, _, _, _ string) error { return nil }
 	a.RenewDeviceCertFunc = func(_, _, _, _, _, _ string, _ int, _ string) error { return nil }
 	a.GenerateKeyAndCSRFunc = func(cn, org, tmpDir string) (string, string, error) {
 		keyPath := filepath.Join(tmpDir, "key.pem")
@@ -408,7 +408,7 @@ func TestOnTimerFire_IgnoresStaleTimer(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	renewCalled := false
-	a.RequestIdentityFunc = func(_, _, _, _, _, _, _, _ string) error {
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, _ string) error {
 		renewCalled = true
 		return nil
 	}
@@ -438,7 +438,7 @@ func TestSweep_TriggersRenewalForExpiredArtifact(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	renewed := make(chan ArtifactID, 1)
-	a.RequestPermissionsFunc = func(_, _, _, _, _, _, _ string) error {
+	a.RequestPermissionsFunc = func(_, _, _, _, _, _ string) error {
 		renewed <- ArtifactPermissions
 		return nil
 	}
@@ -715,7 +715,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 		ffs.WriteFile(filepath.Join(mtlsDir, "ca-chain.pem"), []byte("FAKE-CA"), 0o644)
 		return "", nil
 	}
-	a.RequestIdentityFunc = func(_, _, _, _, _, _, _, output string) error {
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
 		// Write a lease file and a fake identity cert to the output directory.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
 		leasePath := filepath.Join(dir, "identity_lease.json")

@@ -203,7 +203,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			newNotBefore, _ = a.readLease(leasePath)
 		}
 	case ArtifactPermissions:
-		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", p.participantID, output); err == nil {
+		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", output); err == nil {
 			leasePath := filepath.Join(strings.TrimSuffix(output, string(os.PathSeparator)), "permissions_lease.json")
 			newNotBefore, newNotAfter = a.readLease(leasePath)
 		}
@@ -229,7 +229,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			p.mu.Unlock()
 		}
 	case ArtifactCRL:
-		err = a.GetCRLFunc(url, cert, key, ca, "", p.participantID, output)
+		err = a.GetCRLFunc(url, cert, key, ca, "", output)
 		if err == nil {
 			newNotAfter = a.Now().Add(a.CRLInterval)
 		}
@@ -330,7 +330,7 @@ func (a *Agent) renewIdentity(p *profile, url, cert, key, ca, output string) (ti
 		}
 	}
 
-	if err := a.RequestIdentityFunc(url, cert, key, ca, "", p.participantID, csrPath, output); err != nil {
+	if err := a.RequestIdentityFunc(url, cert, key, ca, "", csrPath, output); err != nil {
 		return time.Time{}, err
 	}
 

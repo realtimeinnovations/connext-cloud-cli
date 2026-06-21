@@ -214,11 +214,11 @@ func resolveOutputPath(output, defaultFilename string) string {
 	return output
 }
 
-// RequestIdentity calls POST /{participantID}/identity to issue or renew
-// an identity certificate (mTLS required).  If output is non-empty the
-// identity_cert_pem field is written to that path; otherwise the full JSON
-// response is printed to stdout.
-func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr, participantID, csrFile, output string) error {
+// RequestIdentity calls POST /identity to issue or renew an identity
+// certificate (mTLS required).  If output is non-empty the identity_cert_pem
+// field is written to that path; otherwise the full JSON response is printed
+// to stdout.
+func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr, csrFile, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
@@ -231,7 +231,7 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 		}
 		payload["csr_pem"] = string(data)
 	}
-	resp, err := client.Post("/"+participantID+"/identity", payload)
+	resp, err := client.Post("/identity", payload)
 	if err != nil {
 		return err
 	}
@@ -259,16 +259,16 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	return nil
 }
 
-// RequestPermissions calls POST /{participantID}/permissions to issue or renew
-// a signed permissions document (mTLS required).  If output is non-empty the
+// RequestPermissions calls POST /permissions to issue or renew a signed
+// permissions document (mTLS required).  If output is non-empty the
 // permissions_doc_smime field is written to that path; otherwise the full JSON
 // response is printed to stdout.
-func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverAddr, participantID, output string) error {
+func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverAddr, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
-	resp, err := client.Post("/"+participantID+"/permissions", map[string]any{})
+	resp, err := client.Post("/permissions", map[string]any{})
 	if err != nil {
 		return err
 	}
@@ -463,16 +463,15 @@ func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr
 	return nil
 }
 
-// GetCRL calls GET /{participantID}/crl to fetch the current Certificate
-// Revocation List (mTLS required).  If output is non-empty the CRL is saved
-// to that path (parent directory created if needed); otherwise it is printed
-// to stdout.
-func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, participantID, output string) error {
+// GetCRL calls GET /crl to fetch the current Certificate Revocation List
+// (mTLS required).  If output is non-empty the CRL is saved to that path
+// (parent directory created if needed); otherwise it is printed to stdout.
+func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, output string) error {
 	client, err := runner.mtlsClient(url, certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
-	resp, err := client.Get("/" + participantID + "/crl")
+	resp, err := client.Get("/crl")
 	if err != nil {
 		return err
 	}

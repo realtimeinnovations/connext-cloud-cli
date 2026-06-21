@@ -118,7 +118,7 @@ func TestDeviceStatusRequiresMTLSFlags(t *testing.T) {
 
 func TestRequestIdentity(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /sensor-net/identity": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
 			"identityCertPem": "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----",
 			"certSerial":      "ABCDEF",
 			"lease":           map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z", "renewAfter": "2026-05-01T00:00:00Z"},
@@ -130,7 +130,7 @@ func TestRequestIdentity(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "sensor-net", "device.csr", ""); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "device.csr", ""); err != nil {
 		t.Fatal(err)
 	}
 	var payload map[string]any
@@ -147,14 +147,14 @@ func TestRequestIdentity(t *testing.T) {
 
 func TestRequestIdentityWithoutCSR(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /sensor-net/identity": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
 			"identityCertPem": "renewed",
 			"certSerial":      "123",
 		}),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "sensor-net", "", ""); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var payload map[string]any
@@ -171,14 +171,14 @@ func TestRequestIdentityWithoutCSR(t *testing.T) {
 
 func TestRequestPermissions(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /sensor-net/permissions": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
 			"permissionsDocSmime": "MIME-Version: 1.0...",
 			"subjectName":         "CN=device1.sensor-net",
 		}),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "sensor-net", ""); err != nil {
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "permissionsDocSmime") {
@@ -206,7 +206,7 @@ func TestRequestPSK(t *testing.T) {
 func TestRequestIdentityToFile(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
 			"identityCertPem": certPEM,
 			"certSerial":      "ABC",
 		}),
@@ -222,7 +222,7 @@ func TestRequestIdentityToFile(t *testing.T) {
 		wroteData = data
 		return nil
 	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "net", "", target); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", target); err != nil {
 		t.Fatal(err)
 	}
 	if mkdirPath != filepath.Dir(target) {
@@ -239,7 +239,7 @@ func TestRequestIdentityToFile(t *testing.T) {
 func TestRequestIdentityToFileWritesLease(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
 			"identityCertPem": certPEM,
 			"certSerial":      "ABC",
 			"lease":           map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
@@ -255,7 +255,7 @@ func TestRequestIdentityToFileWritesLease(t *testing.T) {
 		written[filepath.Base(path)] = data
 		return nil
 	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "net", "", target); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", target); err != nil {
 		t.Fatal(err)
 	}
 	if written["identity.crt"] == nil {
@@ -275,7 +275,7 @@ func TestRequestIdentityToFileWritesLease(t *testing.T) {
 func TestRequestPermissionsToFile(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
 			"permissionsDocSmime": doc,
 			"subjectName":         "CN=device1.net",
 		}),
@@ -291,7 +291,7 @@ func TestRequestPermissionsToFile(t *testing.T) {
 		wroteData = data
 		return nil
 	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "net", target); err != nil {
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", target); err != nil {
 		t.Fatal(err)
 	}
 	if mkdirPath != filepath.Dir(target) {
@@ -308,7 +308,7 @@ func TestRequestPermissionsToFile(t *testing.T) {
 func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
 			"permissionsDocSmime": doc,
 			"subjectName":         "CN=device1.net",
 			"lease":               map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
@@ -324,7 +324,7 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 		written[filepath.Base(path)] = data
 		return nil
 	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "net", target); err != nil {
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", target); err != nil {
 		t.Fatal(err)
 	}
 	if written["permissions.p7s"] == nil {
@@ -377,11 +377,11 @@ func TestRequestPSKToFile(t *testing.T) {
 
 func TestGetCRLToStdout(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /sensor-net/crl": newTextResponse(http.StatusOK, "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"),
+		"GET /crl": newTextResponse(http.StatusOK, "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", "sensor-net", ""); err != nil {
+	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "BEGIN X509 CRL") {
@@ -392,7 +392,7 @@ func TestGetCRLToStdout(t *testing.T) {
 func TestGetCRLToFileCreatesParentDir(t *testing.T) {
 	crlContent := "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /sensor-net/crl": newTextResponse(http.StatusOK, crlContent),
+		"GET /crl": newTextResponse(http.StatusOK, crlContent),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
@@ -406,7 +406,7 @@ func TestGetCRLToFileCreatesParentDir(t *testing.T) {
 		wroteData = data
 		return nil
 	}
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", "sensor-net", target); err != nil {
+	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", target); err != nil {
 		t.Fatal(err)
 	}
 	if mkdirPath != filepath.Dir(target) {
@@ -427,7 +427,7 @@ func TestGetCRLToFileCreatesParentDir(t *testing.T) {
 func TestRequestIdentityToDirectory(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/identity": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
 			"identityCertPem": certPEM,
 		}),
 	}}
@@ -442,7 +442,7 @@ func TestRequestIdentityToDirectory(t *testing.T) {
 		wroteData = data
 		return nil
 	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "net", "", dir); err != nil {
+	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", dir); err != nil {
 		t.Fatal(err)
 	}
 	if wrotePath != filepath.Join(dir, "identity.crt") {
@@ -456,7 +456,7 @@ func TestRequestIdentityToDirectory(t *testing.T) {
 func TestRequestPermissionsToDirectory(t *testing.T) {
 	const doc = "MIME-Version: 1.0\r\ncontent"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /net/permissions": newJSONResponse(http.StatusOK, map[string]any{
+		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
 			"permissionsDocSmime": doc,
 		}),
 	}}
@@ -469,7 +469,7 @@ func TestRequestPermissionsToDirectory(t *testing.T) {
 		wrotePath = path
 		return nil
 	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", "net", dir); err != nil {
+	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
 		t.Fatal(err)
 	}
 	if wrotePath != filepath.Join(dir, "signed_permissions.p7s") {
@@ -506,7 +506,7 @@ func TestRequestPSKToDirectory(t *testing.T) {
 func TestGetCRLToDirectory(t *testing.T) {
 	crlContent := "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"
 	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /sensor-net/crl": newTextResponse(http.StatusOK, crlContent),
+		"GET /crl": newTextResponse(http.StatusOK, crlContent),
 	}}
 	var out bytes.Buffer
 	runner := newRunnerWithDoer(&out, doer)
@@ -517,7 +517,7 @@ func TestGetCRLToDirectory(t *testing.T) {
 		wrotePath = path
 		return nil
 	}
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", "sensor-net", dir); err != nil {
+	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
 		t.Fatal(err)
 	}
 	if wrotePath != filepath.Join(dir, "crl.pem") {

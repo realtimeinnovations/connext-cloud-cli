@@ -1584,7 +1584,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return runtime.EdgeProvision.RequestIdentity(resolvedURL, cert, key, ca, serverAddr, participantID, csrFile, out)
+				return runtime.EdgeProvision.RequestIdentity(resolvedURL, cert, key, ca, serverAddr, csrFile, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
@@ -1620,7 +1620,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return runtime.EdgeProvision.RequestPermissions(resolvedURL, cert, key, ca, serverAddr, participantID, out)
+				return runtime.EdgeProvision.RequestPermissions(resolvedURL, cert, key, ca, serverAddr, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
@@ -1687,7 +1687,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return runtime.EdgeProvision.GetCRL(resolvedURL, cert, key, ca, serverAddr, participantID, out)
+				return runtime.EdgeProvision.GetCRL(resolvedURL, cert, key, ca, serverAddr, out)
 			},
 		}
 		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
