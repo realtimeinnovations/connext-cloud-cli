@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Store manages the local artifact cache under BaseDir.
@@ -167,4 +168,60 @@ func (s *Store) ResolveDeviceURL(serial, domainTemplateID, participantID string)
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// SlotInfo describes a single enrolled slot that has a stored device_url.
+type SlotInfo struct {
+	DomainTemplateID string
+	ParticipantID    string
+	DeviceURL        string
+	EnrolledAt       time.Time // mtime of the device_url file; zero if unknown
+}
+
+// ListSlotsWithURL returns every slot under serial that has a stored
+// device_url.  Returns nil when the serial directory does not exist or
+// cannot be read.
+func (s *Store) ListSlotsWithURL(serial string) []SlotInfo {
+	serialDir := filepath.Join(s.BaseDir, serial)
+	domainDirs, err := os.ReadDir(serialDir)
+	if err != nil {
+		return nil
+	}
+	var slots []SlotInfo
+	for _, domainEntry := range domainDirs {
+		if !domainEntry.IsDir() {
+			continue
+		}
+		domainID := domainEntry.Name()
+		participantDirs, err := os.ReadDir(filepath.Join(serialDir, domainID))
+		if err != nil {
+			continue
+		}
+		for _, partEntry := range participantDirs {
+			if !partEntry.IsDir() {
+				continue
+			}
+			participantID := partEntry.Name()
+			urlPath := s.DeviceURLPath(serial, domainID, participantID)
+			fi, statErr := os.Stat(urlPath)
+			if statErr != nil {
+				continue
+			}
+			data, readErr := os.ReadFile(urlPath)
+			if readErr != nil {
+				continue
+			}
+			u := strings.TrimSpace(string(data))
+			if u == "" {
+				continue
+			}
+			slots = append(slots, SlotInfo{
+				DomainTemplateID: domainID,
+				ParticipantID:    participantID,
+				DeviceURL:        u,
+				EnrolledAt:       fi.ModTime(),
+			})
+		}
+	}
+	return slots
 }

@@ -20,6 +20,10 @@ import (
 
 const commandGroupAnnotation = "rticloud.commandGroup"
 
+// slotResolutionNote is embedded in --url and --output flag descriptions to
+// document when the value is auto-resolved from the local store.
+const slotResolutionNote = "when --service and --participant-tpl-id are set"
+
 var rootCommandGroups = []string{
 	"Connect to Connext Cloud",
 	"Manage Connext Cloud",
@@ -166,7 +170,7 @@ func printCommandList(out io.Writer, commands []*cobra.Command) {
 
 // resolveConnextOutput returns the connext_artifacts directory (with trailing
 // separator so resolveOutputPath treats it as a directory) when --service and
-// --participant-id are set and the caller did not supply an explicit --output.
+// --participant-tpl-id are set and the caller did not supply an explicit --output.
 // Falls back to the caller-supplied value (including "") in all other cases.
 func resolveConnextOutput(rt *app.Runtime, serial, service, domainID, participantID, output string) string {
 	if output != "" || service == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
@@ -180,27 +184,39 @@ func resolveConnextOutput(rt *app.Runtime, serial, service, domainID, participan
 }
 
 // resolveConnextURL returns the device endpoint URL from the local store when
-// --url is not set and a slot is available.  Falls back to the caller-supplied
-// value (including "") in all other cases.
-// Returns an error if a store lookup is intended (--service and --participant-tpl-id set)
-// but --serial is missing.
+// --url is not set.  All three of --service, --domain-tpl-id, and
+// --participant-tpl-id must be set for a store lookup to proceed; otherwise the
+// caller-supplied value (including "") is returned unchanged.
+//
+// If the requested slot has no device_url but other enrolled slots exist under
+// the serial, returns an actionable error listing them.
 func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID, rawURL string) (string, error) {
-	if rawURL != "" || service == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
+	if rawURL != "" || service == "" || domainID == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
 		return rawURL, nil
 	}
 	if serial == "" {
 		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
 	}
-	slotDomain := domainID
-	if slotDomain == "" {
-		slotDomain = service
+	if u := rt.EdgeStore.ResolveDeviceURL(serial, domainID, participantID); u != "" {
+		return u, nil
 	}
-	resolved := rt.EdgeStore.ResolveDeviceURL(serial, slotDomain, participantID)
-	if resolved == "" {
-		return "", fmt.Errorf("--url is required (device_url not found in store at %s)",
-			rt.EdgeStore.DeviceURLPath(serial, slotDomain, participantID))
+	// Requested slot has no device_url; list alternatives for diagnosis.
+	others := rt.EdgeStore.ListSlotsWithURL(serial)
+	if len(others) > 0 {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "no enrolled slot for domain template %q under serial %s.\n\tfound instead:", domainID, serial)
+		for _, si := range others {
+			ts := ""
+			if !si.EnrolledAt.IsZero() {
+				ts = "  (enrolled " + si.EnrolledAt.UTC().Format(time.RFC3339) + ")"
+			}
+			fmt.Fprintf(&sb, "\n\t  %s / %s%s", si.DomainTemplateID, si.ParticipantID, ts)
+		}
+		fmt.Fprintf(&sb, "\n\tpass --domain-tpl-id %s to use the enrolled slot.", others[0].DomainTemplateID)
+		return "", fmt.Errorf("%s", sb.String())
 	}
-	return resolved, nil
+	return "", fmt.Errorf("--url is required (device_url not found in store at %s)",
+		rt.EdgeStore.DeviceURLPath(serial, domainID, participantID))
 }
 
 // campaignTokenClaims decodes the payload of a JWT (without verifying the
@@ -1571,13 +1587,13 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.RequestIdentity(resolvedURL, cert, key, ca, serverAddr, participantID, csrFile, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1607,12 +1623,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.RequestPermissions(resolvedURL, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1639,12 +1655,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.RequestPSK(resolvedURL, cert, key, ca, serverAddr, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1674,12 +1690,12 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				return runtime.EdgeProvision.GetCRL(resolvedURL, cert, key, ca, serverAddr, participantID, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to connext_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to connext_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1696,7 +1712,7 @@ the CSR subject and public key match the current certificate before signing and
 returning a fresh certificate valid for a new period.
 
 Provide a CSR generated from the same private key currently in use
-(mtls_artifacts/device.key).  When --service and --participant-id are set the
+(mtls_artifacts/device.key).  When --service and --participant-tpl-id are set the
 renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -1722,14 +1738,14 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 				return runtime.EdgeProvision.RenewDeviceCert(resolvedURL, cert, key, ca, serverAddr, csrFile, validityMinutes, out)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (must be signed by the same key as the current device certificate)")
 		c.Flags().IntVar(&validityMinutes, "validity-minutes", 0, "Requested certificate lifetime in minutes (0 = server default)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save device.crt and ca-chain.pem (defaults to mtls_artifacts/ when --service and --participant-id are set)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save device.crt and ca-chain.pem (defaults to mtls_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1755,7 +1771,7 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 				return runtime.EdgeProvision.DeviceStatus(resolvedURL, cert, key, ca, serverAddr)
 			},
 		}
-		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store when --service and --participant-id are set)")
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
 		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")

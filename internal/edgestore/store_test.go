@@ -132,3 +132,51 @@ func TestResolveMTLSDefaultsMissingFiles(t *testing.T) {
 		t.Fatal("expected empty strings when no artifacts have been stored")
 	}
 }
+
+func TestListSlotsWithURLEmpty(t *testing.T) {
+	s := newTestStore(t)
+	if got := s.ListSlotsWithURL("SN-999"); got != nil {
+		t.Fatalf("expected nil for unknown serial, got %v", got)
+	}
+}
+
+func TestListSlotsWithURLSingleSlot(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.WriteDeviceURL("SN-001", "dom-1", "pp1", "https://device.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	slots := s.ListSlotsWithURL("SN-001")
+	if len(slots) != 1 {
+		t.Fatalf("expected 1 slot, got %d", len(slots))
+	}
+	if slots[0].DomainTemplateID != "dom-1" {
+		t.Errorf("unexpected DomainTemplateID: %s", slots[0].DomainTemplateID)
+	}
+	if slots[0].ParticipantID != "pp1" {
+		t.Errorf("unexpected ParticipantID: %s", slots[0].ParticipantID)
+	}
+	if slots[0].DeviceURL != "https://device.example.com" {
+		t.Errorf("unexpected DeviceURL: %s", slots[0].DeviceURL)
+	}
+	if slots[0].EnrolledAt.IsZero() {
+		t.Error("expected non-zero EnrolledAt")
+	}
+}
+
+func TestListSlotsWithURLMultipleSlots(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.WriteDeviceURL("SN-001", "dom-1", "pp1", "https://a.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteDeviceURL("SN-001", "dom-2", "pp2", "https://b.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	// A slot without device_url should not appear.
+	if err := s.WriteArtifacts("SN-001", "dom-3", "pp3", EnrollArtifacts{DeviceCertPEM: []byte("CERT")}); err != nil {
+		t.Fatal(err)
+	}
+	slots := s.ListSlotsWithURL("SN-001")
+	if len(slots) != 2 {
+		t.Fatalf("expected 2 slots with URL, got %d", len(slots))
+	}
+}
