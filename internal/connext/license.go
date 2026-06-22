@@ -59,5 +59,5 @@ func LicenseFilePath(install Install) string {
 }
 
 func WriteLicenseFile(install Install, content []byte) error {
-	return os.WriteFile(LicenseFilePath(install), content, 0o644)
+	return os.WriteFile(LicenseFilePath(install), content, 0o600)
 }

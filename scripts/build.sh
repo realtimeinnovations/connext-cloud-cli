@@ -20,7 +20,7 @@ date="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 if [ -z "$client_id" ] || [ -z "$workspaces_client_id" ]; then
   cat >&2 <<EOF
-Missing Auth0 client ID.
+Missing required Auth0 client ID.
 
 Set one Cloud client ID:
   AUTH0_CLIENT_ID
