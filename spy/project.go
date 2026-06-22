@@ -432,7 +432,9 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		if strings.TrimSpace(line) == "" {
 			return
 		}
-		_, _ = fmt.Fprintf(logFile, "%s [spy] %s\n", app.Now().UTC().Format(time.RFC3339), line)
+		if shouldWriteSpyLogLine(line) {
+			_, _ = fmt.Fprintf(logFile, "%s [spy] %s\n", app.Now().UTC().Format(time.RFC3339), line)
+		}
 		liveView.HandleLine(line)
 		if options.TextOutput {
 			for _, eventLine := range PlainEventLines(line) {
@@ -607,6 +609,10 @@ done:
 	return 0, nil
 }
 
+func shouldWriteSpyLogLine(line string) bool {
+	return spyDataRE.FindStringSubmatch(line) == nil
+}
+
 func (app *App) spyEnv() []string {
 	env := []string{"RTI_MONITORING2_ENABLE=false"}
 	privateKeyPath := filepath.Join(app.AppDir(), "client.key")
@@ -661,6 +667,10 @@ func (app *App) Reset() error {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
+	if err := common.RemoveSecureFiles(app.AppDir()); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(app.Out, "Removed spy credentials from %s\n", app.AppDir())
 	_, _ = fmt.Fprintln(app.Out)
 	_, _ = fmt.Fprintf(app.Out, "Runtime artifacts were left in\nPath: %s\n", app.SpyDir())
 	_, _ = fmt.Fprintf(app.Out, "Logs were left in\nPath: %s\n", app.LogsDir())

@@ -3,6 +3,7 @@ package spy
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -443,8 +444,11 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 		!strings.Contains(logLines[0], "-qosProfile app_1_qos_lib::app_1_qos_profile") {
 		t.Fatalf("unexpected first spy log line: %q", logLines[0])
 	}
-	if !strings.Contains(logContent, "New data") {
-		t.Fatal("spy log missing data")
+	if strings.Contains(logContent, "New data") || strings.Contains(logContent, "sample=") || strings.Contains(logContent, `{"color":"BLUE"}`) {
+		t.Fatalf("spy log should not persist raw sample payloads: %s", logContent)
+	}
+	if !strings.Contains(logContent, "New writer") || !strings.Contains(logContent, "Discovered 1 DataWriters") {
+		t.Fatalf("spy log missing operational lines: %s", logContent)
 	}
 	output := tui.StripANSIEscapes(out.String())
 	if !strings.Contains(output, "Connext Cloud Spy") || !strings.Contains(output, "Square") || !strings.Contains(output, "Discovered 1 DataWriters") {
@@ -553,6 +557,39 @@ func TestRenderANSIShowsWaitingHostsMessage(t *testing.T) {
 	}
 }
 
+func TestRenderANSISamplesPanelExpandsToRemainingHeight(t *testing.T) {
+	view := NewLiveView(map[string]any{"databus": "db", "templates": map[string]any{"app": "app"}})
+	for index := 0; index < SpyLiveSampleRows+2; index++ {
+		view.HandleLine(fmt.Sprintf(`2026-05-08 00:06:%02d.475269 New data          from 10.0.0.114     : topic="Square" type="ShapeType" sample={"x":%d}`, index, index))
+	}
+	rendered := tui.StripANSIEscapes(renderANSIForSize(view.Render(0), spyDefaultWidth, 60))
+
+	lines := strings.Split(rendered, "\n")
+	samplesTop := -1
+	samplesBottom := -1
+	for index, line := range lines {
+		if strings.Contains(line, "┌─ Samples") {
+			samplesTop = index
+			continue
+		}
+		if samplesTop >= 0 && strings.HasPrefix(line, "└") {
+			samplesBottom = index
+			break
+		}
+	}
+	if samplesTop < 0 || samplesBottom <= samplesTop {
+		t.Fatalf("could not locate samples panel in output:\n%s", rendered)
+	}
+
+	panelHeight := samplesBottom - samplesTop + 1
+	if panelHeight <= SpyLiveSampleRows+2 {
+		t.Fatalf("expected samples panel to grow beyond sample row cap, got height=%d", panelHeight)
+	}
+	if !strings.Contains(rendered, `{"x":0}`) {
+		t.Fatalf("expected expanded samples panel to include data beyond old row cap:\n%s", rendered)
+	}
+}
+
 func TestLiveViewDatabusStatusDistinguishesConnectedHostsFromSamples(t *testing.T) {
 	view := NewLiveView(map[string]any{"databus": "db", "templates": map[string]any{"app": "app"}})
 	view.State.serviceState = "running"
@@ -571,6 +608,53 @@ func TestLiveViewDatabusStatusDistinguishesConnectedHostsFromSamples(t *testing.
 	receiving := tui.StripANSIEscapes(renderANSI(view.Render(1)))
 	if !strings.Contains(receiving, "◉ receiving samples") {
 		t.Fatalf("expected receiving samples status, got %q", receiving)
+	}
+}
+
+func TestLiveViewDoesNotShowReceivingSamplesWithoutParticipants(t *testing.T) {
+	view := NewLiveView(map[string]any{"databus": "db", "templates": map[string]any{"app": "app"}})
+	view.State.serviceState = "running"
+	view.HandleLine(`2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic="Square" type="ShapeType" sample={"color":"BLUE"}`)
+
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+	if !strings.Contains(rendered, "○ not connected") || !strings.Contains(rendered, "no participants discovered yet") || strings.Contains(rendered, "receiving samples") {
+		t.Fatalf("expected samples without participants to stay not connected: %q", rendered)
+	}
+}
+
+func TestResetRemovesConfigAndCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".connext", "spy.yaml"), []byte("databus: db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(appDir, "app_1.xml")
+	if err := os.WriteFile(artifactPath, []byte("<dds/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range common.SecureFiles {
+		if err := os.WriteFile(filepath.Join(appDir, name), []byte("spy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	if err := app.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if common.FileExists(filepath.Join(tmpDir, ".connext", "spy.yaml")) || !common.FileExists(artifactPath) {
+		t.Fatalf("unexpected files after reset")
+	}
+	for _, name := range common.SecureFiles {
+		if common.FileExists(filepath.Join(appDir, name)) {
+			t.Fatalf("spy credential was not removed: %s", name)
+		}
+	}
+	if !strings.Contains(out.String(), "Removed spy credentials") || !strings.Contains(out.String(), "Runtime artifacts were left in") {
+		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
 

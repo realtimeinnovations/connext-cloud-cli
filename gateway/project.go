@@ -971,15 +971,21 @@ func (app *GatewayApp) Reset() error {
 		_, _ = fmt.Fprintln(app.Out, "No gateway configuration found.")
 		return nil
 	}
-	config, _ := app.ReadConfig()
 	if err := os.Remove(app.ConfigPath()); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
+	if err := common.RemoveSecureFiles(app.RoutingDir()); err != nil {
+		return err
+	}
+	if err := common.RemoveSecureFiles(filepath.Join(app.CollectorDir(), "secure")); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(app.Out, "Removed gateway credentials from %s\n", app.RoutingDir())
+	_, _ = fmt.Fprintf(app.Out, "Removed collector credentials from %s\n", filepath.Join(app.CollectorDir(), "secure"))
 	_, _ = fmt.Fprintln(app.Out)
 	_, _ = fmt.Fprintf(app.Out, "Runtime artifacts were left in\nPath: %s\n", app.GatewayDir())
 	_, _ = fmt.Fprintf(app.Out, "Logs were left in\nPath: %s\n", app.LogsDir())
-	_ = config
 	return nil
 }
 
@@ -1153,7 +1159,7 @@ func (app *GatewayApp) ValidateConfigResources(config map[string]any) error {
 			if zone == "" {
 				zone = app.currentZone()
 			}
-			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"))}
+			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\nCreate a Gateway in the Applications tab\n  - Open %s\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"))}
 		}
 	}
 	if HasObservability(config) {
@@ -1190,14 +1196,16 @@ func (app *GatewayApp) waitForTemplateCreation(resourceName string, resourceLabe
 	dashboard := DashboardURL(zone, resourceName, DashboardResourceKind(resourceLabel))
 	for {
 		title := "• Create template in Connext Cloud dashboard:"
+		reloadMessage := "Reload template list after creating it in the dashboard."
 		switch templateKind {
 		case "gateway":
-			title = "• Create gateway template in Connext Cloud dashboard:"
+			title = "• Create a Gateway in the Applications tab:"
+			reloadMessage = "Reload application list after creating it in the dashboard."
 		case "telemetry-service-collector", "observability-collector":
 			title = "• Create collector template in Connext Cloud dashboard:"
 		}
 		_, _ = fmt.Fprint(app.Out, RenderKeyValuePanel(title, []KeyValueRow{{Value: dashboard}}))
-		confirm, err := app.confirmReload("Reload template list after creating it in the dashboard.")
+		confirm, err := app.confirmReload(reloadMessage)
 		if err != nil {
 			return nil, nil, err
 		}

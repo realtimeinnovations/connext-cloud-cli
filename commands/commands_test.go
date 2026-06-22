@@ -237,3 +237,29 @@ func TestGetLicenseWritesOutputFile(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
+
+func TestDownloadLicenseReturnsBody(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /licenses": newTextResponse(http.StatusOK, "license-body")}}
+	runner := New(api, io.Discard)
+	days := 14
+	body, err := runner.DownloadLicense(&days)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "license-body" {
+		t.Fatalf("unexpected license content: %s", body)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["expiration_days"] != days {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestDownloadLicenseReturnsAPIError(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /licenses": newTextResponse(http.StatusBadRequest, `{"error":"complete your profile"}`)}}
+	runner := New(api, io.Discard)
+	_, err := runner.DownloadLicense(nil)
+	if err == nil || !strings.Contains(err.Error(), "complete your profile") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

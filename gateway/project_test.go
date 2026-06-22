@@ -100,7 +100,7 @@ func TestTemplateSelectionCanCreateNewAndReload(t *testing.T) {
 	if selected != "gw-new" {
 		t.Fatalf("unexpected selection: %s", selected)
 	}
-	if !strings.Contains(out.String(), "• Create gateway template in Connext Cloud dashboard:") || !strings.Contains(out.String(), DashboardURL("dev-cloud", "inventory", "databus")) {
+	if !strings.Contains(out.String(), "• Create a Gateway in the Applications tab:") || !strings.Contains(out.String(), DashboardURL("dev-cloud", "inventory", "databus")) {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -250,7 +250,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		if message != "Reload template list after creating it in the dashboard." {
+		if message != "Reload application list after creating it in the dashboard." {
 			return false, GatewayError{Message: message}
 		}
 		return true, nil
@@ -276,7 +276,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 	if common.NestedString(config, "templates", "gateway") != "gw" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if !strings.Contains(out.String(), "• Create gateway template in Connext Cloud dashboard:") || !strings.Contains(out.String(), "Reloading templates...") {
+	if !strings.Contains(out.String(), "• Create a Gateway in the Applications tab:") || !strings.Contains(out.String(), "Reloading templates...") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
@@ -795,9 +795,14 @@ func TestStatusReportsMissingConfig(t *testing.T) {
 	}
 }
 
-func TestResetRemovesOnlyConfig(t *testing.T) {
+func TestResetRemovesConfigAndCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".connext", "gateway"), 0o755); err != nil {
+	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
+	collectorSecureDir := filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure")
+	if err := os.MkdirAll(routingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(collectorSecureDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(tmpDir, ".connext", "gateway.yaml"), []byte("databus: db\n"), 0o644); err != nil {
@@ -807,6 +812,14 @@ func TestResetRemovesOnlyConfig(t *testing.T) {
 	if err := os.WriteFile(artifactPath, []byte("<xml/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range common.SecureFiles {
+		if err := os.WriteFile(filepath.Join(routingDir, name), []byte("gateway"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(collectorSecureDir, name), []byte("collector"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
 	if err := app.Reset(); err != nil {
@@ -814,6 +827,14 @@ func TestResetRemovesOnlyConfig(t *testing.T) {
 	}
 	if common.FileExists(filepath.Join(tmpDir, ".connext", "gateway.yaml")) || !common.FileExists(artifactPath) {
 		t.Fatalf("unexpected files after reset")
+	}
+	for _, name := range common.SecureFiles {
+		if common.FileExists(filepath.Join(routingDir, name)) {
+			t.Fatalf("routing credential was not removed: %s", name)
+		}
+		if common.FileExists(filepath.Join(collectorSecureDir, name)) {
+			t.Fatalf("collector credential was not removed: %s", name)
+		}
 	}
 	if !strings.Contains(out.String(), "Runtime artifacts were left in") {
 		t.Fatalf("unexpected output: %s", out.String())

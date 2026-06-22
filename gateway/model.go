@@ -25,6 +25,7 @@ type RouteState struct {
 	State            string
 	InputMatched     bool
 	OutputMatched    bool
+	WasRunning       bool
 	SourceConnection string
 	TypeName         string
 }
@@ -353,10 +354,15 @@ func (state *RoutingState) updateRouteEvent(line string) {
 			route.State = "STOPPING"
 		case "STOP", "DISABLE":
 			route.State = "STOPPED"
+			route.WasRunning = false
 		case "DELETE":
 			route.State = "DELETED"
+			route.WasRunning = false
 		default:
 			route.State = MaxRouteState(route.State, event)
+		}
+		if event == "RUN" {
+			route.WasRunning = true
 		}
 		if event == "DELETE" {
 			state.topicEvents[route.Topic] = "route removed"
@@ -443,6 +449,7 @@ func (state *RoutingState) updateRouteLost(line string) {
 			route.OutputMatched = false
 		}
 		route.State = "STOPPED"
+		route.WasRunning = false
 		if !isEndpointStatus(state.topicEvents[route.Topic]) && !isProblemStatus(state.topicEvents[route.Topic]) {
 			state.topicEvents[route.Topic] = "waiting for endpoint"
 		}
@@ -662,6 +669,8 @@ func laneState(routes []*RouteState, direction string) string {
 		return "waiting"
 	}
 	switch {
+	case hasLiveRoute(routes, direction):
+		return "live"
 	case states["RUN"]:
 		return "live"
 	case states["START"]:
@@ -677,6 +686,15 @@ func laneState(routes []*RouteState, direction string) string {
 	default:
 		return "waiting"
 	}
+}
+
+func hasLiveRoute(routes []*RouteState, direction string) bool {
+	for _, route := range routes {
+		if route.Direction == direction && route.WasRunning && route.InputMatched && route.OutputMatched && route.State != "STOPPING" && route.State != "STOPPED" && route.State != "DELETED" {
+			return true
+		}
+	}
+	return false
 }
 
 func MaxRouteState(current string, next string) string {

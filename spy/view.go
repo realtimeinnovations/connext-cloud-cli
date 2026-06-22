@@ -144,8 +144,8 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 		topics = append(topics, RenderedTopic{Activity: "[dim]○[/dim]", Topic: "waiting", Type: "No topics discovered yet", LastSample: "-"})
 	}
 	recent := view.State.RecentSamples()
-	samples := make([]RenderedSample, 0, tui.MinInt(len(recent), SpyLiveSampleRows))
-	for index := len(recent) - 1; index >= 0 && len(samples) < SpyLiveSampleRows; index-- {
+	samples := make([]RenderedSample, 0, len(recent))
+	for index := len(recent) - 1; index >= 0; index-- {
 		event := recent[index]
 		samples = append(samples, RenderedSample{Time: event.Time, Topic: event.Topic, Sample: event.Sample})
 	}
@@ -187,6 +187,9 @@ func spySummaryChip(status string, activeTopicCount int, connectedHostCount int,
 		return fmt.Sprintf("[%s]○ not connected[/]", tui.RTIBlue)
 	}
 	if short == "running" {
+		if connectedHostCount == 0 {
+			return fmt.Sprintf("[%s]○ not connected[/]", tui.RTIBlue)
+		}
 		if activeTopicCount == 0 && connectedHostCount > 0 {
 			return "[green]○ connected[/green]"
 		}
@@ -247,7 +250,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	fixed := 1 + len(summary) + 1 + 2 + 1 + 2 + 1 + tui.MinInt(len(statsLines)+2, 6)
 	available := tui.MaxInt(2, height-fixed)
 	topicBudget := tui.MinInt(len(topicLines), tui.MaxInt(1, available/2))
-	sampleBudget := tui.MinInt(len(sampleLines), tui.MaxInt(1, available-topicBudget))
+	sampleBudget := tui.MaxInt(1, available-topicBudget)
 	lines := []string{"\x1b[H\x1b[J"}
 	lines = append(lines, summary...)
 	lines = append(lines, "")
