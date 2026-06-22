@@ -278,8 +278,29 @@ func TestLoginReturnsOAuthCallbackError(t *testing.T) {
 		}
 		state := parsedURL.Query().Get("state")
 		callbackURL := parsedURL.Query().Get("redirect_uri")
-		_, err = http.Get(callbackURL + "?error=access_denied&error_description=bad+audience&state=" + url.QueryEscape(state))
-		return err
+		query := url.Values{
+			"error": {"<script>alert(document.domain)</script>"},
+			"state": {state},
+		}
+		response, err := http.Get(callbackURL + "?" + query.Encode())
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if got, want := response.Header.Get("Content-Type"), "text/plain; charset=utf-8"; got != want {
+			return fmt.Errorf("callback Content-Type = %q, want %q", got, want)
+		}
+		if got, want := response.Header.Get("X-Content-Type-Options"), "nosniff"; got != want {
+			return fmt.Errorf("callback X-Content-Type-Options = %q, want %q", got, want)
+		}
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), "<script>") {
+			return fmt.Errorf("callback reflected OAuth error in response body: %q", body)
+		}
+		return nil
 	}
 	manager.HTTPClient = roundTripClient(func(*http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("token exchange should not run for callback error")
@@ -292,7 +313,7 @@ func TestLoginReturnsOAuthCallbackError(t *testing.T) {
 	if token != "" {
 		t.Fatalf("Login() token = %q, want empty", token)
 	}
-	if !strings.Contains(err.Error(), "access_denied: bad audience") {
+	if !strings.Contains(err.Error(), "<script>alert(document.domain)</script>") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

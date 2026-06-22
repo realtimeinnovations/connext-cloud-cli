@@ -331,8 +331,7 @@ func (manager *Manager) Login() (string, error) {
 	resultCh := make(chan authResult, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Query().Get("state") != state {
-			writer.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(writer, "Invalid state parameter.")
+			writeCallbackError(writer, "Invalid state parameter.")
 			select {
 			case resultCh <- authResult{err: fmt.Errorf("Error: Invalid OAuth state parameter.")}:
 			default:
@@ -345,8 +344,7 @@ func (manager *Manager) Login() (string, error) {
 			if detail != "" {
 				message += ": " + detail
 			}
-			writer.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(writer, message)
+			writeCallbackError(writer, "OAuth authorization failed. Return to the terminal for details.")
 			select {
 			case resultCh <- authResult{err: fmt.Errorf("Error: OAuth authorization failed: %s", message)}:
 			default:
@@ -355,8 +353,7 @@ func (manager *Manager) Login() (string, error) {
 		}
 		code := request.URL.Query().Get("code")
 		if code == "" {
-			writer.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(writer, "Missing authorization code.")
+			writeCallbackError(writer, "Missing authorization code.")
 			select {
 			case resultCh <- authResult{err: fmt.Errorf("Error: OAuth authorization response did not include a code.")}:
 			default:
@@ -393,6 +390,13 @@ func (manager *Manager) Login() (string, error) {
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+func writeCallbackError(writer http.ResponseWriter, message string) {
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(http.StatusBadRequest)
+	_, _ = io.WriteString(writer, message)
 }
 
 func formatOAuthExchangeError(err error) error {
