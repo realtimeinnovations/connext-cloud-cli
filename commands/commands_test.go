@@ -113,8 +113,8 @@ func TestListDatabusesShortPrintsKindPerResource(t *testing.T) {
 func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":            newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/inventory":   newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
-		"GET /databuses/inventory-2": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/inventory":   newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
+		"GET /databuses/inventory-2": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -127,7 +127,7 @@ func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 		t.Fatalf("expected secure databus payload, got %#v", payload)
 	}
 	output := out.String()
-	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  ready") {
+	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  active") {
 		t.Fatalf("unexpected output: %s", output)
 	}
 }
@@ -152,7 +152,7 @@ func TestCreateDatabusTimesOutWaitingForStatusChange(t *testing.T) {
 func TestCreateDatabusSupportsNonSecurePayload(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":          newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/inventory": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/inventory": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -169,7 +169,7 @@ func TestCreateDatabusSupportsNonSecurePayload(t *testing.T) {
 func TestCreateObsServiceSecureByDefault(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -186,7 +186,7 @@ func TestCreateObsServiceSecureByDefault(t *testing.T) {
 func TestCreateObsServiceSupportsNonSecurePayload(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
