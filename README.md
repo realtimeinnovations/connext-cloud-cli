@@ -90,23 +90,6 @@ Print build metadata:
 rticloud --version
 ```
 
-### Pointing the CLI at a local Manager
-
-By default the CLI resolves the API host from `~/.rticloud/config.json` (set by
-`rticloud configure --region <region>`), which maps to a cloud endpoint such as
-`https://us-west-2.cloud.dev-rti.com/api/v1`.
-
-When developing against a local Manager instance you can override the API
-host with an environment variable:
-
-```sh
-# Point all CLI API calls to the local Manager (e.g. started on port 8090).
-export CONNEXT_CLOUD_API_HOST="http://localhost:8090"
-```
-
-With this variable set, every `rticloud` command (e.g. `rticloud edge-provisioning service list`) 
-will hit the local Manager instead of the cloud endpoint.
-
 ## Edge Provisioning Management
 
 `rticloud edge-provisioning` is the management-plane command group for administering
