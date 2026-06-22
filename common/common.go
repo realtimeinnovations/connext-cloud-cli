@@ -138,6 +138,17 @@ func LocalSecureFilesExist(directory string) bool {
 	return true
 }
 
+func RemoveSecureFiles(directory string) error {
+	for _, name := range SecureFiles {
+		path := filepath.Join(directory, name)
+		err := os.Remove(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return err

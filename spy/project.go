@@ -667,6 +667,10 @@ func (app *App) Reset() error {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
+	if err := common.RemoveSecureFiles(app.AppDir()); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(app.Out, "Removed spy credentials from %s\n", app.AppDir())
 	_, _ = fmt.Fprintln(app.Out)
 	_, _ = fmt.Fprintf(app.Out, "Runtime artifacts were left in\nPath: %s\n", app.SpyDir())
 	_, _ = fmt.Fprintf(app.Out, "Logs were left in\nPath: %s\n", app.LogsDir())

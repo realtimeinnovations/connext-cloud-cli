@@ -622,6 +622,42 @@ func TestLiveViewDoesNotShowReceivingSamplesWithoutParticipants(t *testing.T) {
 	}
 }
 
+func TestResetRemovesConfigAndCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".connext", "spy.yaml"), []byte("databus: db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(appDir, "app_1.xml")
+	if err := os.WriteFile(artifactPath, []byte("<dds/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range common.SecureFiles {
+		if err := os.WriteFile(filepath.Join(appDir, name), []byte("spy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	app := NewApp(tmpDir, &out)
+	if err := app.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if common.FileExists(filepath.Join(tmpDir, ".connext", "spy.yaml")) || !common.FileExists(artifactPath) {
+		t.Fatalf("unexpected files after reset")
+	}
+	for _, name := range common.SecureFiles {
+		if common.FileExists(filepath.Join(appDir, name)) {
+			t.Fatalf("spy credential was not removed: %s", name)
+		}
+	}
+	if !strings.Contains(out.String(), "Removed spy credentials") || !strings.Contains(out.String(), "Runtime artifacts were left in") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
 func stringValue(config map[string]any, key string) string {
 	value, _ := config[key].(string)
 	return value

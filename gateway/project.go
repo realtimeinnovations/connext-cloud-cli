@@ -971,15 +971,21 @@ func (app *GatewayApp) Reset() error {
 		_, _ = fmt.Fprintln(app.Out, "No gateway configuration found.")
 		return nil
 	}
-	config, _ := app.ReadConfig()
 	if err := os.Remove(app.ConfigPath()); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
+	if err := common.RemoveSecureFiles(app.RoutingDir()); err != nil {
+		return err
+	}
+	if err := common.RemoveSecureFiles(filepath.Join(app.CollectorDir(), "secure")); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(app.Out, "Removed gateway credentials from %s\n", app.RoutingDir())
+	_, _ = fmt.Fprintf(app.Out, "Removed collector credentials from %s\n", filepath.Join(app.CollectorDir(), "secure"))
 	_, _ = fmt.Fprintln(app.Out)
 	_, _ = fmt.Fprintf(app.Out, "Runtime artifacts were left in\nPath: %s\n", app.GatewayDir())
 	_, _ = fmt.Fprintf(app.Out, "Logs were left in\nPath: %s\n", app.LogsDir())
-	_ = config
 	return nil
 }
 
