@@ -734,17 +734,8 @@ func edgePath(segments ...string) string {
 	return sb.String()
 }
 
-func (runner *Runner) ListEdgeSystems() error {
-	response, err := runner.API.Get(edgePath("edge-systems"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
+// printJSON pretty-prints a JSON response body to runner.Out.
+func (runner *Runner) printJSON(body []byte) error {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return err
@@ -754,63 +745,75 @@ func (runner *Runner) ListEdgeSystems() error {
 	return nil
 }
 
+// getJSON performs a GET and pretty-prints the response body on HTTP 200.
+// Any other status is reported via printResponseError.
+func (runner *Runner) getJSON(path string) error {
+	response, err := runner.API.Get(path)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	return runner.printJSON(body)
+}
+
+// postJSON performs a POST and pretty-prints the response body when the
+// response status equals successStatus. Any other status is reported via
+// printResponseError.
+func (runner *Runner) postJSON(path string, payload any, successStatus int) error {
+	response, err := runner.API.Post(path, payload)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != successStatus {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	return runner.printJSON(body)
+}
+
+// deleteWithMessage performs a DELETE and prints okMsg on HTTP 200.
+// Any other status is reported via printResponseError.
+func (runner *Runner) deleteWithMessage(path string, okMsg string) error {
+	response, err := runner.API.Delete(path)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	_, _ = fmt.Fprintln(runner.Out, okMsg)
+	return nil
+}
+
+func (runner *Runner) ListEdgeSystems() error {
+	return runner.getJSON(edgePath("edge-systems"))
+}
+
 func (runner *Runner) CreateEdgeSystem(name string, description string) error {
 	payload := map[string]any{"name": name}
 	if description != "" {
 		payload["description"] = description
 	}
-	response, err := runner.API.Post(edgePath("edge-systems"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusAccepted {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems"), payload, http.StatusAccepted)
 }
 
 func (runner *Runner) QueryEdgeSystem(name string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", name))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.getJSON(edgePath("edge-systems", name))
 }
 
 func (runner *Runner) DeleteEdgeSystem(name string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", name))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Provisioning Service '%s' deleted successfully.\n", name)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", name),
+		fmt.Sprintf("Provisioning Service '%s' deleted successfully.", name))
 }
 
 // ── Governance Templates ─────────────────────────────────────────────────────
@@ -822,58 +825,16 @@ func (runner *Runner) CreateGovernanceTemplate(edgeSystem string, name string, x
 		return nil
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
-	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "governance-templates"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems", edgeSystem, "governance-templates"), payload, http.StatusCreated)
 }
 
 func (runner *Runner) ListGovernanceTemplates(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "governance-templates"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "governance-templates"))
 }
 
 func (runner *Runner) DeleteGovernanceTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "governance-templates", templateName))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Governance template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", edgeSystem, "governance-templates", templateName),
+		fmt.Sprintf("Governance template '%s' deleted from Provisioning Service '%s'.", templateName, edgeSystem))
 }
 
 // ── Permissions Templates ─────────────────────────────────────────────────────
@@ -885,78 +846,20 @@ func (runner *Runner) CreatePermissionsTemplate(edgeSystem string, name string, 
 		return nil
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
-	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "permissions-templates"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems", edgeSystem, "permissions-templates"), payload, http.StatusCreated)
 }
 
 func (runner *Runner) ListPermissionsTemplates(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "permissions-templates"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "permissions-templates"))
 }
 
 func (runner *Runner) GetPermissionsTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName))
 }
 
 func (runner *Runner) DeletePermissionsTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Permissions template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName),
+		fmt.Sprintf("Permissions template '%s' deleted from Provisioning Service '%s'.", templateName, edgeSystem))
 }
 
 // ── Domain Templates ──────────────────────────────────────────────────────────
@@ -977,58 +880,16 @@ func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, gove
 			payload["customGovernanceName"] = customGovernanceName
 		}
 	}
-	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "domain-templates"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems", edgeSystem, "domain-templates"), payload, http.StatusCreated)
 }
 
 func (runner *Runner) ListDomainTemplates(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "domain-templates"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "domain-templates"))
 }
 
 func (runner *Runner) DeleteDomainTemplate(edgeSystem string, templateID string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "domain-templates", templateID))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Domain template '%s' deleted from Provisioning Service '%s'.\n", templateID, edgeSystem)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", edgeSystem, "domain-templates", templateID),
+		fmt.Sprintf("Domain template '%s' deleted from Provisioning Service '%s'.", templateID, edgeSystem))
 }
 
 // ── Participant Templates ─────────────────────────────────────────────────────
@@ -1041,78 +902,20 @@ func (runner *Runner) CreateParticipantTemplate(edgeSystem string, name string, 
 	if artifactMaxTTLMinutes > 0 {
 		payload["artifactMaxTtlMinutes"] = artifactMaxTTLMinutes
 	}
-	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "participant-templates"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems", edgeSystem, "participant-templates"), payload, http.StatusCreated)
 }
 
 func (runner *Runner) ListParticipantTemplates(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "participant-templates"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "participant-templates"))
 }
 
 func (runner *Runner) GetParticipantTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "participant-templates", templateName))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "participant-templates", templateName))
 }
 
 func (runner *Runner) DeleteParticipantTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "participant-templates", templateName))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Participant template '%s' deleted from Provisioning Service '%s'.\n", templateName, edgeSystem)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", edgeSystem, "participant-templates", templateName),
+		fmt.Sprintf("Participant template '%s' deleted from Provisioning Service '%s'.", templateName, edgeSystem))
 }
 
 // ── Campaigns ───────────────────────────────────────────────────────────
@@ -1161,115 +964,32 @@ func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, en
 		}
 	}
 	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID, "participantTemplateId": participantID}
-	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "campaigns"), payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.postJSON(edgePath("edge-systems", edgeSystem, "campaigns"), payload, http.StatusCreated)
 }
 
 func (runner *Runner) ListCampaigns(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "campaigns"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "campaigns"))
 }
 
 func (runner *Runner) ListCampaignDevices(edgeSystem string, campaignID string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "campaigns", campaignID, "devices"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "campaigns", campaignID, "devices"))
 }
 
 func (runner *Runner) DeleteCampaign(edgeSystem string, campaignID string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "campaigns", campaignID))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Campaign '%s' deleted successfully.\n", campaignID)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(edgePath("edge-systems", edgeSystem, "campaigns", campaignID),
+		fmt.Sprintf("Campaign '%s' deleted successfully.", campaignID))
 }
 
 // ── Devices ─────────────────────────────────────────────────────────────
 
 func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
-	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "devices"))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	return runner.getJSON(edgePath("edge-systems", edgeSystem, "devices"))
 }
 
 func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, campaignID string, serial string) error {
-	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "participants", participantID, "campaigns", campaignID, "devices", serial))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Device '%s' revoked successfully.\n", serial)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.deleteWithMessage(
+		edgePath("edge-systems", edgeSystem, "participants", participantID, "campaigns", campaignID, "devices", serial),
+		fmt.Sprintf("Device '%s' revoked successfully.", serial))
 }
 
 // EnrollDevice enrolls a device with the Provisioning Service and persists
