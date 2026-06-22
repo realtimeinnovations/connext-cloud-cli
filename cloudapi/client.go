@@ -118,13 +118,6 @@ func (client *Client) requestWithExplicitHeaders(method string, path string, pay
 	return client.send(request)
 }
 
-func insecureTransport(roundTripper http.RoundTripper) *http.Transport {
-	if transport, ok := roundTripper.(*http.Transport); ok && transport != nil {
-		return transport.Clone()
-	}
-	return http.DefaultTransport.(*http.Transport).Clone()
-}
-
 func (client *Client) Get(path string) (*http.Response, error) {
 	return client.Request(http.MethodGet, path, nil)
 }

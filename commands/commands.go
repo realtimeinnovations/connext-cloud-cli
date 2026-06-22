@@ -721,8 +721,21 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 
 // ── Provisioning Service Management ───────────────────────────────────────────────────
 
+// edgePath builds an Edge System API path, percent-escaping every segment so
+// caller-supplied values (serial, template name, campaign ID, etc.) containing
+// "/", "..", or spaces cannot alter the path structure. Static literals such as
+// "campaigns" are passed as segments too; escaping them is a harmless no-op.
+func edgePath(segments ...string) string {
+	var sb strings.Builder
+	for _, s := range segments {
+		sb.WriteByte('/')
+		sb.WriteString(url.PathEscape(s))
+	}
+	return sb.String()
+}
+
 func (runner *Runner) ListEdgeSystems() error {
-	response, err := runner.API.Get("/edge-systems")
+	response, err := runner.API.Get(edgePath("edge-systems"))
 	if err != nil {
 		return err
 	}
@@ -746,7 +759,7 @@ func (runner *Runner) CreateEdgeSystem(name string, description string) error {
 	if description != "" {
 		payload["description"] = description
 	}
-	response, err := runner.API.Post("/edge-systems", payload)
+	response, err := runner.API.Post(edgePath("edge-systems"), payload)
 	if err != nil {
 		return err
 	}
@@ -766,7 +779,7 @@ func (runner *Runner) CreateEdgeSystem(name string, description string) error {
 }
 
 func (runner *Runner) QueryEdgeSystem(name string) error {
-	response, err := runner.API.Get("/edge-systems/" + name)
+	response, err := runner.API.Get(edgePath("edge-systems", name))
 	if err != nil {
 		return err
 	}
@@ -786,7 +799,7 @@ func (runner *Runner) QueryEdgeSystem(name string) error {
 }
 
 func (runner *Runner) DeleteEdgeSystem(name string) error {
-	response, err := runner.API.Delete("/edge-systems/" + name)
+	response, err := runner.API.Delete(edgePath("edge-systems", name))
 	if err != nil {
 		return err
 	}
@@ -809,7 +822,7 @@ func (runner *Runner) CreateGovernanceTemplate(edgeSystem string, name string, x
 		return nil
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/governance-templates", payload)
+	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "governance-templates"), payload)
 	if err != nil {
 		return err
 	}
@@ -829,7 +842,7 @@ func (runner *Runner) CreateGovernanceTemplate(edgeSystem string, name string, x
 }
 
 func (runner *Runner) ListGovernanceTemplates(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/governance-templates")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "governance-templates"))
 	if err != nil {
 		return err
 	}
@@ -849,7 +862,7 @@ func (runner *Runner) ListGovernanceTemplates(edgeSystem string) error {
 }
 
 func (runner *Runner) DeleteGovernanceTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/governance-templates/" + templateName)
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "governance-templates", templateName))
 	if err != nil {
 		return err
 	}
@@ -872,7 +885,7 @@ func (runner *Runner) CreatePermissionsTemplate(edgeSystem string, name string, 
 		return nil
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/permissions-templates", payload)
+	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "permissions-templates"), payload)
 	if err != nil {
 		return err
 	}
@@ -892,7 +905,7 @@ func (runner *Runner) CreatePermissionsTemplate(edgeSystem string, name string, 
 }
 
 func (runner *Runner) ListPermissionsTemplates(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/permissions-templates")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "permissions-templates"))
 	if err != nil {
 		return err
 	}
@@ -912,7 +925,7 @@ func (runner *Runner) ListPermissionsTemplates(edgeSystem string) error {
 }
 
 func (runner *Runner) GetPermissionsTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/permissions-templates/" + templateName)
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName))
 	if err != nil {
 		return err
 	}
@@ -932,7 +945,7 @@ func (runner *Runner) GetPermissionsTemplate(edgeSystem string, templateName str
 }
 
 func (runner *Runner) DeletePermissionsTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/permissions-templates/" + templateName)
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "permissions-templates", templateName))
 	if err != nil {
 		return err
 	}
@@ -964,7 +977,7 @@ func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, gove
 			payload["customGovernanceName"] = customGovernanceName
 		}
 	}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/domain-templates", payload)
+	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "domain-templates"), payload)
 	if err != nil {
 		return err
 	}
@@ -984,7 +997,7 @@ func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, gove
 }
 
 func (runner *Runner) ListDomainTemplates(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/domain-templates")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "domain-templates"))
 	if err != nil {
 		return err
 	}
@@ -1004,7 +1017,7 @@ func (runner *Runner) ListDomainTemplates(edgeSystem string) error {
 }
 
 func (runner *Runner) DeleteDomainTemplate(edgeSystem string, templateID string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/domain-templates/" + url.PathEscape(templateID))
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "domain-templates", templateID))
 	if err != nil {
 		return err
 	}
@@ -1028,7 +1041,7 @@ func (runner *Runner) CreateParticipantTemplate(edgeSystem string, name string, 
 	if artifactMaxTTLMinutes > 0 {
 		payload["artifactMaxTtlMinutes"] = artifactMaxTTLMinutes
 	}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/participant-templates", payload)
+	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "participant-templates"), payload)
 	if err != nil {
 		return err
 	}
@@ -1048,7 +1061,7 @@ func (runner *Runner) CreateParticipantTemplate(edgeSystem string, name string, 
 }
 
 func (runner *Runner) ListParticipantTemplates(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participant-templates")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "participant-templates"))
 	if err != nil {
 		return err
 	}
@@ -1068,7 +1081,7 @@ func (runner *Runner) ListParticipantTemplates(edgeSystem string) error {
 }
 
 func (runner *Runner) GetParticipantTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/participant-templates/" + templateName)
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "participant-templates", templateName))
 	if err != nil {
 		return err
 	}
@@ -1088,7 +1101,7 @@ func (runner *Runner) GetParticipantTemplate(edgeSystem string, templateName str
 }
 
 func (runner *Runner) DeleteParticipantTemplate(edgeSystem string, templateName string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participant-templates/" + templateName)
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "participant-templates", templateName))
 	if err != nil {
 		return err
 	}
@@ -1148,7 +1161,7 @@ func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, en
 		}
 	}
 	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID, "participantTemplateId": participantID}
-	response, err := runner.API.Post("/edge-systems/"+edgeSystem+"/campaigns", payload)
+	response, err := runner.API.Post(edgePath("edge-systems", edgeSystem, "campaigns"), payload)
 	if err != nil {
 		return err
 	}
@@ -1168,7 +1181,7 @@ func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, en
 }
 
 func (runner *Runner) ListCampaigns(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/campaigns")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "campaigns"))
 	if err != nil {
 		return err
 	}
@@ -1188,7 +1201,7 @@ func (runner *Runner) ListCampaigns(edgeSystem string) error {
 }
 
 func (runner *Runner) ListCampaignDevices(edgeSystem string, campaignID string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/campaigns/" + campaignID + "/devices")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "campaigns", campaignID, "devices"))
 	if err != nil {
 		return err
 	}
@@ -1208,7 +1221,7 @@ func (runner *Runner) ListCampaignDevices(edgeSystem string, campaignID string) 
 }
 
 func (runner *Runner) DeleteCampaign(edgeSystem string, campaignID string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/campaigns/" + campaignID)
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "campaigns", campaignID))
 	if err != nil {
 		return err
 	}
@@ -1225,7 +1238,7 @@ func (runner *Runner) DeleteCampaign(edgeSystem string, campaignID string) error
 // ── Devices ─────────────────────────────────────────────────────────────
 
 func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
-	response, err := runner.API.Get("/edge-systems/" + edgeSystem + "/devices")
+	response, err := runner.API.Get(edgePath("edge-systems", edgeSystem, "devices"))
 	if err != nil {
 		return err
 	}
@@ -1245,7 +1258,7 @@ func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
 }
 
 func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, campaignID string, serial string) error {
-	response, err := runner.API.Delete("/edge-systems/" + edgeSystem + "/participants/" + participantID + "/campaigns/" + campaignID + "/devices/" + serial)
+	response, err := runner.API.Delete(edgePath("edge-systems", edgeSystem, "participants", participantID, "campaigns", campaignID, "devices", serial))
 	if err != nil {
 		return err
 	}
@@ -1278,7 +1291,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		"macs":   macs,
 		"csr":    string(data),
 	}
-	path := "/edge-systems/" + edgeSystemID + "/enroll"
+	path := edgePath("edge-systems", edgeSystemID, "enroll")
 	var response *http.Response
 	if campaignToken != "" {
 		response, err = runner.API.PostWithBearerToken(path, payload, campaignToken)
