@@ -219,8 +219,14 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 		rt.EdgeStore.DeviceURLPath(serial, domainID, participantID))
 }
 
-// campaignTokenClaims decodes the payload of a JWT (without verifying the
-// signature) and returns its claims as a map.  Returns nil on any error.
+// campaignTokenClaims decodes the payload of a JWT and returns its claims as a
+// map.  Returns nil on any error.
+//
+// SECURITY: the signature is NOT verified here — only the base64url payload is
+// decoded.  The returned claims are therefore UNTRUSTED and must only be used
+// for convenience (e.g. defaulting the device URL).  Never make an
+// authorization decision on them client-side; the server re-validates the
+// signed token on enrollment.
 func campaignTokenClaims(token string) map[string]any {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
