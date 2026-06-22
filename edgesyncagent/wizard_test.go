@@ -67,6 +67,47 @@ func TestParseCampaignToken_InvalidJWT(t *testing.T) {
 	}
 }
 
+func TestCampaignTokenDeviceDomain_NamespacedKey(t *testing.T) {
+	token := buildJWT(map[string]any{
+		"https://devices.cloud.rti.com/edge_system_id": "ces-test-1234-dbae91243d494dae923192804329a046",
+		"https://devices.cloud.rti.com/participant_id": "default-participant-template",
+		"https://devices.cloud.rti.com/device_domain":  "test-1234-dbae91243d494dae923192804329a046.devices.test.cloud.dev-rti.com",
+		"iss": "https://auth.dev-rti.com/",
+	})
+	got := CampaignTokenDeviceDomain(token)
+	want := "test-1234-dbae91243d494dae923192804329a046.devices.test.cloud.dev-rti.com"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestCampaignTokenDeviceDomain_PlainKey(t *testing.T) {
+	token := buildJWT(map[string]any{
+		"edge_system_id": "ces-test",
+		"participant_id": "pub-1234",
+		"device_domain":  "svc.devices.cloud.rti.com",
+	})
+	if got := CampaignTokenDeviceDomain(token); got != "svc.devices.cloud.rti.com" {
+		t.Fatalf("expected svc.devices.cloud.rti.com, got %q", got)
+	}
+}
+
+func TestCampaignTokenDeviceDomain_Missing(t *testing.T) {
+	token := buildJWT(map[string]any{
+		"edge_system_id": "ces-test",
+		"participant_id": "pub-1234",
+	})
+	if got := CampaignTokenDeviceDomain(token); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+func TestCampaignTokenDeviceDomain_InvalidJWT(t *testing.T) {
+	if got := CampaignTokenDeviceDomain("not-a-jwt"); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
 func TestTruncateToken(t *testing.T) {
 	short := "abc123"
 	if got := truncateToken(short, 60); got != short {

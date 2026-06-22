@@ -246,18 +246,6 @@ func claimString(claims map[string]any, key string) string {
 	return v
 }
 
-// deriveDeviceURL constructs the device endpoint base URL from the Manager API
-// host URL and the service namespace.  The "ces-" naming prefix is stripped
-// from the service namespace (Kubernetes convention for the edge-service).
-//
-//	API host                              → device URL
-//	https://test.cloud.dev-rti.com/…     → https://<svc>.devices.cloud.dev-rti.com
-//	https://us-west-2.cloud.dev-rti.com  → https://<svc>.devices.cloud.dev-rti.com
-//	http://localhost:8090                 → https://<svc>.devices.cloud.dev-rti.com (dev-local fallback)
-func deriveDeviceURL(apiHost, serviceID string) string {
-	return app.DeriveDeviceURL(apiHost, serviceID)
-}
-
 func parentCommand(use string, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -1546,7 +1534,11 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					if slotID == "" {
 						slotID = effectiveService
 					}
-					deviceURL := deriveDeviceURL(runtime.Config.GetAPIURLSafe(), effectiveService)
+					domain := edgesyncagent.CampaignTokenDeviceDomain(campaignToken)
+					if domain == "" {
+						return fmt.Errorf("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
+					}
+					deviceURL := "https://" + domain
 					if err := runtime.EdgeStore.WriteDeviceURL(serial, slotID, effectiveParticipant, deviceURL); err != nil {
 						_, _ = fmt.Fprintf(runtime.Out, "Warning: could not save device URL: %v\n", err)
 					}

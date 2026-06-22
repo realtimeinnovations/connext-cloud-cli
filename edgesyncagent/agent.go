@@ -190,7 +190,6 @@ type Agent struct {
 	RenewDeviceCertFunc    func(url, cert, key, ca, serverAddr, csrFile string, validityMinutes int, output string) error
 	GenerateKeyAndCSRFunc  func(commonName, org, tmpDir string) (keyPath, csrPath string, err error)
 	GenerateCSRFromKeyFunc func(commonName, org string, keyPEM []byte, tmpDir string) (csrPath string, err error)
-	DeriveDeviceURLFunc    func(serviceID string) string
 
 	// Injectable clock and timer for deterministic testing.
 	Now       func() time.Time
@@ -667,10 +666,11 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 
 	// Derive and persist the device endpoint URL so that subsequent mTLS
 	// calls (identity, permissions, etc.) can resolve it from the store.
+	// Priority: (1) already stored, (2) device_domain from campaign token.
 	url := a.Store.ResolveDeviceURL(p.serial, p.effectiveDomainID(), storePart)
-	if url == "" && a.DeriveDeviceURLFunc != nil {
-		url = a.DeriveDeviceURLFunc(req.ServiceID)
-		if url != "" {
+	if url == "" {
+		if domain := CampaignTokenDeviceDomain(req.CampaignToken); domain != "" {
+			url = "https://" + domain
 			_ = a.Store.WriteDeviceURL(p.serial, p.effectiveDomainID(), storePart, url)
 		}
 	}

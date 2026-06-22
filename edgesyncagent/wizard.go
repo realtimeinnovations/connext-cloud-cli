@@ -42,6 +42,25 @@ func ParseCampaignToken(token string) (serviceID, participantID string, err erro
 	return serviceID, participantID, nil
 }
 
+// CampaignTokenDeviceDomain decodes the JWT payload (without signature
+// verification) and extracts the device_domain claim.  Returns an empty string
+// if the token is invalid or the claim is absent.
+func CampaignTokenDeviceDomain(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claimValue(claims, "device_domain")
+}
+
 // claimValue returns the first non-empty string value for a claim key,
 // checking both plain and URI-namespaced variants.
 func claimValue(claims map[string]any, keys ...string) string {

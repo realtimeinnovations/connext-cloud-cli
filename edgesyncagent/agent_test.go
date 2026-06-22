@@ -222,9 +222,6 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	a.FailedDir = "/connext/failed"
 	a.PollInterval = 50 * time.Millisecond
 	a.SweepInterval = 50 * time.Millisecond
-	a.DeriveDeviceURLFunc = func(serviceID string) string {
-		return "https://test.devices.cloud.dev-rti.com"
-	}
 	return a
 }
 
@@ -497,7 +494,7 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 	req := EnrollRequest{
 		ServiceID:     "svc1",
 		ParticipantID: "part1",
-		CampaignToken: "tok",
+		CampaignToken: buildJWT(map[string]any{"device_domain": "svc1.devices.cloud.dev-rti.com"}),
 		Serial:        "SN-001",
 		MACs:          []string{"AA:BB:CC:DD:EE:01"},
 	}
@@ -727,6 +724,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	req := EnrollRequest{
 		ServiceID:     "svc",
 		ParticipantID: "part",
+		CampaignToken: buildJWT(map[string]any{"device_domain": "svc.devices.cloud.dev-rti.com"}),
 		Serial:        "SN-001",
 		MACs:          []string{"AA:BB:CC:DD:EE:01"},
 		DeviceName:    "dev",
@@ -849,8 +847,11 @@ func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 	// Give the Run loop a moment to start, then drop an inbox file.
 	time.Sleep(20 * time.Millisecond)
 	req := EnrollRequest{
-		ServiceID: "svc", ParticipantID: "part", Serial: "SN-001",
-		MACs: []string{"AA:BB:CC:DD:EE:01"},
+		ServiceID:     "svc",
+		ParticipantID: "part",
+		CampaignToken: buildJWT(map[string]any{"device_domain": "svc.devices.cloud.dev-rti.com"}),
+		Serial:        "SN-001",
+		MACs:          []string{"AA:BB:CC:DD:EE:01"},
 	}
 	data, _ := json.Marshal(req)
 	ffs.WriteFile("/connext/inbox/enroll-live.json", data, 0o644)

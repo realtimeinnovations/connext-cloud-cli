@@ -88,9 +88,6 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	agentApp.EnrollFunc = func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error) {
 		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken)
 	}
-	agentApp.DeriveDeviceURLFunc = func(serviceID string) string {
-		return DeriveDeviceURL(configManager.GetAPIURLSafe(), serviceID)
-	}
 	// newAgentEdgeRunner builds an edgeprovision.Runner configured for the agent
 	// (log-file output + current debug flag).  Each artifact closure below builds
 	// one on demand because cert/key/ca/URL come from the per-call store slot.
@@ -202,33 +199,6 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 		return "", err
 	}
 	return csrPath, nil
-}
-
-// DeriveDeviceURL constructs the device endpoint base URL from the Manager API
-// host URL and the service namespace.  The "ces-" naming prefix is stripped
-// from the service namespace (Kubernetes convention for the edge-service).
-//
-//	API host                              → device URL
-//	https://test.cloud.dev-rti.com/…     → https://<svc>.devices.cloud.dev-rti.com
-//	https://us-west-2.cloud.dev-rti.com  → https://<svc>.devices.cloud.dev-rti.com
-//	http://localhost:8090                 → https://<svc>.devices.cloud.dev-rti.com (dev-local fallback)
-func DeriveDeviceURL(apiHost, serviceID string) string {
-	h := apiHost
-	if i := strings.Index(h, "://"); i >= 0 {
-		h = h[i+3:]
-	}
-	if i := strings.IndexAny(h, "/:"); i >= 0 {
-		h = h[:i]
-	}
-	const marker = ".cloud."
-	cloudDomain := ""
-	if idx := strings.Index(h, marker); idx >= 0 {
-		cloudDomain = h[idx+1:]
-	} else {
-		cloudDomain = "cloud.dev-rti.com"
-	}
-	name := strings.TrimPrefix(serviceID, "ces-")
-	return "https://" + name + ".devices." + cloudDomain
 }
 
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
