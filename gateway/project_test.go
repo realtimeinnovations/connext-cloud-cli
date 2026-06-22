@@ -386,14 +386,65 @@ func TestValidateConfigResourcesPointsToObservabilityDashboard(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
 		if name == "inventory" {
-			return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
+			return map[string]any{"name": "inventory", "status": common.ServiceStatusActive, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 		}
-		return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
+		return map[string]any{"name": "inventory-obs", "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
 	}
 	config := map[string]any{"zone": "dev-local", "databus": "inventory", "observability": "inventory-obs", "templates": map[string]any{"gateway": "gw", "collector": "collector"}}
 	err := app.ValidateConfigResources(config)
 	if err == nil || !strings.Contains(err.Error(), "Collector template 'collector' was not found") || !strings.Contains(err.Error(), DashboardURL("dev-local", "inventory-obs", "observability")) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateConfigResourcesRejectsInactiveGatewayService(t *testing.T) {
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
+	}
+	config := map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gw"}}
+	err := app.ValidateConfigResources(config)
+	if err == nil {
+		t.Fatal("expected inactive service error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "Databus 'inventory' is disabled, not active") ||
+		!strings.Contains(message, "\x1b[33m⚠\x1b[0m") ||
+		!strings.Contains(message, "rticloud databus resume --name inventory") {
+		t.Fatalf("unexpected error: %s", message)
+	}
+}
+
+func TestValidateConfigResourcesRejectsCreatingObservabilityService(t *testing.T) {
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		if name == "inventory" {
+			return map[string]any{"name": "inventory", "status": common.ServiceStatusActive, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
+		}
+		return map[string]any{"name": "inventory-obs", "status": common.ServiceStatusCreating, "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
+	}
+	config := map[string]any{"databus": "inventory", "observability": "inventory-obs", "templates": map[string]any{"gateway": "gw", "collector": "collector"}}
+	err := app.ValidateConfigResources(config)
+	if err == nil {
+		t.Fatal("expected inactive observability error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "Observability Service 'inventory-obs' is creating, not active") ||
+		!strings.Contains(message, "\x1b[33m⚠\x1b[0m") ||
+		!strings.Contains(message, "rticloud observability query --name inventory-obs") {
+		t.Fatalf("unexpected error: %s", message)
+	}
+}
+
+func TestValidateLocalArtifactsRejectsMissingGatewayXML(t *testing.T) {
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	config := map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gw"}}
+	err := app.ValidateLocalArtifacts(config)
+	if err == nil {
+		t.Fatal("expected missing local artifact error")
+	}
+	if !strings.Contains(err.Error(), "Local gateway artifact was not found") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 

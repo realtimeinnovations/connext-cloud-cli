@@ -124,6 +124,23 @@ func TestParserRejectsInvalidLiveFormat(t *testing.T) {
 	}
 }
 
+func TestParserShowsSkipPreflightFlag(t *testing.T) {
+	var out bytes.Buffer
+	if err := Execute([]string{"gateway", "--help"}, &out, &out, nil); err != nil {
+		t.Fatalf("unexpected gateway help error: %v", err)
+	}
+	if !strings.Contains(out.String(), "--skip-preflight") {
+		t.Fatalf("expected gateway help to show skip-preflight: %s", out.String())
+	}
+	out.Reset()
+	if err := Execute([]string{"spy", "--help"}, &out, &out, nil); err != nil {
+		t.Fatalf("unexpected spy help error: %v", err)
+	}
+	if !strings.Contains(out.String(), "--skip-preflight") {
+		t.Fatalf("expected spy help to show skip-preflight: %s", out.String())
+	}
+}
+
 func TestParserRejectsSpyObsCommand(t *testing.T) {
 	err := Execute([]string{"spy", "obs"}, io.Discard, io.Discard, nil)
 	if err == nil {

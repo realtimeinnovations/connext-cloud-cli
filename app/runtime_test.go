@@ -12,8 +12,11 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
@@ -51,6 +54,46 @@ func TestRuntimeLogoutRemovesCloudAndWorkspacesCredentials(t *testing.T) {
 	}
 	if _, err := os.Stat(workspacesPath); !os.IsNotExist(err) {
 		t.Fatalf("expected workspaces credentials removed, got %v", err)
+	}
+}
+
+func TestRunSpyPrintsServiceStatusCheckNoticeForExistingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	spyApp := spy.NewApp(tmpDir, &out)
+	if err := spyApp.WriteConfig(map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}}); err != nil {
+		t.Fatal(err)
+	}
+	spyApp.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
+	}
+	runtime := &Runtime{Out: &out, Spy: spyApp}
+	err := runtime.RunSpy("", false)
+	if err == nil {
+		t.Fatal("expected inactive service error")
+	}
+	if !strings.Contains(out.String(), "\x1b[38;5;110m•\x1b[0m Checking service status.") {
+		t.Fatalf("expected service status notice, got: %s", out.String())
+	}
+}
+
+func TestRunGatewayPrintsServiceStatusCheckNoticeForExistingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	gatewayApp := gateway.NewGatewayApp(tmpDir, &out)
+	if err := gatewayApp.WriteConfig(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}); err != nil {
+		t.Fatal(err)
+	}
+	gatewayApp.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
+	}
+	runtime := &Runtime{Out: &out, Gateway: gatewayApp}
+	err := runtime.RunGateway("", false)
+	if err == nil {
+		t.Fatal("expected inactive service error")
+	}
+	if !strings.Contains(out.String(), "\x1b[38;5;110m•\x1b[0m Checking service status.") {
+		t.Fatalf("expected service status notice, got: %s", out.String())
 	}
 }
 

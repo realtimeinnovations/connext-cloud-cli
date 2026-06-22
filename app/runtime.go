@@ -142,27 +142,42 @@ func currentZone(manager *config.Manager) string {
 	return trimmed
 }
 
-func (runtime *Runtime) RunSpy(format string) error {
+func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	configValues, err := runtime.Spy.ReadConfig()
 	if err != nil {
 		return err
 	}
+	existingConfig := configValues != nil
 	if configValues == nil {
+		if skipPreflight {
+			return common.UserError{Message: "No spy configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud spy"}
+		}
 		configValues, err = runtime.Spy.ConfigureFirstRun(!runtime.liveTextOutput(format))
 		if err != nil {
 			return err
 		}
 	}
 	runtime.Spy.PrintConfigSummary(configValues)
-	if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
-		return err
-	}
-	if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
-		return err
-	}
-	databusSecure, err := runtime.Spy.EnsureSecureArtifacts(configValues)
-	if err != nil {
-		return err
+	databusSecure := false
+	if skipPreflight {
+		if err := runtime.Spy.ValidateLocalArtifacts(configValues); err != nil {
+			return err
+		}
+		databusSecure = runtime.Spy.LocalSecureArtifacts()
+	} else {
+		if existingConfig {
+			_, _ = fmt.Fprint(runtime.Out, spy.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
+		}
+		if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
+			return err
+		}
+		if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
+			return err
+		}
+		databusSecure, err = runtime.Spy.EnsureSecureArtifacts(configValues)
+		if err != nil {
+			return err
+		}
 	}
 	runtimeConfig, _ := configValues["runtime"].(map[string]any)
 	connextHome, _ := runtimeConfig["connext_home"].(string)
@@ -186,27 +201,43 @@ func (runtime *Runtime) RunSpy(format string) error {
 	return err
 }
 
-func (runtime *Runtime) RunGateway(format string) error {
+func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	configValues, err := runtime.Gateway.ReadConfig()
 	if err != nil {
 		return err
 	}
+	existingConfig := configValues != nil
 	if configValues == nil {
+		if skipPreflight {
+			return gateway.GatewayError{Message: "No gateway configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud gateway"}
+		}
 		configValues, err = runtime.Gateway.ConfigureFirstRun(!runtime.liveTextOutput(format))
 		if err != nil {
 			return err
 		}
 	}
 	runtime.Gateway.PrintConfigSummary(configValues)
-	if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
-		return err
-	}
-	if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
-		return err
-	}
-	databusSecure, collectorSecure, err := runtime.Gateway.EnsureSecureArtifacts(configValues)
-	if err != nil {
-		return err
+	databusSecure := false
+	collectorSecure := false
+	if skipPreflight {
+		if err := runtime.Gateway.ValidateLocalArtifacts(configValues); err != nil {
+			return err
+		}
+		databusSecure, collectorSecure = runtime.Gateway.LocalSecureArtifacts()
+	} else {
+		if existingConfig {
+			_, _ = fmt.Fprint(runtime.Out, gateway.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
+		}
+		if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
+			return err
+		}
+		if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
+			return err
+		}
+		databusSecure, collectorSecure, err = runtime.Gateway.EnsureSecureArtifacts(configValues)
+		if err != nil {
+			return err
+		}
 	}
 	runtimeConfig, _ := configValues["runtime"].(map[string]any)
 	connextHome, _ := runtimeConfig["connext_home"].(string)

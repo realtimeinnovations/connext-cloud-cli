@@ -308,6 +308,9 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 	if err != nil {
 		return err
 	}
+	if err := app.validateServiceActive(databus, "Databus", common.StringValue(config, "databus"), "databus"); err != nil {
+		return err
+	}
 	appTemplate := common.NestedString(config, "templates", "app")
 	if !common.TemplateListContains(TemplateItems(databus, "app"), appTemplate) {
 		if appTemplate == RTICloudSpyAppName {
@@ -321,6 +324,54 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 		return UserError{Message: fmt.Sprintf("Cloud Native application '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud spy", appTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus")))}
 	}
 	return nil
+}
+
+func (app *App) ValidateLocalArtifacts(config map[string]any) error {
+	if !HasDatabus(config) {
+		return UserError{Message: "No Databus or Cloud Native application is configured for this spy."}
+	}
+	appName := common.NestedString(config, "templates", "app")
+	path := filepath.Join(app.AppDir(), appName+".xml")
+	if !common.FileExists(path) {
+		return UserError{Message: fmt.Sprintf("Local spy artifact was not found: %s\n\nRun without --skip-preflight to refresh artifacts:\n  rticloud spy", path)}
+	}
+	return nil
+}
+
+func (app *App) LocalSecureArtifacts() bool {
+	return common.LocalSecureFilesExist(app.AppDir())
+}
+
+func (app *App) validateServiceActive(resource map[string]any, label string, name string, command string) error {
+	status := common.StringValue(resource, "status")
+	if status == "" {
+		status = common.NestedString(resource, "config", "status")
+	}
+	if status == common.ServiceStatusActive {
+		return nil
+	}
+	if status == "" {
+		status = common.ServiceStatusUnknown
+	}
+	return UserError{Message: serviceStatusErrorMessage(label, name, command, status, "rticloud spy")}
+}
+
+func serviceStatusErrorMessage(label string, name string, command string, status string, retryCommand string) string {
+	message := RenderWarningMessage(fmt.Sprintf("%s '%s' is %s, not active.", label, name, status))
+	switch status {
+	case common.ServiceStatusDisabled:
+		message += fmt.Sprintf("\nResume it and wait for it to become active:\n  rticloud %s resume --name %s", command, name)
+	case common.ServiceStatusCreating:
+		message += fmt.Sprintf("\nWait for creation to finish, then check status:\n  rticloud %s query --name %s", command, name)
+	case common.ServiceStatusDeleting:
+		message += fmt.Sprintf("\nWait for deletion to finish, or configure this spy with another Databus:\n  rticloud %s query --name %s", command, name)
+	case common.ServiceStatusError:
+		message += fmt.Sprintf("\nInspect the service and resume it after resolving the error:\n  rticloud %s query --name %s\n  rticloud %s resume --name %s", command, name, command, name)
+	default:
+		message += fmt.Sprintf("\nCheck the service status:\n  rticloud %s query --name %s", command, name)
+	}
+	message += fmt.Sprintf("\n\nTo skip this check and connect anyway, rerun:\n  %s --skip-preflight", retryCommand)
+	return message
 }
 
 func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
@@ -783,6 +834,10 @@ func RenderSetupIntro(databusCount int) string {
 
 func RenderInfoMessage(message string) string {
 	return fmt.Sprintf("\x1b[38;5;110m•\x1b[0m %s\n", message)
+}
+
+func RenderWarningMessage(message string) string {
+	return fmt.Sprintf("\x1b[33m⚠\x1b[0m %s\n", message)
 }
 
 func RenderSuccessMessage(message string) string {

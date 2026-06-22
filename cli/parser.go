@@ -706,6 +706,7 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 
 func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 	var format string
+	var skipPreflight bool
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Connect your applications to Connext Cloud",
@@ -714,10 +715,11 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 			if format != "" && format != "text" {
 				return fmt.Errorf("invalid --format %q; expected text", format)
 			}
-			return runtime.RunGateway(format)
+			return runtime.RunGateway(format, skipPreflight)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",
@@ -749,6 +751,7 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 
 func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 	var format string
+	var skipPreflight bool
 	cmd := &cobra.Command{
 		Use:   "spy",
 		Short: "Inspect Databus topics and samples with RTI DDS Spy",
@@ -757,10 +760,11 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 			if format != "" && format != "text" {
 				return fmt.Errorf("invalid --format %q; expected text", format)
 			}
-			return runtime.RunSpy(format)
+			return runtime.RunSpy(format, skipPreflight)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",
