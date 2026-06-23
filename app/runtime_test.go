@@ -210,6 +210,11 @@ func (api *runtimeFakeAPI) Post(path string, payload any) (*http.Response, error
 	return api.response("POST", path), nil
 }
 
+func (api *runtimeFakeAPI) PostWithBearerToken(path string, payload any, _ string) (*http.Response, error) {
+	api.calls++
+	return api.response("POST", path), nil
+}
+
 func (api *runtimeFakeAPI) Patch(path string, payload any) (*http.Response, error) {
 	return api.response("PATCH", path), nil
 }

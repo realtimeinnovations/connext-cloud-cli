@@ -54,22 +54,6 @@ The installer verifies the downloaded archive against the published `checksums.t
 
 Pre-built binaries for all platforms are available on the [releases page](https://github.com/realtimeinnovations/connext-cloud-cli/releases). Download the archive for your platform, extract the `rticloud` binary, and place it on your PATH.
 
-## Development
-
-### Building
-
-```sh
-cp .env.example .env
-# edit .env and set AUTH0_CLIENT_ID
-./scripts/build.sh
-```
-
-### Testing
-
-```sh
-go test ./...
-```
-
 ## Usage
 
 First-time setup:
