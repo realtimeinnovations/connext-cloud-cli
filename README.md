@@ -80,16 +80,17 @@ Check for updates:
 rticloud update --check
 ```
 
-Install the latest release:
+Install the latest release (supported on Linux and mac OS):
 
 ```sh
 rticloud update
 ```
-
 
 Homebrew-managed installs should be updated with:
 
 ```sh
 brew upgrade rticloud
 ```
+
+On Windows, run the installer again to update the CLI.
 
