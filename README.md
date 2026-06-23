@@ -73,3 +73,22 @@ Print build metadata:
 ```sh
 rticloud --version
 ```
+
+Check for updates:
+
+```sh
+rticloud update --check
+```
+
+Install the latest release:
+
+```sh
+rticloud update
+```
+
+The update command downloads the platform archive from GitHub Releases, verifies it against the published `checksums.txt`, and replaces directly installed binaries when the install location is writable. Homebrew-managed installs should be updated with:
+
+```sh
+brew upgrade rticloud
+```
+

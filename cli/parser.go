@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +25,11 @@ func Execute(argv []string, out io.Writer, errOut io.Writer, runtime *app.Runtim
 	root.SetArgs(argv)
 	root.SetOut(out)
 	root.SetErr(errOut)
-	return root.Execute()
+	if err := root.Execute(); err != nil {
+		return err
+	}
+	notifyUpdate(argv, runtime, errOut)
+	return nil
 }
 
 func newRootCommand(runtime *app.Runtime) *cobra.Command {
@@ -50,6 +56,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		groupCommand(newConfigureCommand(runtime), "Setup"),
 		groupCommand(newLoginCommand(runtime), "Setup"),
 		groupCommand(newLogoutCommand(runtime), "Setup"),
+		groupCommand(newUpdateCommand(runtime), "Setup"),
 		groupCommand(newDatabusCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newObservabilityCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newClientCommand(runtime), "Manage Connext Cloud"),
@@ -60,6 +67,29 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		groupCommand(newSpyCommand(runtime), "Connect to Connext Cloud"),
 	)
 	return root
+}
+
+func notifyUpdate(argv []string, runtime *app.Runtime, errOut io.Writer) {
+	if runtime == nil || runtime.Updater == nil || shouldSkipUpdateNotification(argv) {
+		return
+	}
+	runtime.Updater.ErrOut = errOut
+	runtime.Updater.Notify(context.Background(), errOut)
+}
+
+func shouldSkipUpdateNotification(argv []string) bool {
+	if len(argv) == 0 {
+		return true
+	}
+	for _, arg := range argv {
+		if arg == "-h" || strings.HasPrefix(arg, "--help") || strings.HasPrefix(arg, "--version") {
+			return true
+		}
+	}
+	if argv[0] == "update" || argv[0] == "completion" || argv[0] == "help" {
+		return true
+	}
+	return false
 }
 
 func groupCommand(cmd *cobra.Command, group string) *cobra.Command {
@@ -206,6 +236,27 @@ func newLogoutCommand(runtime *app.Runtime) *cobra.Command {
 			return runtime.Logout()
 		},
 	}
+}
+
+func newUpdateCommand(runtime *app.Runtime) *cobra.Command {
+	var checkOnly bool
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update rticloud to the latest release",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if runtime == nil || runtime.Updater == nil {
+				return fmt.Errorf("update manager is not configured")
+			}
+			runtime.Updater.Out = cmd.OutOrStdout()
+			runtime.Updater.ErrOut = cmd.ErrOrStderr()
+			return runtime.Updater.Run(cmd.Context(), update.Options{CheckOnly: checkOnly, Force: force})
+		},
+	}
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Check whether an update is available without installing it")
+	cmd.Flags().BoolVar(&force, "force", false, "Install the latest release even if versions match")
+	return cmd
 }
 
 func newDatabusCommand(runtime *app.Runtime) *cobra.Command {

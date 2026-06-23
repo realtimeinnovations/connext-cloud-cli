@@ -18,6 +18,7 @@ import (
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
@@ -36,6 +37,7 @@ type Runtime struct {
 	License  *commands.Runner
 	Gateway  *gateway.GatewayApp
 	Spy      *spy.App
+	Updater  *update.Manager
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -79,7 +81,8 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return spy.DiscoverConnextInstallWithPrompt(nil, prompt, spyApp.SelectFunc, spyApp.InputFunc)
 	}
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
-	return &Runtime{Out: out, Config: configManager, Auth: authManager, WorkAuth: evaluationAuthManager, CloudAPI: cloudClient, Commands: commandRunner, License: licenseRunner, Gateway: gatewayApp, Spy: spyApp}
+	updater := update.New(configManager, out)
+	return &Runtime{Out: out, Config: configManager, Auth: authManager, WorkAuth: evaluationAuthManager, CloudAPI: cloudClient, Commands: commandRunner, License: licenseRunner, Gateway: gatewayApp, Spy: spyApp, Updater: updater}
 }
 
 func (runtime *Runtime) Logout() error {
