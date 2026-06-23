@@ -24,6 +24,15 @@ type TemplateItem struct {
 	Kind string
 }
 
+const (
+	ServiceStatusUnknown  = "unknown"
+	ServiceStatusCreating = "creating"
+	ServiceStatusActive   = "active"
+	ServiceStatusDeleting = "deleting"
+	ServiceStatusDisabled = "disabled"
+	ServiceStatusError    = "error"
+)
+
 func TemplateItems(resource map[string]any, expectedKind string) []TemplateItem {
 	clients, ok := resource["clients"]
 	if !ok {

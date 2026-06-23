@@ -277,7 +277,7 @@ func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testin
 	var out bytes.Buffer
 	app := NewApp(tmpDir, &out)
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": name, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
+		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
 	}
 	created := false
 	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
@@ -293,6 +293,36 @@ func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testin
 	}
 	if !created {
 		t.Fatal("expected rticloud_spy app to be created")
+	}
+}
+
+func TestValidateConfigResourcesRejectsInactiveSpyDatabus(t *testing.T) {
+	app := NewApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
+	}
+	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}}
+	err := app.ValidateConfigResources(config)
+	if err == nil {
+		t.Fatal("expected inactive databus error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "Databus 'db' is disabled, not active") ||
+		!strings.Contains(message, "\x1b[33m⚠\x1b[0m") ||
+		!strings.Contains(message, "rticloud databus resume --name db") {
+		t.Fatalf("unexpected error: %s", message)
+	}
+}
+
+func TestValidateLocalArtifactsRejectsMissingSpyXML(t *testing.T) {
+	app := NewApp(t.TempDir(), &bytes.Buffer{})
+	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}}
+	err := app.ValidateLocalArtifacts(config)
+	if err == nil {
+		t.Fatal("expected missing local artifact error")
+	}
+	if !strings.Contains(err.Error(), "Local spy artifact was not found") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 
