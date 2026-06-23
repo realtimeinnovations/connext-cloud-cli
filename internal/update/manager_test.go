@@ -129,6 +129,18 @@ func TestCheckDisabledSkipsNetwork(t *testing.T) {
 	}
 }
 
+func TestCheckReturnsReleaseBodyReadError(t *testing.T) {
+	manager := newTestManager(t, "http://127.0.0.1")
+	manager.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(errReader{})}, nil
+	})
+
+	_, err := manager.Check(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "read latest release response") {
+		t.Fatalf("expected release body read error, got %v", err)
+	}
+}
+
 func TestVerifyChecksumRejectsMismatch(t *testing.T) {
 	archiveName := "connext-cloud-cli_linux_amd64.tar.gz"
 	checksums := []byte("0000000000000000000000000000000000000000000000000000000000000000  " + archiveName + "\n")
@@ -341,4 +353,10 @@ func roundTripClient(fn roundTripFunc) *http.Client {
 
 func stringResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("read failed")
 }

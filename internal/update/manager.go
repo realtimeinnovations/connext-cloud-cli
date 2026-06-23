@@ -205,7 +205,10 @@ func (manager *Manager) latestRelease(ctx context.Context) (release, error) {
 		return release{}, err
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return release{}, fmt.Errorf("read latest release response: %w", err)
+	}
 	if response.StatusCode != http.StatusOK {
 		return release{}, fmt.Errorf("release check failed: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
