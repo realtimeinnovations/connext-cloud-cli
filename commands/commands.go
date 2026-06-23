@@ -684,22 +684,18 @@ func (runner *Runner) RemoveUserFromDatabus(name string, email string) error {
 }
 
 func (runner *Runner) GetLicense(expirationDays *int, output string) error {
-	payload := map[string]any{}
 	if expirationDays != nil {
 		if *expirationDays < 0 {
 			_, _ = fmt.Fprintln(runner.Out, "Error: expiration-days must be greater than or equal to 0")
 			return nil
 		}
-		payload["expiration_days"] = *expirationDays
 	}
-	response, err := runner.API.Post("/licenses", payload)
+	body, statusCode, err := runner.requestLicense(expirationDays)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
+	if statusCode != http.StatusOK {
+		runner.printResponseError("Error: ", statusCode, body)
 		return nil
 	}
 	if output == "" {
@@ -717,6 +713,34 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 	}
 	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
 	return nil
+}
+
+func (runner *Runner) DownloadLicense(expirationDays *int) ([]byte, error) {
+	body, statusCode, err := runner.requestLicense(expirationDays)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s", httputil.FormatError(statusCode, body))
+	}
+	return body, nil
+}
+
+func (runner *Runner) requestLicense(expirationDays *int) ([]byte, int, error) {
+	payload := map[string]any{}
+	if expirationDays != nil {
+		if *expirationDays < 0 {
+			return nil, 0, fmt.Errorf("expiration-days must be greater than or equal to 0")
+		}
+		payload["expiration_days"] = *expirationDays
+	}
+	response, err := runner.API.Post("/licenses", payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	return body, response.StatusCode, nil
 }
 
 // ── Provisioning Service Management ───────────────────────────────────────────────────

@@ -119,8 +119,8 @@ func TestListDatabusesShortPrintsKindPerResource(t *testing.T) {
 func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":            newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/inventory":   newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
-		"GET /databuses/inventory-2": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/inventory":   newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
+		"GET /databuses/inventory-2": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -133,7 +133,7 @@ func TestCreateDatabusWaitsForStatusChange(t *testing.T) {
 		t.Fatalf("expected secure databus payload, got %#v", payload)
 	}
 	output := out.String()
-	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  ready") {
+	if !strings.Contains(output, "Waiting for creation to complete") || !strings.Contains(output, "Databus status:  active") {
 		t.Fatalf("unexpected output: %s", output)
 	}
 }
@@ -158,7 +158,7 @@ func TestCreateDatabusTimesOutWaitingForStatusChange(t *testing.T) {
 func TestCreateDatabusSupportsNonSecurePayload(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":          newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/inventory": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/inventory": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -175,7 +175,7 @@ func TestCreateDatabusSupportsNonSecurePayload(t *testing.T) {
 func TestCreateObsServiceSecureByDefault(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -192,7 +192,7 @@ func TestCreateObsServiceSecureByDefault(t *testing.T) {
 func TestCreateObsServiceSupportsNonSecurePayload(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /databuses":    newTextResponse(http.StatusCreated, "{}"),
-		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "ready"}),
+		"GET /databuses/obs": newJSONResponse(http.StatusOK, map[string]any{"status": "active"}),
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -241,6 +241,32 @@ func TestGetLicenseWritesOutputFile(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "License saved to "+target) {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestDownloadLicenseReturnsBody(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /licenses": newTextResponse(http.StatusOK, "license-body")}}
+	runner := New(api, io.Discard)
+	days := 14
+	body, err := runner.DownloadLicense(&days)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "license-body" {
+		t.Fatalf("unexpected license content: %s", body)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["expiration_days"] != days {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestDownloadLicenseReturnsAPIError(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /licenses": newTextResponse(http.StatusBadRequest, `{"error":"complete your profile"}`)}}
+	runner := New(api, io.Discard)
+	_, err := runner.DownloadLicense(nil)
+	if err == nil || !strings.Contains(err.Error(), "complete your profile") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

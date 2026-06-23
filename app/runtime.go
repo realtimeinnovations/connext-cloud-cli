@@ -20,23 +20,32 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
+	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
+const (
+	downloadConnextLicenseLabel = "Yes, download a license from evaluation.rti.com"
+	cancelConnextLicenseLabel   = "No, skip license download"
+)
+
 type Runtime struct {
 	Out           io.Writer
 	Config        *config.Manager
 	Auth          *auth.Manager
+	WorkAuth      *auth.Manager
 	CloudAPI      *cloudapi.Client
 	Commands      *commands.Runner
+	License       *commands.Runner
 	Gateway       *gateway.GatewayApp
 	Spy           *spy.App
 	EdgeProvision *edgeprovision.Runner
@@ -52,6 +61,11 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	cloudClient.Out = out
 	commandRunner := commands.New(cloudClient, out)
 	commandRunner.CSRGenerator = mgcrypto.GeneratePrivateKeyAndCSR
+	evaluationAuthManager := auth.NewEvaluationManager("")
+	evaluationAuthManager.Stdout = out
+	evaluationClient := cloudapi.New(auth.EvaluationAPIURL, evaluationAuthManager.GetAuthHeaders)
+	evaluationClient.Out = out
+	licenseRunner := commands.New(evaluationClient, out)
 	gatewayApp := gateway.NewGatewayApp(workDir, out)
 	gatewayApp.APIGet = func(path string) (map[string]any, error) {
 		response, err := cloudClient.Get(path)
@@ -117,14 +131,30 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		Out:           out,
 		Config:        configManager,
 		Auth:          authManager,
+		WorkAuth:      evaluationAuthManager,
 		CloudAPI:      cloudClient,
 		Commands:      commandRunner,
+		License:       licenseRunner,
 		Gateway:       gatewayApp,
 		Spy:           spyApp,
 		EdgeProvision: edgeProvisionRunner,
 		EdgeStore:     edgeStoreRunner,
 		EdgeSyncAgent: agentApp,
 	}
+}
+
+func (runtime *Runtime) Logout() error {
+	if runtime.Auth != nil {
+		if err := runtime.Auth.Logout(); err != nil {
+			return err
+		}
+	}
+	if runtime.WorkAuth != nil {
+		if err := runtime.WorkAuth.Logout(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // generateAgentKeyAndCSR generates a fresh ECDSA P-256 private key and a CSR
@@ -247,27 +277,42 @@ func currentZone(manager *config.Manager) string {
 	return trimmed
 }
 
-func (runtime *Runtime) RunSpy(format string) error {
+func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	configValues, err := runtime.Spy.ReadConfig()
 	if err != nil {
 		return err
 	}
+	existingConfig := configValues != nil
 	if configValues == nil {
+		if skipPreflight {
+			return common.UserError{Message: "No spy configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud spy"}
+		}
 		configValues, err = runtime.Spy.ConfigureFirstRun(!runtime.liveTextOutput(format))
 		if err != nil {
 			return err
 		}
 	}
 	runtime.Spy.PrintConfigSummary(configValues)
-	if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
-		return err
-	}
-	if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
-		return err
-	}
-	databusSecure, err := runtime.Spy.EnsureSecureArtifacts(configValues)
-	if err != nil {
-		return err
+	databusSecure := false
+	if skipPreflight {
+		if err := runtime.Spy.ValidateLocalArtifacts(configValues); err != nil {
+			return err
+		}
+		databusSecure = runtime.Spy.LocalSecureArtifacts()
+	} else {
+		if existingConfig {
+			_, _ = fmt.Fprint(runtime.Out, spy.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
+		}
+		if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
+			return err
+		}
+		if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
+			return err
+		}
+		databusSecure, err = runtime.Spy.EnsureSecureArtifacts(configValues)
+		if err != nil {
+			return err
+		}
 	}
 	runtimeConfig, _ := configValues["runtime"].(map[string]any)
 	connextHome, _ := runtimeConfig["connext_home"].(string)
@@ -280,6 +325,9 @@ func (runtime *Runtime) RunSpy(format string) error {
 	if err != nil {
 		return err
 	}
+	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc); err != nil {
+		return err
+	}
 	if err := spy.EnsureEnhancedDDSSpy(connext, runtime.Spy.SelectFunc, runtime.Out); err != nil {
 		return err
 	}
@@ -288,27 +336,43 @@ func (runtime *Runtime) RunSpy(format string) error {
 	return err
 }
 
-func (runtime *Runtime) RunGateway(format string) error {
+func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	configValues, err := runtime.Gateway.ReadConfig()
 	if err != nil {
 		return err
 	}
+	existingConfig := configValues != nil
 	if configValues == nil {
+		if skipPreflight {
+			return gateway.GatewayError{Message: "No gateway configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud gateway"}
+		}
 		configValues, err = runtime.Gateway.ConfigureFirstRun(!runtime.liveTextOutput(format))
 		if err != nil {
 			return err
 		}
 	}
 	runtime.Gateway.PrintConfigSummary(configValues)
-	if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
-		return err
-	}
-	if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
-		return err
-	}
-	databusSecure, collectorSecure, err := runtime.Gateway.EnsureSecureArtifacts(configValues)
-	if err != nil {
-		return err
+	databusSecure := false
+	collectorSecure := false
+	if skipPreflight {
+		if err := runtime.Gateway.ValidateLocalArtifacts(configValues); err != nil {
+			return err
+		}
+		databusSecure, collectorSecure = runtime.Gateway.LocalSecureArtifacts()
+	} else {
+		if existingConfig {
+			_, _ = fmt.Fprint(runtime.Out, gateway.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
+		}
+		if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
+			return err
+		}
+		if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
+			return err
+		}
+		databusSecure, collectorSecure, err = runtime.Gateway.EnsureSecureArtifacts(configValues)
+		if err != nil {
+			return err
+		}
 	}
 	runtimeConfig, _ := configValues["runtime"].(map[string]any)
 	connextHome, _ := runtimeConfig["connext_home"].(string)
@@ -320,6 +384,9 @@ func (runtime *Runtime) RunGateway(format string) error {
 			connext, err = gateway.DiscoverConnextInstall(nil)
 		}
 		if err != nil {
+			return err
+		}
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc); err != nil {
 			return err
 		}
 		if gateway.HasObservability(configValues) {
@@ -355,6 +422,9 @@ func (runtime *Runtime) RunGateway(format string) error {
 		if err != nil {
 			return err
 		}
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc); err != nil {
+			return err
+		}
 		if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
 			return err
 		}
@@ -367,4 +437,33 @@ func (runtime *Runtime) RunGateway(format string) error {
 
 func (runtime *Runtime) liveTextOutput(format string) bool {
 	return format == "text" || terminal.PlainOutputRequested(runtime.Out)
+}
+
+func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error)) error {
+	if !internalconnext.IsLicenseManaged(install) || internalconnext.HasLicenseAvailable(install) {
+		return nil
+	}
+	if selectFunc == nil {
+		return common.UserError{Message: fmt.Sprintf("Connext Pro at %s is license-managed and no license file was found. Run rticloud in an interactive terminal to download a license from evaluation.rti.com.", install.Path)}
+	}
+	message := fmt.Sprintf("Connext Pro at %s is license-managed, but no license file was found.\n\nDownload a license from evaluation.rti.com now?", install.Path)
+	selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, cancelConnextLicenseLabel})
+	if err != nil {
+		return err
+	}
+	if selected != downloadConnextLicenseLabel {
+		return common.UserError{Message: "Connext license download cancelled."}
+	}
+	if runtime.License == nil {
+		return fmt.Errorf("Connext license download is not configured")
+	}
+	licenseContent, err := runtime.License.DownloadLicense(nil)
+	if err != nil {
+		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err)}
+	}
+	if err := internalconnext.WriteLicenseFile(install, licenseContent); err != nil {
+		return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)
+	}
+	_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
+	return nil
 }

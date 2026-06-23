@@ -301,7 +301,7 @@ func newLogoutCommand(runtime *app.Runtime) *cobra.Command {
 		Short: "Logout from Connext Cloud",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Auth.Logout()
+			return runtime.Logout()
 		},
 	}
 }
@@ -791,7 +791,7 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 				if cmd.Flags().Changed("expiration-days") {
 					days = &expirationDays
 				}
-				return runtime.Commands.GetLicense(days, output)
+				return runtime.License.GetLicense(days, output)
 			},
 		}
 		c.Flags().IntVar(&expirationDays, "expiration-days", 0, "License expiration days")
@@ -804,6 +804,7 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 
 func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 	var format string
+	var skipPreflight bool
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Connect your applications to Connext Cloud",
@@ -812,10 +813,11 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 			if format != "" && format != "text" {
 				return fmt.Errorf("invalid --format %q; expected text", format)
 			}
-			return runtime.RunGateway(format)
+			return runtime.RunGateway(format, skipPreflight)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",
@@ -847,6 +849,7 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 
 func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 	var format string
+	var skipPreflight bool
 	cmd := &cobra.Command{
 		Use:   "spy",
 		Short: "Inspect Databus topics and samples with RTI DDS Spy",
@@ -855,10 +858,11 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 			if format != "" && format != "text" {
 				return fmt.Errorf("invalid --format %q; expected text", format)
 			}
-			return runtime.RunSpy(format)
+			return runtime.RunSpy(format, skipPreflight)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",

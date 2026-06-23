@@ -24,6 +24,15 @@ type TemplateItem struct {
 	Kind string
 }
 
+const (
+	ServiceStatusUnknown  = "unknown"
+	ServiceStatusCreating = "creating"
+	ServiceStatusActive   = "active"
+	ServiceStatusDeleting = "deleting"
+	ServiceStatusDisabled = "disabled"
+	ServiceStatusError    = "error"
+)
+
 func TemplateItems(resource map[string]any, expectedKind string) []TemplateItem {
 	clients, ok := resource["clients"]
 	if !ok {
@@ -136,6 +145,17 @@ func LocalSecureFilesExist(directory string) bool {
 		}
 	}
 	return true
+}
+
+func RemoveSecureFiles(directory string) error {
+	for _, name := range SecureFiles {
+		path := filepath.Join(directory, name)
+		err := os.Remove(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {

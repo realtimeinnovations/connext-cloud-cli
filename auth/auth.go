@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,35 @@ type tokenFile struct {
 	AccessToken string `json:"access_token"`
 	ExpiresAt   string `json:"expires_at"`
 }
+
+type fixedConfigProvider struct {
+	values   map[string]string
+	clientID string
+}
+
+func (provider fixedConfigProvider) GetConfig() (map[string]string, error) {
+	configValues := map[string]string{}
+	for key, value := range provider.values {
+		configValues[key] = value
+	}
+	return configValues, nil
+}
+
+func (provider fixedConfigProvider) GetClientID() string {
+	return provider.clientID
+}
+
+func (fixedConfigProvider) RequireConfiguration(io.Writer) bool {
+	return true
+}
+
+const (
+	EvaluationBaseURL         = "https://evaluation.rti.com"
+	workspacesAuth0Domain     = "auth.rti.com"
+	workspacesAuth0Audience   = "https://workspaces.cloud.rti.com/api/v1"
+	workspacesAuth0Scope      = "openid profile email read:workspace create:workspace basic_access"
+	workspacesCredentialsFile = "workspaces_credentials.json"
+)
 
 const authSuccessHTML = `<html>
 	<head>
@@ -85,6 +115,35 @@ func New(configProvider ConfigProvider, tokenPath string) *Manager {
 		OpenBrowser: defaultOpenBrowser,
 		Stdout:      os.Stdout,
 	}
+}
+
+func NewEvaluationManager(tokenPath string) *Manager {
+	return NewEvaluationManagerWithEnv(tokenPath, os.Getenv)
+}
+
+func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Manager {
+	if tokenPath == "" {
+		tokenPath = DefaultWorkspacesCredentialsPath()
+	}
+	manager := New(fixedConfigProvider{
+		clientID: config.GetWorkspacesClientID(env),
+		values: map[string]string{
+			"api_host":     EvaluationBaseURL + "/api/v1",
+			"auth0_domain": workspacesAuth0Domain,
+			"audience":     workspacesAuth0Audience,
+			"scope":        workspacesAuth0Scope,
+		},
+	}, tokenPath)
+	manager.Env = func(string) string { return "" }
+	return manager
+}
+
+func DefaultWorkspacesCredentialsPath() string {
+	return filepath.Join(config.DefaultDir(), workspacesCredentialsFile)
+}
+
+func EvaluationAPIURL() (string, error) {
+	return EvaluationBaseURL + "/api/v1", nil
 }
 
 func defaultOpenBrowser(target string) error {
@@ -272,17 +331,33 @@ func (manager *Manager) Login() (string, error) {
 	resultCh := make(chan authResult, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Query().Get("state") != state {
-			writer.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(writer, "Invalid state parameter.")
+			writeCallbackError(writer, "Invalid state parameter.")
 			select {
 			case resultCh <- authResult{err: fmt.Errorf("Error: Invalid OAuth state parameter.")}:
 			default:
 			}
 			return
 		}
+		if oauthErr := strings.TrimSpace(request.URL.Query().Get("error")); oauthErr != "" {
+			detail := strings.TrimSpace(request.URL.Query().Get("error_description"))
+			message := oauthErr
+			if detail != "" {
+				message += ": " + detail
+			}
+			writeCallbackError(writer, "OAuth authorization failed. Return to the terminal for details.")
+			select {
+			case resultCh <- authResult{err: fmt.Errorf("Error: OAuth authorization failed: %s", message)}:
+			default:
+			}
+			return
+		}
 		code := request.URL.Query().Get("code")
 		if code == "" {
-			writer.WriteHeader(http.StatusBadRequest)
+			writeCallbackError(writer, "Missing authorization code.")
+			select {
+			case resultCh <- authResult{err: fmt.Errorf("Error: OAuth authorization response did not include a code.")}:
+			default:
+			}
 			return
 		}
 		resultCh <- authResult{code: code}
@@ -303,7 +378,7 @@ func (manager *Manager) Login() (string, error) {
 		}
 		token, err := oauthConfig.Exchange(oauthContext(manager.HTTPClient), result.code, oauth2.VerifierOption(verifier))
 		if err != nil {
-			return "", err
+			return "", formatOAuthExchangeError(err)
 		}
 		if token.AccessToken == "" {
 			return "", fmt.Errorf("Error: OAuth token response did not include an access token")
@@ -315,6 +390,34 @@ func (manager *Manager) Login() (string, error) {
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+func writeCallbackError(writer http.ResponseWriter, message string) {
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(http.StatusBadRequest)
+	_, _ = io.WriteString(writer, message)
+}
+
+func formatOAuthExchangeError(err error) error {
+	var retrieveErr *oauth2.RetrieveError
+	if !errors.As(err, &retrieveErr) {
+		return err
+	}
+	parts := []string{}
+	if strings.TrimSpace(retrieveErr.ErrorCode) != "" {
+		parts = append(parts, strings.TrimSpace(retrieveErr.ErrorCode))
+	}
+	if strings.TrimSpace(retrieveErr.ErrorDescription) != "" {
+		parts = append(parts, strings.TrimSpace(retrieveErr.ErrorDescription))
+	}
+	if len(parts) > 0 {
+		return fmt.Errorf("Error: OAuth token exchange failed: %s", strings.Join(parts, ": "))
+	}
+	if text := strings.TrimSpace(string(retrieveErr.Body)); text != "" {
+		return fmt.Errorf("Error: OAuth token exchange failed: %s", text)
+	}
+	return fmt.Errorf("Error: OAuth token exchange failed: %v", err)
 }
 
 // listenForCallback binds a TCP listener for the OAuth callback.
