@@ -149,6 +149,38 @@ func TestVerifyChecksumRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestDownloadStreamsResponseToFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("download-body"))
+	}))
+	defer server.Close()
+
+	target := filepath.Join(t.TempDir(), "download.bin")
+	manager := newTestManager(t, server.URL)
+	if err := manager.download(context.Background(), server.URL+"/archive", target); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "download-body" {
+		t.Fatalf("downloaded data = %q", string(data))
+	}
+}
+
+func TestDownloadReturnsBodyReadError(t *testing.T) {
+	manager := newTestManager(t, "http://127.0.0.1")
+	manager.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(errReader{})}, nil
+	})
+
+	err := manager.download(context.Background(), "http://127.0.0.1/archive", filepath.Join(t.TempDir(), "archive"))
+	if err == nil || !strings.Contains(err.Error(), "download response") {
+		t.Fatalf("expected download response read error, got %v", err)
+	}
+}
+
 func TestExtractTarGzBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "archive.tar.gz")

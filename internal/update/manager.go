@@ -299,14 +299,22 @@ func (manager *Manager) download(ctx context.Context, url string, target string)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return fmt.Errorf("read download error response: %w", err)
+		}
 		return fmt.Errorf("download failed for %s: HTTP %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
 	}
-	data, err := io.ReadAll(response.Body)
+	file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	return manager.writeFile(target, data, 0o600)
+	_, copyErr := io.Copy(file, response.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return fmt.Errorf("download response: %w", copyErr)
+	}
+	return closeErr
 }
 
 func (manager *Manager) replaceUnix(newBinary string, currentBinary string) error {
