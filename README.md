@@ -86,7 +86,7 @@ Install the latest release:
 rticloud update
 ```
 
-The update command downloads the platform archive from GitHub Releases, verifies it against the published `checksums.txt`, and replaces directly installed binaries when the install location is writable. Homebrew-managed installs should be updated with:
+The update command downloads the platform archive from GitHub Releases, verifies it against the published `checksums.txt`, and replaces directly installed macOS and Linux binaries when the install location is writable. On Windows, it stages the verified `rticloud.exe` under `~/.rticloud/updates/` and prints the path so you can replace the running binary after the command exits. Homebrew-managed installs should be updated with:
 
 ```sh
 brew upgrade rticloud
