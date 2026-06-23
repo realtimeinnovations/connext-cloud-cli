@@ -2,7 +2,6 @@ package update
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -54,7 +53,6 @@ func TestArtifactNames(t *testing.T) {
 	}{
 		{osName: "darwin", arch: "arm64", wantArchive: "connext-cloud-cli_darwin_arm64.tar.gz", wantBinary: "rticloud"},
 		{osName: "linux", arch: "amd64", wantArchive: "connext-cloud-cli_linux_amd64.tar.gz", wantBinary: "rticloud"},
-		{osName: "windows", arch: "arm64", wantArchive: "connext-cloud-cli_windows_arm64.zip", wantBinary: "rticloud"},
 	}
 	for _, test := range tests {
 		t.Run(test.wantArchive, func(t *testing.T) {
@@ -220,33 +218,6 @@ func TestExtractTarGzRejectsNonRegularBinary(t *testing.T) {
 	}
 }
 
-func TestExtractZipBinary(t *testing.T) {
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "archive.zip")
-	writeZip(t, archivePath, "rticloud.exe", []byte("new-binary"))
-	target := filepath.Join(tmpDir, "rticloud.exe")
-	if err := extractZipBinary(archivePath, "rticloud.exe", target); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "new-binary" {
-		t.Fatalf("extracted data = %q", string(data))
-	}
-}
-
-func TestExtractZipRejectsNonRegularBinary(t *testing.T) {
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "archive.zip")
-	writeZipEntry(t, archivePath, "rticloud.exe", os.ModeSymlink|0o777, []byte("target"))
-	err := extractZipBinary(archivePath, "rticloud.exe", filepath.Join(tmpDir, "rticloud.exe"))
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("expected non-regular zip entry error, got %v", err)
-	}
-}
-
 func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "rticloud")
@@ -290,6 +261,44 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Updated rticloud from 1.2.3 to 1.2.4") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRunShowsWindowsInstallHint(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if request.URL.Path != "/releases/latest" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		_, _ = fmt.Fprint(writer, `{"tag_name":"v1.2.4","html_url":"https://example.test/release"}`)
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	manager := newTestManager(t, server.URL)
+	manager.Out = &out
+	manager.CurrentVersion = func() string { return "1.2.3" }
+	manager.Platform = func() (string, string) { return "windows", "amd64" }
+	manager.ExecutablePath = func() (string, error) {
+		t.Fatal("windows update should not inspect or replace the running executable")
+		return "", nil
+	}
+
+	if err := manager.Run(context.Background(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
+	for _, want := range []string{"Current version: 1.2.3", "Latest version:  1.2.4", WindowsInstallHint} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q in output: %s", want, output)
+		}
+	}
+	if strings.Contains(output, "Updated rticloud") {
+		t.Fatalf("windows update should not report direct replacement: %s", output)
+	}
+	if calls != 1 {
+		t.Fatalf("server calls = %d, want 1", calls)
 	}
 }
 
@@ -443,48 +452,6 @@ func writeTarGzEntry(t *testing.T, path string, header *tar.Header, data []byte)
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeZip(t *testing.T, path string, name string, data []byte) {
-	t.Helper()
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	zipWriter := zip.NewWriter(file)
-	entry, err := zipWriter.Create(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := entry.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := zipWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeZipEntry(t *testing.T, path string, name string, mode os.FileMode, data []byte) {
-	t.Helper()
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	zipWriter := zip.NewWriter(file)
-	header := &zip.FileHeader{Name: name}
-	header.SetMode(mode)
-	entry, err := zipWriter.CreateHeader(header)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := entry.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := zipWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

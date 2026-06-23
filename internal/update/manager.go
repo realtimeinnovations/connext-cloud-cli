@@ -2,7 +2,6 @@ package update
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -28,6 +27,7 @@ const (
 	DefaultDownloadURL = "https://github.com/realtimeinnovations/connext-cloud-cli/releases/download"
 	DefaultInterval    = 7 * 24 * time.Hour
 	NotifyTimeout      = 2 * time.Second
+	WindowsInstallHint = "irm https://raw.githubusercontent.com/realtimeinnovations/connext-cloud-cli/main/scripts/install.ps1 | iex"
 
 	ConfigLastCheck     = "last_update_check"
 	ConfigLatestVersion = "latest_update_version"
@@ -54,8 +54,6 @@ type Manager struct {
 	Rename         func(string, string) error
 	Chmod          func(string, os.FileMode) error
 	ReadFile       func(string) ([]byte, error)
-	WriteFile      func(string, []byte, os.FileMode) error
-	MkdirAll       func(string, os.FileMode) error
 }
 
 type Options struct {
@@ -102,8 +100,6 @@ func New(manager *config.Manager, out io.Writer) *Manager {
 		Rename:         os.Rename,
 		Chmod:          os.Chmod,
 		ReadFile:       os.ReadFile,
-		WriteFile:      os.WriteFile,
-		MkdirAll:       os.MkdirAll,
 	}
 }
 
@@ -124,7 +120,7 @@ func (manager *Manager) Run(ctx context.Context, options Options) error {
 	}
 	if options.CheckOnly {
 		if status.UpdateAvailable {
-			_, _ = fmt.Fprintln(out, "Update available. Run 'rticloud update' to install it.")
+			manager.printUpdateHint(out)
 		} else {
 			_, _ = fmt.Fprintln(out, "rticloud is up to date.")
 		}
@@ -132,6 +128,10 @@ func (manager *Manager) Run(ctx context.Context, options Options) error {
 	}
 	if !status.UpdateAvailable && !options.Force {
 		_, _ = fmt.Fprintln(out, "rticloud is up to date.")
+		return nil
+	}
+	if osName, _ := manager.platform(); osName == "windows" {
+		_, _ = fmt.Fprintf(out, "Windows self-update is not supported yet. To update, run this in PowerShell:\n%s\n", WindowsInstallHint)
 		return nil
 	}
 	if err := manager.install(ctx, status); err != nil {
@@ -193,6 +193,14 @@ func (manager *Manager) Notify(ctx context.Context, out io.Writer) {
 	_, _ = fmt.Fprintf(out, "A newer rticloud version is available: %s. Run 'rticloud update'.\n", status.LatestVersion)
 }
 
+func (manager *Manager) printUpdateHint(out io.Writer) {
+	if osName, _ := manager.platform(); osName == "windows" {
+		_, _ = fmt.Fprintf(out, "Update available. On Windows, run this in PowerShell:\n%s\n", WindowsInstallHint)
+		return
+	}
+	_, _ = fmt.Fprintln(out, "Update available. Run 'rticloud update' to install it.")
+}
+
 func (manager *Manager) latestRelease(ctx context.Context) (release, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(manager.apiURL(), "/")+"/releases/latest", nil)
 	if err != nil {
@@ -241,9 +249,6 @@ func (manager *Manager) install(ctx context.Context, status Status) error {
 	if isHomebrewPath(executable) || isHomebrewPath(resolved) {
 		return errors.New("this rticloud appears to be managed by Homebrew; run 'brew upgrade rticloud' instead")
 	}
-	if osName == "windows" {
-		binaryName += ".exe"
-	}
 	tmpDir, err := manager.mkdirTemp("", "rticloud-update-*")
 	if err != nil {
 		return err
@@ -266,19 +271,12 @@ func (manager *Manager) install(ctx context.Context, status Status) error {
 		return err
 	}
 	extractedPath := filepath.Join(tmpDir, binaryName)
-	if strings.HasSuffix(archiveName, ".zip") {
-		err = extractZipBinary(archivePath, binaryName, extractedPath)
-	} else {
-		err = extractTarGzBinary(archivePath, binaryName, extractedPath)
-	}
+	err = extractTarGzBinary(archivePath, binaryName, extractedPath)
 	if err != nil {
 		return err
 	}
-	if err := manager.chmod(extractedPath, 0o755); err != nil && osName != "windows" {
+	if err := manager.chmod(extractedPath, 0o755); err != nil {
 		return err
-	}
-	if osName == "windows" {
-		return manager.stageWindows(extractedPath, resolved)
 	}
 	return manager.replaceUnix(extractedPath, resolved)
 }
@@ -356,29 +354,10 @@ func copyFile(source string, target string, mode os.FileMode) error {
 	return closeErr
 }
 
-func (manager *Manager) stageWindows(newBinary string, currentBinary string) error {
-	stageDir := filepath.Join(config.DefaultDir(), "updates")
-	if err := manager.mkdirAll(stageDir, 0o700); err != nil {
-		return err
-	}
-	stagePath := filepath.Join(stageDir, "rticloud.exe")
-	data, err := manager.readFile(newBinary)
-	if err != nil {
-		return err
-	}
-	if err := manager.writeFile(stagePath, data, 0o755); err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(manager.output(), "Downloaded verified update to %s. Replace %s after this command exits.\n", stagePath, currentBinary)
-	return nil
-}
-
 func artifactNames(osName string, arch string) (string, string, error) {
 	switch osName {
 	case "darwin", "linux":
 		return fmt.Sprintf("connext-cloud-cli_%s_%s.tar.gz", osName, arch), "rticloud", nil
-	case "windows":
-		return fmt.Sprintf("connext-cloud-cli_windows_%s.zip", arch), "rticloud", nil
 	default:
 		return "", "", fmt.Errorf("unsupported platform: %s/%s", osName, arch)
 	}
@@ -439,29 +418,6 @@ func extractTarGzBinary(archivePath string, binaryName string, target string) er
 			return fmt.Errorf("%s in archive is not a regular file", binaryName)
 		}
 		return writeExtractedFile(target, reader)
-	}
-	return fmt.Errorf("%s not found in archive", binaryName)
-}
-
-func extractZipBinary(archivePath string, binaryName string, target string) error {
-	reader, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	for _, file := range reader.File {
-		if filepath.Base(file.Name) != binaryName {
-			continue
-		}
-		if !file.FileInfo().Mode().IsRegular() {
-			return fmt.Errorf("%s in archive is not a regular file", binaryName)
-		}
-		source, err := file.Open()
-		if err != nil {
-			return err
-		}
-		defer source.Close()
-		return writeExtractedFile(target, source)
 	}
 	return fmt.Errorf("%s not found in archive", binaryName)
 }
@@ -664,18 +620,4 @@ func (manager *Manager) readFile(path string) ([]byte, error) {
 		return manager.ReadFile(path)
 	}
 	return os.ReadFile(path)
-}
-
-func (manager *Manager) writeFile(path string, data []byte, mode os.FileMode) error {
-	if manager.WriteFile != nil {
-		return manager.WriteFile(path, data, mode)
-	}
-	return os.WriteFile(path, data, mode)
-}
-
-func (manager *Manager) mkdirAll(path string, mode os.FileMode) error {
-	if manager.MkdirAll != nil {
-		return manager.MkdirAll(path, mode)
-	}
-	return os.MkdirAll(path, mode)
 }
