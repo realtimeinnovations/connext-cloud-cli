@@ -198,6 +198,16 @@ func TestExtractTarGzBinary(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzRejectsNonRegularBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "archive.tar.gz")
+	writeTarGzEntry(t, archivePath, &tar.Header{Name: "rticloud", Typeflag: tar.TypeSymlink, Linkname: "target"}, nil)
+	err := extractTarGzBinary(archivePath, "rticloud", filepath.Join(tmpDir, "rticloud"))
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected non-regular tar entry error, got %v", err)
+	}
+}
+
 func TestExtractZipBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "archive.zip")
@@ -378,6 +388,33 @@ func tarGzBytes(t *testing.T, name string, data []byte) []byte {
 func writeTarGz(t *testing.T, path string, name string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, tarGzBytes(t, name, data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTarGzEntry(t *testing.T, path string, header *tar.Header, data []byte) {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	if header.Size == 0 && len(data) > 0 {
+		header.Size = int64(len(data))
+	}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > 0 {
+		if _, err := tarWriter.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

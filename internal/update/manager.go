@@ -428,8 +428,11 @@ func extractTarGzBinary(archivePath string, binaryName string, target string) er
 		if err != nil {
 			return err
 		}
-		if filepath.Base(header.Name) != binaryName || header.FileInfo().IsDir() {
+		if filepath.Base(header.Name) != binaryName {
 			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			return fmt.Errorf("%s in archive is not a regular file", binaryName)
 		}
 		return writeExtractedFile(target, reader)
 	}
