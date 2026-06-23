@@ -163,7 +163,10 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		// ── 2. Serial number ─────────────────────────────────────────────────
 		detectedSerial := DetectSerial()
 		var serial string
-		if a.ManualMode {
+		if a.DeviceID != "" {
+			serial = a.DeviceID
+			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m Serial number: %s\n", serial)
+		} else if a.ManualMode {
 			if detectedSerial != "" {
 				choice, err := a.SelectFunc(
 					fmt.Sprintf("Serial number (detected: %s)", detectedSerial),
@@ -207,7 +210,10 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		// ── 4. MAC address(es) ───────────────────────────────────────────────
 		detectedMACs := DetectMACs()
 		var macs []string
-		if a.ManualMode {
+		if len(a.MACs) > 0 {
+			macs = a.MACs
+			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m MAC addresses: %s\n", strings.Join(macs, ", "))
+		} else if a.ManualMode {
 			if len(detectedMACs) > 0 {
 				choice, err := a.SelectFunc(
 					"MAC addresses:",

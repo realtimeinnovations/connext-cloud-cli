@@ -227,6 +227,14 @@ type Agent struct {
 	// any interactive selection step.
 	ManualMode bool
 
+	// DeviceID, when non-empty, is used as the serial/device identifier
+	// without prompting or auto-detecting.
+	DeviceID string
+
+	// MACs, when non-empty, is used as the MAC address list without
+	// prompting or auto-detecting.
+	MACs []string
+
 	// Internal state.
 	termOut  io.Writer          // original terminal writer for TUI rendering
 	stopFunc context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)

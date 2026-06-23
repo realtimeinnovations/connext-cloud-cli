@@ -1785,6 +1785,8 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 		var crlInterval time.Duration
 		var logFile string
 		var manualMode bool
+		var deviceID string
+		var agentMACs []string
 		c := &cobra.Command{
 			Use:   "agent",
 			Short: "Run the artifact lifecycle agent (foreground process)",
@@ -1810,6 +1812,8 @@ your container runtime for supervision.`,
 				}
 				runtime.EdgeSyncAgent.LogFile = logFile
 				runtime.EdgeSyncAgent.ManualMode = manualMode
+				runtime.EdgeSyncAgent.DeviceID = deviceID
+				runtime.EdgeSyncAgent.MACs = agentMACs
 				err := runtime.EdgeSyncAgent.Run(cmd.Context())
 				if err == nil {
 					return nil
@@ -1826,6 +1830,8 @@ your container runtime for supervision.`,
 		c.Flags().DurationVar(&crlInterval, "crl-interval", 5*time.Minute, "How often to refresh the Certificate Revocation List")
 		c.Flags().StringVar(&logFile, "log-file", ".connext/rticloud-edge-agent.log", "Path to the agent log file (empty to disable)")
 		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override auto-detected serial number and MAC addresses during first-run enrollment")
+		c.Flags().StringVar(&deviceID, "device-id", "", "Device identifier (serial number) to use instead of auto-detecting")
+		c.Flags().StringSliceVar(&agentMACs, "macs", nil, "Comma-separated MAC addresses to use instead of auto-detecting")
 
 		{ // agent enroll
 			var campaignToken, serial, deviceName string
