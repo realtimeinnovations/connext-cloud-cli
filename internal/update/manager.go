@@ -150,7 +150,7 @@ func (manager *Manager) Check(ctx context.Context, force bool) (Status, error) {
 	if err != nil {
 		return status, err
 	}
-	if configBool(values[ConfigDisabled]) {
+	if !force && configBool(values[ConfigDisabled]) {
 		return status, nil
 	}
 	if !force && manager.withinInterval(values[ConfigLastCheck]) {

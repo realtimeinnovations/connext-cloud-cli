@@ -135,6 +135,29 @@ func TestCheckDisabledSkipsNetwork(t *testing.T) {
 	}
 }
 
+func TestCheckForcedIgnoresDisabledConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/releases/latest" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		_, _ = fmt.Fprint(writer, `{"tag_name":"v1.2.4","html_url":"https://example.test/release"}`)
+	}))
+	defer server.Close()
+
+	manager := newTestManager(t, server.URL)
+	manager.CurrentVersion = func() string { return "1.2.3" }
+	if err := manager.Config.WriteConfig(map[string]string{ConfigDisabled: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Check(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.CheckedRemote || !status.UpdateAvailable || status.LatestVersion != "1.2.4" {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+}
+
 func TestCheckReturnsReleaseBodyReadError(t *testing.T) {
 	manager := newTestManager(t, "http://127.0.0.1")
 	manager.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
