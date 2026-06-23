@@ -80,7 +80,7 @@ Check for updates:
 rticloud update --check
 ```
 
-Install the latest release (supported on Linux and mac OS):
+Install the latest release (supported on Linux and macOS):
 
 ```sh
 rticloud update
