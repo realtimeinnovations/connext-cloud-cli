@@ -286,6 +286,40 @@ func TestRunReportsDevelopmentBuild(t *testing.T) {
 	}
 }
 
+func TestReplaceUnixStagesBinaryInInstallDirectory(t *testing.T) {
+	installDir := t.TempDir()
+	otherDir := t.TempDir()
+	currentBinary := filepath.Join(installDir, "rticloud")
+	newBinary := filepath.Join(otherDir, "rticloud")
+	if err := os.WriteFile(currentBinary, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newBinary, []byte("new-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := New(nil, io.Discard)
+	manager.Rename = func(oldPath string, newPath string) error {
+		if filepath.Dir(oldPath) != filepath.Dir(newPath) {
+			t.Fatalf("cross-directory rename attempted: %s -> %s", oldPath, newPath)
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	if err := manager.replaceUnix(newBinary, currentBinary); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(currentBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new-binary" {
+		t.Fatalf("current binary = %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(installDir, ".rticloud.update")); !os.IsNotExist(err) {
+		t.Fatalf("staged file should be removed, stat error: %v", err)
+	}
+}
+
 func TestRunDetectsHomebrewInstall(t *testing.T) {
 	manager := newTestManager(t, "http://127.0.0.1")
 	manager.CurrentVersion = func() string { return "1.2.3" }

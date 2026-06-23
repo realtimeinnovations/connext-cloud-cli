@@ -318,17 +318,46 @@ func (manager *Manager) download(ctx context.Context, url string, target string)
 }
 
 func (manager *Manager) replaceUnix(newBinary string, currentBinary string) error {
+	staged := filepath.Join(filepath.Dir(currentBinary), "."+filepath.Base(currentBinary)+".update")
 	backup := currentBinary + ".bak"
+	_ = manager.remove(staged)
 	_ = manager.remove(backup)
+	if err := copyFile(newBinary, staged, 0o755); err != nil {
+		return permissionHint(staged, err)
+	}
+	if err := manager.chmod(staged, 0o755); err != nil {
+		_ = manager.remove(staged)
+		return err
+	}
 	if err := manager.rename(currentBinary, backup); err != nil {
+		_ = manager.remove(staged)
 		return permissionHint(currentBinary, err)
 	}
-	if err := manager.rename(newBinary, currentBinary); err != nil {
+	if err := manager.rename(staged, currentBinary); err != nil {
 		_ = manager.rename(backup, currentBinary)
+		_ = manager.remove(staged)
 		return err
 	}
 	_ = manager.remove(backup)
 	return nil
+}
+
+func copyFile(source string, target string, mode os.FileMode) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (manager *Manager) stageWindows(newBinary string, currentBinary string) error {
