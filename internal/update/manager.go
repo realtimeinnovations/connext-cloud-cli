@@ -446,8 +446,11 @@ func extractZipBinary(archivePath string, binaryName string, target string) erro
 	}
 	defer reader.Close()
 	for _, file := range reader.File {
-		if filepath.Base(file.Name) != binaryName || file.FileInfo().IsDir() {
+		if filepath.Base(file.Name) != binaryName {
 			continue
+		}
+		if !file.FileInfo().Mode().IsRegular() {
+			return fmt.Errorf("%s in archive is not a regular file", binaryName)
 		}
 		source, err := file.Open()
 		if err != nil {

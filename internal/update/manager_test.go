@@ -225,6 +225,16 @@ func TestExtractZipBinary(t *testing.T) {
 	}
 }
 
+func TestExtractZipRejectsNonRegularBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "archive.zip")
+	writeZipEntry(t, archivePath, "rticloud.exe", os.ModeSymlink|0o777, []byte("target"))
+	err := extractZipBinary(archivePath, "rticloud.exe", filepath.Join(tmpDir, "rticloud.exe"))
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected non-regular zip entry error, got %v", err)
+	}
+}
+
 func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "rticloud")
@@ -428,6 +438,28 @@ func writeZip(t *testing.T, path string, name string, data []byte) {
 	defer file.Close()
 	zipWriter := zip.NewWriter(file)
 	entry, err := zipWriter.Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeZipEntry(t *testing.T, path string, name string, mode os.FileMode, data []byte) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	zipWriter := zip.NewWriter(file)
+	header := &zip.FileHeader{Name: name}
+	header.SetMode(mode)
+	entry, err := zipWriter.CreateHeader(header)
 	if err != nil {
 		t.Fatal(err)
 	}
