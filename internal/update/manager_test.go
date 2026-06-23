@@ -152,7 +152,11 @@ func TestCheckReturnsReleaseBodyReadError(t *testing.T) {
 func TestVerifyChecksumRejectsMismatch(t *testing.T) {
 	archiveName := "connext-cloud-cli_linux_amd64.tar.gz"
 	checksums := []byte("0000000000000000000000000000000000000000000000000000000000000000  " + archiveName + "\n")
-	if err := verifyChecksum(checksums, archiveName, []byte("archive")); err == nil {
+	archivePath := filepath.Join(t.TempDir(), archiveName)
+	if err := os.WriteFile(archivePath, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyChecksum(checksums, archiveName, archivePath); err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
 }
@@ -267,6 +271,12 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	manager.Platform = func() (string, string) { return "linux", "amd64" }
 	manager.ExecutablePath = func() (string, error) { return binaryPath, nil }
 	manager.EvalSymlinks = func(path string) (string, error) { return path, nil }
+	manager.ReadFile = func(path string) ([]byte, error) {
+		if filepath.Base(path) == archiveName {
+			t.Fatalf("archive should be hashed from disk, not read into memory: %s", path)
+		}
+		return os.ReadFile(path)
+	}
 
 	if err := manager.Run(context.Background(), Options{}); err != nil {
 		t.Fatal(err)

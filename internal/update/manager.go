@@ -262,11 +262,7 @@ func (manager *Manager) install(ctx context.Context, status Status) error {
 	if err != nil {
 		return err
 	}
-	archiveBytes, err := manager.readFile(archivePath)
-	if err != nil {
-		return err
-	}
-	if err := verifyChecksum(checksums, archiveName, archiveBytes); err != nil {
+	if err := verifyChecksum(checksums, archiveName, archivePath); err != nil {
 		return err
 	}
 	extractedPath := filepath.Join(tmpDir, binaryName)
@@ -388,7 +384,7 @@ func artifactNames(osName string, arch string) (string, string, error) {
 	}
 }
 
-func verifyChecksum(checksums []byte, archiveName string, archiveBytes []byte) error {
+func verifyChecksum(checksums []byte, archiveName string, archivePath string) error {
 	expected := ""
 	for _, line := range strings.Split(string(checksums), "\n") {
 		fields := strings.Fields(line)
@@ -400,8 +396,16 @@ func verifyChecksum(checksums []byte, archiveName string, archiveBytes []byte) e
 	if expected == "" {
 		return fmt.Errorf("checksum not found for %s", archiveName)
 	}
-	sum := sha256.Sum256(archiveBytes)
-	actual := hex.EncodeToString(sum[:])
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(hash.Sum(nil))
 	if actual != expected {
 		return fmt.Errorf("checksum mismatch for %s", archiveName)
 	}
