@@ -110,6 +110,14 @@ func TestCheckFetchesLatestAndCaches(t *testing.T) {
 	}
 }
 
+func TestWithinIntervalTreatsFutureTimestampAsStale(t *testing.T) {
+	manager := newTestManager(t, "http://127.0.0.1")
+	future := manager.now().Add(time.Hour).Format(time.RFC3339)
+	if manager.withinInterval(future) {
+		t.Fatal("future timestamp should be stale")
+	}
+}
+
 func TestCheckDisabledSkipsNetwork(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		t.Fatal("unexpected network call")

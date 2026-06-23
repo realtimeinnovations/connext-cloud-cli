@@ -560,7 +560,8 @@ func (manager *Manager) withinInterval(value string) bool {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
-	return manager.now().Sub(checkedAt) < interval
+	elapsed := manager.now().Sub(checkedAt)
+	return elapsed >= 0 && elapsed < interval
 }
 
 func (manager *Manager) currentVersion() string {
