@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgesyncagent
 
 import (
@@ -355,7 +361,7 @@ func (a *Agent) renewIdentity(p *profile, url, cert, key, ca, output string) (ti
 
 // renewDeviceCert renews the mTLS device certificate using the same key pair
 // by calling POST /device/renew-cert.  The renewed certificate is saved to
-// mtls_artifacts/device.crt and the new NotAfter is read from the certificate.
+// mtls_artifacts/node.crt and the new NotAfter is read from the certificate.
 func (a *Agent) renewDeviceCert(p *profile, url, cert, key, ca string) (time.Time, error) {
 	existingKey, err := a.ReadFile(a.Store.PrivateKeyPath(p.serial, p.effectiveDomainID(), p.storeParticipant()))
 	if err != nil {

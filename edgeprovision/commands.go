@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgeprovision
 
 import (
@@ -29,9 +35,8 @@ type Runner struct {
 	MkdirAll  func(string, os.FileMode) error
 
 	// Client factories — overridable in tests with a fake Doer.
-	NewClient       func(baseURL string) *Client
-	NewClientWithCA func(baseURL, caFile string) (*Client, error)
-	NewMTLSClient   func(baseURL, certFile, keyFile, caFile, serverAddr string) (*Client, error)
+	NewClient     func(baseURL string) *Client
+	NewMTLSClient func(baseURL, certFile, keyFile, caFile, serverAddr string) (*Client, error)
 }
 
 // NewRunner creates a Runner with sensible defaults.  All Provisioning Service
@@ -39,37 +44,13 @@ type Runner struct {
 // always enabled.
 func NewRunner(out io.Writer) *Runner {
 	return &Runner{
-		Out:             out,
-		ReadFile:        os.ReadFile,
-		WriteFile:       os.WriteFile,
-		MkdirAll:        os.MkdirAll,
-		NewClient:       NewClient,
-		NewClientWithCA: NewClientWithCA,
-		NewMTLSClient:   NewMTLSClient,
+		Out:           out,
+		ReadFile:      os.ReadFile,
+		WriteFile:     os.WriteFile,
+		MkdirAll:      os.MkdirAll,
+		NewClient:     NewClient,
+		NewMTLSClient: NewMTLSClient,
 	}
-}
-
-// plainClient builds a non-mTLS client (used for /healthz and /internal/sign).
-// caFile, when non-empty, configures the transport to trust the given CA chain
-// for server certificate verification (instead of system roots).
-func (runner *Runner) plainClient(url, caFile string) (*Client, error) {
-	if url == "" {
-		return nil, fmt.Errorf("--url is required")
-	}
-	var c *Client
-	if caFile != "" {
-		var err error
-		c, err = runner.NewClientWithCA(url, caFile)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		c = runner.NewClient(url)
-	}
-	if runner.Debug {
-		c.DebugOut = runner.Out
-	}
-	return c, nil
 }
 
 // mtlsClient builds an mTLS client for the device-facing endpoints.  All three
@@ -92,19 +73,28 @@ func (runner *Runner) mtlsClient(url, certFile, keyFile, caFile, serverAddr stri
 	return c, nil
 }
 
-// emitJSON consumes resp, prints either the formatted JSON body on success or
-// a normalized "Error: …" line on failure.  Matches the behaviour of
-// commands.Runner.printResponseError so users see a consistent error style.
-func (runner *Runner) emitJSON(resp *http.Response) error {
+// decodeBody reads resp, handles non-200 errors, and unmarshals the body into T.
+func decodeBody[T any](out io.Writer, resp *http.Response) (T, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	var zero T
 	if resp.StatusCode != http.StatusOK {
 		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		_, _ = fmt.Fprintf(out, "Error: %s\n", msg)
+		return zero, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	var result T
+	if err := json.Unmarshal(body, &result); err != nil {
+		return zero, err
+	}
+	return result, nil
+}
+
+// emitJSON consumes resp, prints either the formatted JSON body on success or
+// a normalized "Error: …" line on failure.
+func (runner *Runner) emitJSON(resp *http.Response) error {
+	payload, err := decodeBody[any](runner.Out, resp)
+	if err != nil {
 		return err
 	}
 	formatted, _ := json.MarshalIndent(payload, "", "  ")
@@ -113,36 +103,10 @@ func (runner *Runner) emitJSON(resp *http.Response) error {
 }
 
 // decodeResult consumes resp and returns the decoded JSON object on a 200
-// response.  On a non-200 status it prints a normalized "Error: …" line and
-// returns an error, mirroring emitJSON's failure behaviour.  Use this for
-// handlers that need to pick individual fields out of the body before writing
-// them to disk.
+// response.  Use this for handlers that need to pick individual fields out of
+// the body before writing them to disk.
 func (runner *Runner) decodeResult(resp *http.Response) (map[string]any, error) {
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// SignCSR calls POST /internal/sign with a base64-encoded CSR.
-func (runner *Runner) SignCSR(url string, csrBase64 string) error {
-	client, err := runner.plainClient(url, "")
-	if err != nil {
-		return err
-	}
-	resp, err := client.Post("/internal/sign", map[string]any{"csr": csrBase64})
-	if err != nil {
-		return err
-	}
-	return runner.emitJSON(resp)
+	return decodeBody[map[string]any](runner.Out, resp)
 }
 
 // DeviceStatus calls GET /device/status (mTLS required).
@@ -418,7 +382,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 //
 // When output is non-empty the response is written as two files:
 //
-//	<output>/device.crt     — the newly signed certificate
+//	<output>/node.crt     — the newly signed certificate
 //	<output>/ca-chain.pem   — the CA chain
 //
 // When output is empty the raw JSON response is printed to stdout.
@@ -450,7 +414,7 @@ func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr
 	}
 	certPEM, _ := result["certificate"].(string)
 	caDest := resolveOutputPath(output, "ca-chain.pem")
-	certDest := resolveOutputPath(output, "device.crt")
+	certDest := resolveOutputPath(output, "node.crt")
 	if err := runner.saveToFile(certDest, []byte(certPEM)); err != nil {
 		return err
 	}

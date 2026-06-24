@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgestore
 
 import (
@@ -22,10 +28,10 @@ func TestSlotPaths(t *testing.T) {
 	if got := s.ConnextArtifactsDir("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "connext_artifacts") {
 		t.Fatalf("unexpected ConnextArtifactsDir: %s", got)
 	}
-	if got := s.DeviceCertPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "device.crt") {
+	if got := s.DeviceCertPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "node.crt") {
 		t.Fatalf("unexpected DeviceCertPath: %s", got)
 	}
-	if got := s.PrivateKeyPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "device.key") {
+	if got := s.PrivateKeyPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "node.key") {
 		t.Fatalf("unexpected PrivateKeyPath: %s", got)
 	}
 	if got := s.CAChainPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "ca-chain.pem") {
@@ -68,7 +74,7 @@ func TestWriteArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("device.key mode: got %04o, want 0600", info.Mode().Perm())
+		t.Fatalf("node.key mode: got %04o, want 0600", info.Mode().Perm())
 	}
 }
 
@@ -78,7 +84,7 @@ func TestWriteArtifactsSkipsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(s.DeviceCertPath("SN-001", "svc1", "pp1")); err == nil {
-		t.Fatal("device.crt should not exist when DeviceCertPEM is empty")
+		t.Fatal("node.crt should not exist when DeviceCertPEM is empty")
 	}
 	if _, err := os.Stat(s.CAChainPath("SN-001", "svc1", "pp1")); err != nil {
 		t.Fatalf("ca-chain.pem should exist: %v", err)
@@ -171,7 +177,7 @@ func TestListSlotsWithURLMultipleSlots(t *testing.T) {
 	if err := s.WriteDeviceURL("SN-001", "dom-2", "pp2", "https://b.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	// A slot without device_url should not appear.
+	// A slot without node_url should not appear.
 	if err := s.WriteArtifacts("SN-001", "dom-3", "pp3", EnrollArtifacts{DeviceCertPEM: []byte("CERT")}); err != nil {
 		t.Fatal(err)
 	}

@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgesyncagent
 
 import (
@@ -174,11 +180,11 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
-		ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), keyData, 0o600)
+		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		return "", nil
 	}
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
-		// Write a fake identity cert so renewIdentity can copy it to device.crt.
+		// Write a fake identity cert so renewIdentity can copy it to node.crt.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
 		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("FAKE-CERT"), 0o644)
 		return nil
@@ -449,7 +455,7 @@ func TestSweep_TriggersRenewalForExpiredArtifact(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	// Write device URL so ResolveDeviceURL succeeds.
-	ffs.WriteFile("/connext/svc/part/dev/device_url", []byte("https://svc.devices.example.com"), 0o644)
+	ffs.WriteFile("/connext/svc/part/dev/node_url", []byte("https://svc.devices.example.com"), 0o644)
 	p.mu.Lock()
 	// notAfter in the past — threshold already passed.
 	p.notAfter[ArtifactPermissions] = now.Add(-10 * time.Second)
@@ -483,7 +489,7 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
-		ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), keyData, 0o600)
+		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		enrolled <- struct{}{}
 		return "", nil
 	}
@@ -707,8 +713,8 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
-		ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), keyData, 0o600)
-		ffs.WriteFile(filepath.Join(mtlsDir, "device.crt"), []byte("FAKE-CERT"), 0o644)
+		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
+		ffs.WriteFile(filepath.Join(mtlsDir, "node.crt"), []byte("FAKE-CERT"), 0o644)
 		ffs.WriteFile(filepath.Join(mtlsDir, "ca-chain.pem"), []byte("FAKE-CA"), 0o644)
 		return "", nil
 	}
@@ -831,7 +837,7 @@ func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
 		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
 		ffs.MkdirAll(mtlsDir, 0o755)
-		ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), keyData, 0o600)
+		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		select {
 		case enrolled <- struct{}{}:
 		default:
@@ -948,9 +954,9 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 	// Fake PEM key in the mtls_artifacts slot.
 	mtlsDir := "/connext/svc/part/dev/mtls_artifacts"
 	ffs.MkdirAll(mtlsDir, 0o755)
-	ffs.WriteFile(filepath.Join(mtlsDir, "device.key"), []byte("KEY"), 0o600)
-	ffs.WriteFile(filepath.Join(mtlsDir, "device_url"), []byte("https://svc.devices.example.com"), 0o644)
-	ffs.WriteFile("/connext/svc/part/dev/device_url", []byte("https://svc.devices.example.com"), 0o644)
+	ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), []byte("KEY"), 0o600)
+	ffs.WriteFile(filepath.Join(mtlsDir, "node_url"), []byte("https://svc.devices.example.com"), 0o644)
+	ffs.WriteFile("/connext/svc/part/dev/node_url", []byte("https://svc.devices.example.com"), 0o644)
 
 	// Build a minimal self-signed cert to act as the renewed device cert.
 	notAfterWant := time.Now().Add(24 * time.Hour).Truncate(time.Second)
@@ -960,7 +966,7 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 	a.RenewDeviceCertFunc = func(_, _, _, _, _, csrFile string, _ int, output string) error {
 		// Write the fake renewed cert where the agent expects it.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
-		ffs.WriteFile(filepath.Join(dir, "device.crt"), certPEM, 0o644)
+		ffs.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644)
 		ffs.WriteFile(filepath.Join(dir, "ca-chain.pem"), []byte("CA"), 0o644)
 		renewCalled <- struct{}{}
 		return nil

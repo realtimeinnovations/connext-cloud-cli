@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgeprovision
 
 import (
@@ -62,30 +68,6 @@ func TestNewClientTrimsTrailingSlash(t *testing.T) {
 	}
 	if c.HTTPClient == nil {
 		t.Fatal("expected non-nil HTTP client")
-	}
-}
-
-func TestSignCSR(t *testing.T) {
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /internal/sign": newJSONResponse(http.StatusOK, map[string]any{
-			"certificate": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
-			"caChain":     "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	if err := runner.SignCSR("http://localhost:8080", "dGVzdA=="); err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(doer.lastBody, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["csr"] != "dGVzdA==" {
-		t.Fatalf("unexpected CSR payload: %v", payload["csr"])
-	}
-	if !strings.Contains(out.String(), "certificate") {
-		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
 
@@ -525,27 +507,6 @@ func TestGetCRLToDirectory(t *testing.T) {
 	}
 }
 
-func TestErrorResponseUsesFormatError(t *testing.T) {
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /internal/sign": newTextResponse(http.StatusInternalServerError, `{"error":"signing failed"}`),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	err := runner.SignCSR("http://localhost:8080", "dGVzdA==")
-	if err == nil {
-		t.Fatal("expected error from HTTP 500 response")
-	}
-	// Should render via httputil.FormatError — i.e. extract "signing failed",
-	// not dump the raw JSON body with the status code prefix.
-	output := out.String()
-	if !strings.Contains(output, "Error: signing failed") {
-		t.Fatalf("expected formatted error, got: %s", output)
-	}
-	if strings.Contains(output, "(HTTP 500)") {
-		t.Fatalf("expected normalized error (no raw (HTTP nnn) prefix), got: %s", output)
-	}
-}
-
 func TestRenewDeviceCert(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nnewcert\n-----END CERTIFICATE-----"
 	const caPEM = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"
@@ -624,8 +585,8 @@ func TestRenewDeviceCertToDirectory(t *testing.T) {
 	if err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 0, dir); err != nil {
 		t.Fatal(err)
 	}
-	if string(written["device.crt"]) != certPEM {
-		t.Fatalf("unexpected device.crt: %s", written["device.crt"])
+	if string(written["node.crt"]) != certPEM {
+		t.Fatalf("unexpected node.crt: %s", written["node.crt"])
 	}
 	if string(written["ca-chain.pem"]) != caPEM {
 		t.Fatalf("unexpected ca-chain.pem: %s", written["ca-chain.pem"])

@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package cli
 
 import (
@@ -188,7 +194,7 @@ func resolveConnextOutput(rt *app.Runtime, serial, service, domainID, participan
 // --participant-tpl-id must be set for a store lookup to proceed; otherwise the
 // caller-supplied value (including "") is returned unchanged.
 //
-// If the requested slot has no device_url but other enrolled slots exist under
+// If the requested slot has no node_url but other enrolled slots exist under
 // the serial, returns an actionable error listing them.
 func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID, rawURL string) (string, error) {
 	if rawURL != "" || service == "" || domainID == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
@@ -200,7 +206,7 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 	if u := rt.EdgeStore.ResolveDeviceURL(serial, domainID, participantID); u != "" {
 		return u, nil
 	}
-	// Requested slot has no device_url; list alternatives for diagnosis.
+	// Requested slot has no node_url; list alternatives for diagnosis.
 	others := rt.EdgeStore.ListSlotsWithURL(serial)
 	if len(others) > 0 {
 		var sb strings.Builder
@@ -215,7 +221,7 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 		fmt.Fprintf(&sb, "\n\tpass --domain-tpl-id %s to use the enrolled slot.", others[0].DomainTemplateID)
 		return "", fmt.Errorf("%s", sb.String())
 	}
-	return "", fmt.Errorf("--url is required (device_url not found in store at %s)",
+	return "", fmt.Errorf("--url is required (node_url not found in store at %s)",
 		rt.EdgeStore.DeviceURLPath(serial, domainID, participantID))
 }
 
@@ -1714,7 +1720,7 @@ the CSR subject and public key match the current certificate before signing and
 returning a fresh certificate valid for a new period.
 
 Provide a CSR generated from the same private key currently in use
-(mtls_artifacts/device.key).  When --service and --participant-tpl-id are set the
+(mtls_artifacts/node.key).  When --service and --participant-tpl-id are set the
 renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -1747,7 +1753,7 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (must be signed by the same key as the current device certificate)")
 		c.Flags().IntVar(&validityMinutes, "validity-minutes", 0, "Requested certificate lifetime in minutes (0 = server default)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save device.crt and ca-chain.pem (defaults to mtls_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.pem (defaults to mtls_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 

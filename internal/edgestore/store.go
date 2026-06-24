@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package edgestore
 
 import (
@@ -18,9 +24,9 @@ type Store struct {
 
 // EnrollArtifacts holds the security material returned by a successful enrollment.
 type EnrollArtifacts struct {
-	DeviceCertPEM []byte // written to mtls_artifacts/device.crt  (0644)
+	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
 	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.pem (0644)
-	PrivateKeyPEM []byte // written to mtls_artifacts/device.key   (0600)
+	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
 	GovernanceP7S []byte // written to connext_artifacts/governance.p7s (0644)
 }
 
@@ -55,12 +61,12 @@ func (s *Store) ConnextArtifactsDir(serial, domainTemplateID, participantID stri
 
 // DeviceCertPath is the mTLS leaf certificate path.
 func (s *Store) DeviceCertPath(serial, domainTemplateID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "device.crt")
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "node.crt")
 }
 
 // PrivateKeyPath is the device private key path.
 func (s *Store) PrivateKeyPath(serial, domainTemplateID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "device.key")
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "node.key")
 }
 
 // CAChainPath is the Provisioning Service CA chain path.
@@ -141,7 +147,7 @@ func (s *Store) fileExists(path string) bool {
 
 // DeviceURLPath is the path of the stored device endpoint URL for a slot.
 func (s *Store) DeviceURLPath(serial, domainTemplateID, participantID string) string {
-	return filepath.Join(s.SlotDir(serial, domainTemplateID, participantID), "device_url")
+	return filepath.Join(s.SlotDir(serial, domainTemplateID, participantID), "node_url")
 }
 
 // WriteDeviceURL persists the device endpoint URL for a slot, creating the
@@ -170,16 +176,16 @@ func (s *Store) ResolveDeviceURL(serial, domainTemplateID, participantID string)
 	return strings.TrimSpace(string(data))
 }
 
-// SlotInfo describes a single enrolled slot that has a stored device_url.
+// SlotInfo describes a single enrolled slot that has a stored node_url.
 type SlotInfo struct {
 	DomainTemplateID string
 	ParticipantID    string
 	DeviceURL        string
-	EnrolledAt       time.Time // mtime of the device_url file; zero if unknown
+	EnrolledAt       time.Time // mtime of the node_url file; zero if unknown
 }
 
 // ListSlotsWithURL returns every slot under serial that has a stored
-// device_url.  Returns nil when the serial directory does not exist or
+// node_url.  Returns nil when the serial directory does not exist or
 // cannot be read.
 func (s *Store) ListSlotsWithURL(serial string) []SlotInfo {
 	serialDir := filepath.Join(s.BaseDir, serial)

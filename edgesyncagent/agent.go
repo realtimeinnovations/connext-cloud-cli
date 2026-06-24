@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 // Package edgesyncagent implements the long-lived artifact lifecycle manager
 // for rticloud edge-sync agent.
 package edgesyncagent
@@ -240,6 +246,22 @@ type Agent struct {
 	stopFunc context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
 	profiles sync.Map           // profileKey → *profile
 	wg       sync.WaitGroup
+	outMu    sync.Mutex // serializes writes to Out/LogOut across goroutines
+}
+
+// syncWriter serializes concurrent writes to an underlying writer using a
+// shared mutex.  The sweep and inbox loops run on separate goroutines and both
+// write diagnostics to Out/LogOut; wrapping those writers keeps the writes from
+// racing or interleaving.
+type syncWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // NewAgent creates an Agent with production defaults for file I/O and timing.
@@ -321,6 +343,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.LogOut = logWriter
 		a.Out = io.MultiWriter(a.Out, logWriter)
 	}
+
+	// Serialize all writes to Out/LogOut through one mutex: the sweep and inbox
+	// loops below run concurrently and both emit diagnostics. termOut is left
+	// unwrapped so TUI rendering and terminal-type detection are unaffected.
+	a.Out = &syncWriter{mu: &a.outMu, w: a.Out}
+	a.LogOut = &syncWriter{mu: &a.outMu, w: a.LogOut}
 
 	for _, dir := range []string{a.InboxDir, a.ProcessedDir, a.FailedDir} {
 		if err := a.MkdirAll(dir, 0o755); err != nil {
