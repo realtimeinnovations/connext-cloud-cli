@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"path/filepath"
 	"time"
 )
 
@@ -120,9 +119,9 @@ func (a *Agent) persistState(p *profile) error {
 	if err != nil {
 		return err
 	}
-	slotDir := a.Store.SlotDir(p.serial, p.effectiveDomainID(), p.storeParticipant())
-	if err := a.MkdirAll(slotDir, 0o755); err != nil {
+	nodeAgentDir := a.Store.NodeAgentDir(p.service(), p.domain(), p.participant(), p.node())
+	if err := a.MkdirAll(nodeAgentDir, 0o755); err != nil {
 		return err
 	}
-	return a.WriteFile(filepath.Join(slotDir, "agent_state.json"), append(data, '\n'), 0o644)
+	return a.WriteFile(a.Store.NodeStatePath(p.service(), p.domain(), p.participant(), p.node()), append(data, '\n'), 0o644)
 }

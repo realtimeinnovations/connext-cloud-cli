@@ -163,10 +163,9 @@ func (a *Agent) onTimerFire(p *profile, artifact ArtifactID, scheduledNotAfter t
 // RenewArtifact requests an out-of-cycle renewal of one artifact for the
 // identified profile. It stops the existing scheduled timer and immediately
 // dispatches a renewal goroutine with reason "manual".
-// effectiveDomainID is p.effectiveDomainID() for the target profile (i.e.
-// domainTemplateID when set, otherwise serviceID).
-func (a *Agent) RenewArtifact(effectiveDomainID, participantID, deviceName string, art ArtifactID) error {
-	key := profileKey(effectiveDomainID, participantID, deviceName)
+// domainTemplateID is the profile's domain template id (p.domain()).
+func (a *Agent) RenewArtifact(domainTemplateID, participantID, deviceName string, art ArtifactID) error {
+	key := profileKey(domainTemplateID, participantID, deviceName)
 	val, ok := a.profiles.Load(key)
 	if !ok {
 		return fmt.Errorf("profile not found: %s", key)
@@ -195,9 +194,13 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	p.setState(StateRenewing)
 	p.mu.Unlock()
 
-	url := a.Store.ResolveDeviceURL(p.serial, p.effectiveDomainID(), p.storeParticipant())
-	cert, key, ca := a.Store.ResolveMTLSDefaults(p.serial, p.effectiveDomainID(), p.storeParticipant(), "", "", "")
-	output := a.Store.ConnextArtifactsDir(p.serial, p.effectiveDomainID(), p.storeParticipant()) + string(os.PathSeparator)
+	service, domain, participant, node := p.service(), p.domain(), p.participant(), p.node()
+	url := a.Store.ResolveNodeURL(service, domain, participant, node)
+	cert, key, ca := a.Store.ResolveNodeMTLS(service, domain, participant, node, "", "", "")
+	nodeDir := a.Store.NodeDir(service, domain, participant, node)
+	domainDir := a.Store.DomainDir(service, domain)
+	nodeOut := nodeDir + string(os.PathSeparator)
+	domainOut := domainDir + string(os.PathSeparator)
 
 	var newNotAfter time.Time
 	var newNotBefore time.Time
@@ -205,19 +208,17 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 
 	switch artifact {
 	case ArtifactIdentity:
-		newNotAfter, err = a.renewIdentity(p, url, cert, key, ca, output)
+		newNotAfter, err = a.renewIdentity(p, url, cert, key, ca, nodeOut)
 		if err == nil {
-			leasePath := filepath.Join(strings.TrimSuffix(output, string(os.PathSeparator)), "identity_lease.json")
-			newNotBefore, _ = a.readLease(leasePath)
+			newNotBefore, _ = a.readLease(filepath.Join(nodeDir, "identity_lease.json"))
 		}
 	case ArtifactPermissions:
-		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", output); err == nil {
-			leasePath := filepath.Join(strings.TrimSuffix(output, string(os.PathSeparator)), "permissions_lease.json")
-			newNotBefore, newNotAfter = a.readLease(leasePath)
+		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err == nil {
+			newNotBefore, newNotAfter = a.readLease(filepath.Join(nodeDir, "permissions_lease.json"))
 		}
 	case ArtifactPSK:
 		var pskA, pskB pskSlotLease
-		pskA, pskB, err = a.renewPSKAt80(p, url, cert, key, ca, output)
+		pskA, pskB, err = a.renewPSKAt80(p, url, cert, key, ca, domainOut)
 		if err == nil {
 			// Anchor issuedAt to sA's real validity start (lease not_before) so
 			// the 80% point stays fixed across renewals instead of drifting.
@@ -251,7 +252,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			p.mu.Unlock()
 		}
 	case ArtifactCRL:
-		err = a.GetCRLFunc(url, cert, key, ca, "", output)
+		err = a.GetCRLFunc(url, cert, key, ca, "", domainOut)
 		if err == nil {
 			newNotAfter = a.Now().Add(a.CRLInterval)
 		}
@@ -319,13 +320,10 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 
 // identityKeyPath returns the on-disk path of the DDS identity certificate's
 // dedicated private key. This key is intentionally distinct from the mTLS
-// device key (Store.PrivateKeyPath) so the DDS Security identity credential and
-// the provisioning-transport credential live in separate trust domains.
+// node key (Store.NodeKeyPath) so the DDS Security identity credential and the
+// provisioning-transport credential live in separate trust domains.
 func (a *Agent) identityKeyPath(p *profile) string {
-	return filepath.Join(
-		a.Store.ConnextArtifactsDir(p.serial, p.effectiveDomainID(), p.storeParticipant()),
-		"identity_key.pem",
-	)
+	return a.Store.IdentityKeyPath(p.service(), p.domain(), p.participant(), p.node())
 }
 
 // renewIdentity creates a CSR for the DDS identity certificate using a dedicated
@@ -388,7 +386,8 @@ func (a *Agent) renewIdentity(p *profile, url, cert, key, ca, output string) (ti
 // by calling POST /device/renew-cert.  The renewed certificate is saved to
 // mtls_artifacts/node.crt and the new NotAfter is read from the certificate.
 func (a *Agent) renewDeviceCert(p *profile, url, cert, key, ca string) (time.Time, error) {
-	existingKey, err := a.ReadFile(a.Store.PrivateKeyPath(p.serial, p.effectiveDomainID(), p.storeParticipant()))
+	service, domain, participant, node := p.service(), p.domain(), p.participant(), p.node()
+	existingKey, err := a.ReadFile(a.Store.NodeKeyPath(service, domain, participant, node))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("reading existing device key: %w", err)
 	}
@@ -404,10 +403,10 @@ func (a *Agent) renewDeviceCert(p *profile, url, cert, key, ca string) (time.Tim
 		return time.Time{}, fmt.Errorf("generating CSR from existing key: %w", err)
 	}
 
-	mtlsOutput := a.Store.MTLSDir(p.serial, p.effectiveDomainID(), p.storeParticipant()) + string(os.PathSeparator)
+	mtlsOutput := a.Store.NodeAgentDir(service, domain, participant, node) + string(os.PathSeparator)
 	if err := a.RenewDeviceCertFunc(url, cert, key, ca, "", csrPath, 0, mtlsOutput); err != nil {
 		return time.Time{}, err
 	}
 
-	return a.readCertNotAfter(a.Store.DeviceCertPath(p.serial, p.effectiveDomainID(), p.storeParticipant())), nil
+	return a.readCertNotAfter(a.Store.NodeCertPath(service, domain, participant, node)), nil
 }

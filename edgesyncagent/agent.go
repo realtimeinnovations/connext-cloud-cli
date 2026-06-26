@@ -87,27 +87,23 @@ type AgentState struct {
 	IssuedAt   map[ArtifactID]time.Time `json:"issued_at,omitempty"`
 	DeviceName string                   `json:"device_name,omitempty"`
 
-	// ServiceID is the edge provisioning service namespace (e.g. ces-alpha-123).
-	// Used for CSR generation and API endpoint URL construction.
-	// Empty in state files written before the domain_template_id folder
-	// restructure; in that case the directory name doubles as serviceID.
+	// ServiceID is the edge provisioning service (e.g. ces-alpha-123) — the
+	// top level of the layered artifact tree. Used for CSR generation, API
+	// endpoint URL construction, and the connext_artifacts/<service> root.
 	ServiceID string `json:"service_id,omitempty"`
 
-	// DomainTemplateID is the second-level folder name under .connext/<serial>/:
-	//   .connext/<serial>/<domain_template_id>/<participant_template_id>/
-	// Empty in state files written before this field was introduced; falls
-	// back to ServiceID (= directory name) when absent.
+	// DomainTemplateID is the domain template (e.g. 0:domain-0849), the second
+	// scope level under the service. Every enrolled node has one; rehydrate
+	// reconstructs the profile from this field, so it is always set.
 	DomainTemplateID string `json:"domain_template_id,omitempty"`
 
-	// Serial is the device serial number that forms the root folder under .connext/:
-	//   .connext/<serial>/<domain_template_id>/<participant_template_id>/
-	// Empty in state files written before the serial-root restructure;
-	// in that case the legacy 2-level layout is used.
+	// Serial is the device serial number — the node id leaf of the layered
+	// layout (<service>/<domain>/<participant>/<node>).
 	Serial string `json:"serial,omitempty"`
 
-	// ParticipantTemplateID is the participant template identifier stored for
-	// display and auditing purposes.  It matches the directory name at the
-	// participant level and the participant_id field of the EnrollRequest.
+	// ParticipantTemplateID is the participant template identifier — the scope
+	// level between domain and node. It matches the participant_id field of the
+	// EnrollRequest.
 	ParticipantTemplateID string `json:"participant_template_id,omitempty"`
 
 	// PSK rolling-key protocol state.
@@ -127,10 +123,10 @@ type AgentState struct {
 // profile is the in-memory state for one serial+domain_template+participant triple.
 type profile struct {
 	mu               sync.Mutex
-	serviceID        string // API / CSR org (e.g. ces-alpha-123)
-	domainTemplateID string // second-level on-disk folder under <serial>/
-	serial           string // root on-disk folder under .connext/
-	participantID    string // participant template ID (directory name + request field)
+	serviceID        string // provisioning service / CSR org (e.g. ces-alpha-123); artifact-tree root
+	domainTemplateID string // domain template (e.g. 0:domain-0849); domain scope
+	serial           string // device serial; node id leaf
+	participantID    string // participant template ID (request field); participant scope
 	deviceName       string
 	state            ProfileState
 	notAfter         map[ArtifactID]time.Time
@@ -149,41 +145,36 @@ type profile struct {
 
 func (p *profile) setState(s ProfileState) { p.state = s }
 
-// effectiveDomainID returns the domainTemplateID to use for store paths.
-// When domainTemplateID has not been set (e.g. profiles created directly in
-// tests or rehydrated from pre-migration state files), it falls back to
-// serviceID so that existing on-disk layouts continue to work.
-func (p *profile) effectiveDomainID() string {
-	if p.domainTemplateID != "" {
-		return p.domainTemplateID
-	}
-	return p.serviceID
-}
+// ─── Layered-layout identifiers ──────────────────────────────────────────────
+// These map the profile onto the (service, domain, participant, node) model
+// used by the layered store paths.
 
-// deviceSlot returns the composite participant ID used for store paths when
-// a device name is present, creating a per-device subdirectory:
-// .connext/<domain_template_id>/<participantID>/<deviceName>/
-func deviceSlot(participantID, deviceName string) string {
+// service is the provisioning service id (top level of the artifact tree).
+func (p *profile) service() string { return p.serviceID }
+
+// domain is the domain template id. Every enrolled node has one (enrollment
+// fails if the service does not return a domain_template_id), so there is no
+// fallback.
+func (p *profile) domain() string { return p.domainTemplateID }
+
+// participant is the participant template id.
+func (p *profile) participant() string { return p.participantID }
+
+// node is the per-node leaf id. The device serial uniquely identifies the
+// node; deviceName is retained on the profile for in-memory keying and display
+// but is not part of the on-disk path.
+func (p *profile) node() string { return p.serial }
+
+func profileKey(domainOrService, participantID, deviceName string) string {
+	// The first segment is the profile's domain template id (p.domain()) once
+	// enrolled; getOrCreateProfile keys the transient pre-enrollment profile by
+	// serviceID until the domain is known, after which enrollProfile re-keys it.
+	// Including it ensures that two enrollments with the same participantID but
+	// different domainTemplateIDs produce distinct in-memory entries.
 	if deviceName == "" {
-		return participantID
+		return domainOrService + "/" + participantID
 	}
-	return filepath.Join(participantID, deviceName)
-}
-
-func (p *profile) storeParticipant() string {
-	return deviceSlot(p.participantID, p.deviceName)
-}
-
-func profileKey(serviceID, participantID, deviceName string) string {
-	// serviceID here is p.effectiveDomainID() — domainTemplateID when set,
-	// falling back to serviceID for pre-migration profiles.  Including it in
-	// the key ensures that two enrollments with the same participantID but
-	// different domainTemplateIDs (different domain+participant combinations)
-	// produce distinct in-memory entries and are not incorrectly merged.
-	if deviceName == "" {
-		return serviceID + "/" + participantID
-	}
-	return serviceID + "/" + participantID + "/" + deviceName
+	return domainOrService + "/" + participantID + "/" + deviceName
 }
 
 // Agent is the long-lived process managing the security artifact lifecycle for
@@ -501,104 +492,57 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // ─── Startup rehydration ─────────────────────────────────────────────────────
 
-// rehydrate walks the store looking for agent_state.json files and rebuilds
-// the in-memory profile map and renewal timers without contacting the service.
+// rehydrate walks the per-node agent tree looking for agent_state.json files
+// and rebuilds the in-memory profile map and renewal timers without contacting
+// the service.  Each state file is self-describing (it carries service, domain,
+// participant, serial and device name), so the profile is reconstructed from
+// the file contents rather than from its on-disk location.
 //
-// Layout (serial-rooted):
+// Layout:
 //
-//	.connext/<serial>/<domain_template_id>/<participant_id>/agent_state.json            (no device name)
-//	.connext/<serial>/<domain_template_id>/<participant_id>/<device_name>/agent_state.json
+//	<agent>/mtls_artifacts/<service>/<domain>/<participant>/<node>/agent_state.json
 func (a *Agent) rehydrate() {
-	serials, err := a.ReadDir(a.Store.BaseDir)
-	if err != nil {
-		return
-	}
-	for _, serial := range serials {
-		if !serial.IsDir() {
-			continue
-		}
-		serialPath := filepath.Join(a.Store.BaseDir, serial.Name())
-		domains, err := a.ReadDir(serialPath)
-		if err != nil {
-			continue
-		}
-		for _, domain := range domains {
-			if !domain.IsDir() {
-				continue
-			}
-			domainPath := filepath.Join(serialPath, domain.Name())
-			participants, err := a.ReadDir(domainPath)
-			if err != nil {
-				continue
-			}
-			for _, participant := range participants {
-				if !participant.IsDir() {
-					continue
-				}
-				participantPath := filepath.Join(domainPath, participant.Name())
-
-				// No-device slot: serial/domain/participant/agent_state.json
-				if _, err := a.ReadFile(filepath.Join(participantPath, "agent_state.json")); err == nil {
-					a.loadProfile(serial.Name(), domain.Name(), participant.Name(), "")
-					continue
-				}
-
-				// With-device slot: serial/domain/participant/<device>/agent_state.json
-				devices, err := a.ReadDir(participantPath)
-				if err != nil {
-					continue
-				}
-				for _, device := range devices {
-					if !device.IsDir() {
-						continue
-					}
-					if _, err := a.ReadFile(filepath.Join(participantPath, device.Name(), "agent_state.json")); err == nil {
-						a.loadProfile(serial.Name(), domain.Name(), participant.Name(), device.Name())
-					}
-				}
-			}
-		}
+	for _, statePath := range a.findStateFiles(a.Store.MTLSRoot()) {
+		a.loadProfile(statePath)
 	}
 }
 
-// loadProfile loads persisted state for one profile and schedules its timers.
-// serial is the root folder (.connext/<serial>/).
-// dirName is the domain_template_id.
-// participantID and deviceName identify the slot within dirName.
-func (a *Agent) loadProfile(serial, dirName, participantID, deviceName string) {
-	storePart := deviceSlot(participantID, deviceName)
-	statePath := filepath.Join(a.Store.SlotDir(serial, dirName, storePart), "agent_state.json")
+// findStateFiles returns every agent_state.json path under dir (recursively).
+func (a *Agent) findStateFiles(dir string) []string {
+	entries, err := a.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			found = append(found, a.findStateFiles(path)...)
+		} else if entry.Name() == "agent_state.json" {
+			found = append(found, path)
+		}
+	}
+	return found
+}
+
+// loadProfile loads persisted state from statePath and schedules its timers.
+// All identifiers are read from the (self-describing) state file.
+func (a *Agent) loadProfile(statePath string) {
 	data, err := a.ReadFile(statePath)
 	if err != nil {
 		return
 	}
 	var st AgentState
 	if err := json.Unmarshal(data, &st); err != nil {
-		a.emitf(catWarning, tui.LogWarn, "Warning: corrupt agent state file for %s/%s/%s, skipping: %v", dirName, participantID, deviceName, err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: corrupt agent state file %s, skipping: %v", statePath, err)
 		return
 	}
 
-	// Restore serviceID.  It is stored explicitly in current state files; older
-	// state files written before the field existed fall back to the directory
-	// name, which equalled the serviceID at that time.
-	serviceID := st.ServiceID
-	if serviceID == "" {
-		serviceID = dirName
-	}
-	domainTemplateID := st.DomainTemplateID
-
-	// Restore serial.  It is stored explicitly in current state files; fall back
-	// to the on-disk root folder name when absent.
-	restoredSerial := st.Serial
-	if restoredSerial == "" {
-		restoredSerial = serial
-	}
-
 	p := &profile{
-		serviceID:        serviceID,
-		domainTemplateID: domainTemplateID,
-		serial:           restoredSerial,
-		participantID:    participantID,
+		serviceID:        st.ServiceID,
+		domainTemplateID: st.DomainTemplateID,
+		serial:           st.Serial,
+		participantID:    st.ParticipantTemplateID,
 		deviceName:       st.DeviceName,
 		state:            st.State,
 		notAfter:         st.NotAfter,
@@ -608,19 +552,16 @@ func (a *Agent) loadProfile(serial, dirName, participantID, deviceName string) {
 		pskBNotBefore:    st.PSKBNotBefore,
 		pskBaseTTL:       st.PSKBaseTTL,
 	}
-	if p.deviceName == "" {
-		p.deviceName = deviceName
-	}
 	if p.notAfter == nil {
 		p.notAfter = make(map[ArtifactID]time.Time)
 	}
 	if p.issuedAt == nil {
 		p.issuedAt = make(map[ArtifactID]time.Time)
 	}
-	a.profiles.Store(profileKey(p.effectiveDomainID(), participantID, p.deviceName), p)
+	a.profiles.Store(profileKey(p.domain(), p.participantID, p.deviceName), p)
 	a.scheduleAll(p)
 	a.emitf(catState, tui.LogInfo, "profile rehydrated serial=%s service=%s domain=%s participant=%s device=%s state=%s",
-		restoredSerial, serviceID, p.effectiveDomainID(), participantID, p.deviceName, p.state)
+		p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state)
 }
 
 // ─── Background loops ────────────────────────────────────────────────────────
@@ -772,12 +713,9 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
 
-	// Pass storePart as participantID so EnrollDevice writes directly to the
-	// device-level slot (participantID/deviceName) without any post-enrollment
-	// relocation.
-	storePart := deviceSlot(req.ParticipantID, req.DeviceName)
-
-	domainTemplateID, enrollErr := a.EnrollFunc(req.ServiceID, storePart, req.Serial, req.MACs, csrPath, keyPath, req.CampaignToken)
+	// The participant template and serial (node) are passed separately so
+	// EnrollDevice writes directly into the layered node slot.
+	domainTemplateID, enrollErr := a.EnrollFunc(req.ServiceID, req.ParticipantID, req.Serial, req.MACs, csrPath, keyPath, req.CampaignToken)
 	if enrollErr != nil {
 		// HTTP 409 means the device is already enrolled in this campaign (e.g. a
 		// previous attempt succeeded but a later step failed).  If the device key
@@ -788,7 +726,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 			effectiveID = req.ServiceID
 		}
 		keyAlreadyStored := func() bool {
-			_, err := a.ReadFile(a.Store.PrivateKeyPath(req.Serial, effectiveID, storePart))
+			_, err := a.ReadFile(a.Store.NodeKeyPath(req.ServiceID, effectiveID, req.ParticipantID, req.Serial))
 			return err == nil
 		}
 		alreadyEnrolled := strings.Contains(enrollErr.Error(), "409")
@@ -815,7 +753,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		p.mu.Lock()
 		p.domainTemplateID = domainTemplateID
 		p.mu.Unlock()
-		newKey := profileKey(p.effectiveDomainID(), req.ParticipantID, req.DeviceName)
+		newKey := profileKey(p.domain(), req.ParticipantID, req.DeviceName)
 		if oldKey != newKey {
 			a.profiles.Delete(oldKey)
 			a.profiles.Store(newKey, p)
@@ -827,17 +765,22 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	p.deviceName = req.DeviceName
 	p.mu.Unlock()
 
-	// Compute the authoritative output path now that domainTemplateID is known.
-	output := a.Store.ConnextArtifactsDir(p.serial, p.effectiveDomainID(), storePart) + string(os.PathSeparator)
+	// Compute the scoped output paths now that domainTemplateID is known.
+	// Identity and permissions are node-scoped; PSK and CRL are domain-scoped.
+	service, domain, participant, node := p.service(), p.domain(), p.participant(), p.node()
+	nodeDir := a.Store.NodeDir(service, domain, participant, node)
+	domainDir := a.Store.DomainDir(service, domain)
+	nodeOut := nodeDir + string(os.PathSeparator)
+	domainOut := domainDir + string(os.PathSeparator)
 
 	// Derive and persist the device endpoint URL so that subsequent mTLS
 	// calls (identity, permissions, etc.) can resolve it from the store.
 	// Priority: (1) already stored, (2) device_domain from campaign token.
-	url := a.Store.ResolveDeviceURL(p.serial, p.effectiveDomainID(), storePart)
+	url := a.Store.ResolveNodeURL(service, domain, participant, node)
 	if url == "" {
-		if domain := CampaignTokenDeviceDomain(req.CampaignToken); domain != "" {
-			url = "https://" + domain
-			_ = a.Store.WriteDeviceURL(p.serial, p.effectiveDomainID(), storePart, url)
+		if deviceDomain := CampaignTokenDeviceDomain(req.CampaignToken); deviceDomain != "" {
+			url = "https://" + deviceDomain
+			_ = a.Store.WriteNodeURL(service, domain, participant, node, url)
 		}
 	}
 	if url == "" {
@@ -846,41 +789,40 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		p.mu.Unlock()
 		return fmt.Errorf("cannot determine device endpoint URL; configure a region with 'rticloud configure --region <region>'")
 	}
-	cert, key, ca := a.Store.ResolveMTLSDefaults(p.serial, p.effectiveDomainID(), storePart, "", "", "")
+	cert, key, ca := a.Store.ResolveNodeMTLS(service, domain, participant, node, "", "", "")
 
-	notAfterIdentity, err := a.renewIdentity(p, url, cert, key, ca, output)
+	notAfterIdentity, err := a.renewIdentity(p, url, cert, key, ca, nodeOut)
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
 
-	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", output); err != nil {
+	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
-	if err := a.RequestPSKFunc(url, cert, key, ca, "", output); err != nil {
+	if err := a.RequestPSKFunc(url, cert, key, ca, "", domainOut); err != nil {
 		return fmt.Errorf("psk: %w", err)
 	}
-	if err := a.GetCRLFunc(url, cert, key, ca, "", output); err != nil {
+	if err := a.GetCRLFunc(url, cert, key, ca, "", domainOut); err != nil {
 		return fmt.Errorf("crl: %w", err)
 	}
 
-	outputDir := strings.TrimSuffix(output, string(os.PathSeparator))
 	enrolledAt := a.Now()
 
 	// Set up the PSK rolling-key initial file layout and phase timers.
 	// initializePSKFiles also populates p.notAfter[ArtifactPSK],
 	// p.notAfter[ArtifactPSKRotate], p.notAfter[ArtifactPSKCleanup],
 	// p.pskBNotAfter, and p.pskBaseTTL.
-	a.initializePSKFiles(p, outputDir, enrolledAt)
+	a.initializePSKFiles(p, domainDir, enrolledAt)
 	p.mu.Lock()
 	if !notAfterIdentity.IsZero() {
 		p.notAfter[ArtifactIdentity] = notAfterIdentity
-		if nb, _ := a.readLease(filepath.Join(outputDir, "identity_lease.json")); !nb.IsZero() {
+		if nb, _ := a.readLease(filepath.Join(nodeDir, "identity_lease.json")); !nb.IsZero() {
 			p.issuedAt[ArtifactIdentity] = nb
 		} else {
 			p.issuedAt[ArtifactIdentity] = enrolledAt
 		}
 	}
-	if nb, na := a.readLease(filepath.Join(outputDir, "permissions_lease.json")); !na.IsZero() {
+	if nb, na := a.readLease(filepath.Join(nodeDir, "permissions_lease.json")); !na.IsZero() {
 		p.notAfter[ArtifactPermissions] = na
 		if !nb.IsZero() {
 			p.issuedAt[ArtifactPermissions] = nb
@@ -895,7 +837,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	p.notAfter[ArtifactCRL] = enrolledAt.Add(a.CRLInterval)
 	p.issuedAt[ArtifactCRL] = enrolledAt
 	// Track device cert expiry for display (not yet renewable).
-	if na := a.readCertNotAfter(a.Store.DeviceCertPath(p.serial, p.effectiveDomainID(), storePart)); !na.IsZero() {
+	if na := a.readCertNotAfter(a.Store.NodeCertPath(service, domain, participant, node)); !na.IsZero() {
 		p.notAfter[ArtifactDeviceCert] = na
 		p.issuedAt[ArtifactDeviceCert] = enrolledAt
 	}

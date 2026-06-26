@@ -92,7 +92,7 @@ func (a *Agent) snapshotProfiles() []profileSnapshot {
 		for k, v := range p.issuedAt {
 			is[k] = v
 		}
-		out = append(out, profileSnapshot{p.serial, p.serviceID, p.effectiveDomainID(), p.participantID, p.deviceName, p.state, na, is})
+		out = append(out, profileSnapshot{p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state, na, is})
 		p.mu.Unlock()
 		return true
 	})

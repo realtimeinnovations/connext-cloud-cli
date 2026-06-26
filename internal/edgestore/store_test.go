@@ -117,6 +117,92 @@ func TestLayeredPaths_ConnextDirOverride(t *testing.T) {
 	}
 }
 
+func TestWriteEnrollArtifacts_Layered(t *testing.T) {
+	s := newTestStore(t)
+	const (
+		svc  = "edge-prov"
+		dom  = "0:domain-0849"
+		part = "participant-sensors-0849"
+		node = "SN-001"
+	)
+	arts := EnrollArtifacts{
+		DeviceCertPEM: []byte("CERT"),
+		CAChainPEM:    []byte("CHAIN"),
+		PrivateKeyPEM: []byte("KEY"),
+		GovernanceP7S: []byte("GOV"),
+	}
+	if err := s.WriteEnrollArtifacts(svc, dom, part, node, arts); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(path, want string) {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("missing file %s: %v", path, err)
+		}
+		if string(data) != want {
+			t.Fatalf("file %s: got %q, want %q", path, string(data), want)
+		}
+	}
+
+	// mTLS material → node agent dir.
+	check(s.NodeCertPath(svc, dom, part, node), "CERT")
+	check(s.NodeKeyPath(svc, dom, part, node), "KEY")
+	check(s.NodeCAChainPath(svc, dom, part, node), "CHAIN")
+	// CA certs → service root (shared).
+	check(s.IdentityCAPath(svc), "CHAIN")
+	check(s.PermissionsCAPath(svc), "CHAIN")
+	// governance → domain dir (shared).
+	check(s.GovernancePath(svc, dom), "GOV")
+
+	info, err := os.Stat(s.NodeKeyPath(svc, dom, part, node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("node.key mode: got %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestResolveNodeMTLSAndURL(t *testing.T) {
+	s := newTestStore(t)
+	const (
+		svc  = "edge-prov"
+		dom  = "0:domain-0849"
+		part = "participant-sensors-0849"
+		node = "SN-001"
+	)
+	// Nothing stored yet: resolve is a no-op and URL is empty.
+	if c, k, ca := s.ResolveNodeMTLS(svc, dom, part, node, "", "", ""); c != "" || k != "" || ca != "" {
+		t.Fatalf("expected empty mTLS resolution, got %q %q %q", c, k, ca)
+	}
+	if u := s.ResolveNodeURL(svc, dom, part, node); u != "" {
+		t.Fatalf("expected empty URL, got %q", u)
+	}
+
+	if err := s.WriteEnrollArtifacts(svc, dom, part, node, EnrollArtifacts{
+		DeviceCertPEM: []byte("CERT"), PrivateKeyPEM: []byte("KEY"), CAChainPEM: []byte("CHAIN"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteNodeURL(svc, dom, part, node, "https://node.example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	cert, key, ca := s.ResolveNodeMTLS(svc, dom, part, node, "", "", "")
+	if cert != s.NodeCertPath(svc, dom, part, node) || key != s.NodeKeyPath(svc, dom, part, node) || ca != s.NodeCAChainPath(svc, dom, part, node) {
+		t.Fatalf("unexpected mTLS resolution: %q %q %q", cert, key, ca)
+	}
+	// Caller-supplied values are preserved.
+	if c, _, _ := s.ResolveNodeMTLS(svc, dom, part, node, "explicit", "", ""); c != "explicit" {
+		t.Fatalf("explicit cert should be preserved, got %q", c)
+	}
+	if u := s.ResolveNodeURL(svc, dom, part, node); u != "https://node.example.com" {
+		t.Fatalf("unexpected URL: %q", u)
+	}
+}
+
 func TestWriteArtifacts(t *testing.T) {
 	s := newTestStore(t)
 	arts := EnrollArtifacts{

@@ -59,15 +59,23 @@ func (f *fakeFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.files[path] = append([]byte(nil), data...)
-	f.dirs[filepath.Dir(path)] = true
+	f.addDirsLocked(filepath.Dir(path))
 	return nil
 }
 
 func (f *fakeFS) MkdirAll(path string, _ os.FileMode) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.dirs[path] = true
+	f.addDirsLocked(path)
 	return nil
+}
+
+// addDirsLocked registers dir and all of its ancestors so recursive ReadDir
+// walks can descend into them. Caller must hold f.mu.
+func (f *fakeFS) addDirsLocked(dir string) {
+	for d := dir; d != "" && d != "." && d != string(os.PathSeparator); d = filepath.Dir(d) {
+		f.dirs[d] = true
+	}
 }
 
 func (f *fakeFS) ReadDir(path string) ([]fs.DirEntry, error) {
@@ -163,14 +171,12 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	a := NewAgent(store, logger)
 	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
-		// EnrollDevice store path); mtls_artifacts/ is alongside it.
-		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
-		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
-		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
+		// Simulate EnrollDevice returning a domain template and writing the node
+		// key into the layered mTLS slot at that domain.
+		mtlsDir := a.Store.NodeAgentDir(serviceID, "dom", participantID, serial)
 		ffs.MkdirAll(mtlsDir, 0o755)
-		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
-		return "", nil
+		ffs.WriteFile(a.Store.NodeKeyPath(serviceID, "dom", participantID, serial), keyData, 0o600)
+		return "dom", nil
 	}
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
 		// Write a fake identity cert so renewIdentity can copy it to node.crt.
@@ -310,8 +316,12 @@ func TestRehydrate_LoadsProfileAndSchedulesTimers(t *testing.T) {
 	now := time.Unix(0, 0)
 	notAfter := now.Add(100 * time.Second)
 	st := AgentState{
-		State:  StateActive,
-		Serial: "SN-001",
+		State:                 StateActive,
+		Serial:                "SN-001",
+		ServiceID:             "svc1",
+		DomainTemplateID:      "dom1",
+		ParticipantTemplateID: "part1",
+		DeviceName:            "dev1",
 		NotAfter: map[ArtifactID]time.Time{
 			ArtifactIdentity:    notAfter,
 			ArtifactPermissions: notAfter,
@@ -322,15 +332,11 @@ func TestRehydrate_LoadsProfileAndSchedulesTimers(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(st)
-	ffs.WriteFile("/connext/SN-001/svc1/part1/dev1/agent_state.json", data, 0o644)
-	ffs.MkdirAll("/connext/SN-001/svc1/part1/dev1", 0o755)
-	ffs.MkdirAll("/connext/SN-001/svc1/part1", 0o755)
-	ffs.MkdirAll("/connext/SN-001/svc1", 0o755)
-	ffs.MkdirAll("/connext/SN-001", 0o755)
+	ffs.WriteFile(a.Store.NodeStatePath("svc1", "dom1", "part1", "SN-001"), data, 0o644)
 
 	a.rehydrate()
 
-	val, ok := a.profiles.Load(profileKey("svc1", "part1", "dev1"))
+	val, ok := a.profiles.Load(profileKey("dom1", "part1", "dev1"))
 	if !ok {
 		t.Fatal("profile not loaded")
 	}
@@ -350,11 +356,7 @@ func TestRehydrate_SkipsCorruptStateFile(t *testing.T) {
 		return time.AfterFunc(10*time.Hour, f)
 	}
 
-	ffs.WriteFile("/connext/SN-001/svc1/part1/dev1/agent_state.json", []byte("not json"), 0o644)
-	ffs.MkdirAll("/connext/SN-001/svc1/part1/dev1", 0o755)
-	ffs.MkdirAll("/connext/SN-001/svc1/part1", 0o755)
-	ffs.MkdirAll("/connext/SN-001/svc1", 0o755)
-	ffs.MkdirAll("/connext/SN-001", 0o755)
+	ffs.WriteFile(a.Store.NodeStatePath("svc1", "svc1", "part1", "SN-001"), []byte("not json"), 0o644)
 
 	a.rehydrate() // must not panic
 
@@ -470,15 +472,13 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 	enrolled := make(chan struct{}, 1)
 	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
-		// EnrollDevice store path); mtls_artifacts/ is alongside it.
-		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
-		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
-		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
+		// Simulate EnrollDevice returning a domain template and writing the node
+		// key into the layered mTLS slot at that domain.
+		mtlsDir := a.Store.NodeAgentDir(serviceID, "dom", participantID, serial)
 		ffs.MkdirAll(mtlsDir, 0o755)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		enrolled <- struct{}{}
-		return "", nil
+		return "dom", nil
 	}
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
@@ -606,6 +606,8 @@ func TestPersistState_WritesAgentStateJSON(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
+	p.serial = "SN-001"
+	p.domainTemplateID = "dom"
 	p.state = StateActive
 	p.notAfter[ArtifactIdentity] = now.Add(100 * time.Second)
 	p.notAfter[ArtifactPermissions] = now.Add(200 * time.Second)
@@ -615,7 +617,7 @@ func TestPersistState_WritesAgentStateJSON(t *testing.T) {
 		t.Fatalf("persistState: %v", err)
 	}
 
-	data, err := ffs.ReadFile("/connext/svc/part/dev/agent_state.json")
+	data, err := ffs.ReadFile(a.Store.NodeStatePath("svc", "dom", "part", "SN-001"))
 	if err != nil {
 		t.Fatalf("state file not written: %v", err)
 	}
@@ -676,16 +678,14 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		// Simulate EnrollDevice writing the device key to the mTLS store.
 		keyData, _ := os.ReadFile(keyFile)
-		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
-		// EnrollDevice store path); mtls_artifacts/ is alongside it.
-		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
-		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
-		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
+		// Simulate EnrollDevice returning a domain template and writing the node
+		// key into the layered mTLS slot at that domain.
+		mtlsDir := a.Store.NodeAgentDir(serviceID, "dom", participantID, serial)
 		ffs.MkdirAll(mtlsDir, 0o755)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.crt"), []byte("FAKE-CERT"), 0o644)
 		ffs.WriteFile(filepath.Join(mtlsDir, "ca-chain.crt"), []byte("FAKE-CA"), 0o644)
-		return "", nil
+		return "dom", nil
 	}
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
 		// Write a lease file and a fake identity cert to the output directory.
@@ -708,7 +708,8 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 		t.Fatalf("enrollProfile: %v", err)
 	}
 
-	val, ok := a.profiles.Load(profileKey("svc", "part", "dev"))
+	// After a successful enroll the profile is re-keyed under its domain.
+	val, ok := a.profiles.Load(profileKey("dom", "part", "dev"))
 	if !ok {
 		t.Fatal("profile not stored")
 	}
@@ -758,12 +759,9 @@ func TestEnrollProfile_EnrollErrorLeavesUnregistered(t *testing.T) {
 func TestRun_StartsAndStopsCleanly(t *testing.T) {
 	ffs := newFakeFS()
 	// Seed a profile so rehydrate finds it and the first-run wizard is skipped.
-	stateData, _ := json.Marshal(AgentState{State: StateActive, NotAfter: map[ArtifactID]time.Time{}, IssuedAt: map[ArtifactID]time.Time{}, DeviceName: "dev"})
-	_ = ffs.MkdirAll("/connext/svc", 0o755)
-	_ = ffs.MkdirAll("/connext/svc/part", 0o755)
-	_ = ffs.MkdirAll("/connext/svc/part/dev", 0o755)
-	_ = ffs.WriteFile("/connext/svc/part/dev/agent_state.json", stateData, 0o644)
+	stateData, _ := json.Marshal(AgentState{State: StateActive, NotAfter: map[ArtifactID]time.Time{}, IssuedAt: map[ArtifactID]time.Time{}, ServiceID: "svc", ParticipantTemplateID: "part", Serial: "SN-001", DeviceName: "dev"})
 	a := buildTestAgent(t, ffs)
+	_ = ffs.WriteFile(a.Store.NodeStatePath("svc", "svc", "part", "SN-001"), stateData, 0o644)
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
 	}
@@ -787,12 +785,9 @@ func TestRun_StartsAndStopsCleanly(t *testing.T) {
 func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 	ffs := newFakeFS()
 	// Seed a profile so rehydrate finds it and the first-run wizard is skipped.
-	stateData, _ := json.Marshal(AgentState{State: StateActive, NotAfter: map[ArtifactID]time.Time{}, IssuedAt: map[ArtifactID]time.Time{}, DeviceName: "dev"})
-	_ = ffs.MkdirAll("/connext/svc", 0o755)
-	_ = ffs.MkdirAll("/connext/svc/part", 0o755)
-	_ = ffs.MkdirAll("/connext/svc/part/dev", 0o755)
-	_ = ffs.WriteFile("/connext/svc/part/dev/agent_state.json", stateData, 0o644)
+	stateData, _ := json.Marshal(AgentState{State: StateActive, NotAfter: map[ArtifactID]time.Time{}, IssuedAt: map[ArtifactID]time.Time{}, ServiceID: "svc", ParticipantTemplateID: "part", Serial: "SN-001", DeviceName: "dev"})
 	a := buildTestAgent(t, ffs)
+	_ = ffs.WriteFile(a.Store.NodeStatePath("svc", "svc", "part", "SN-001"), stateData, 0o644)
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
 	}
@@ -800,18 +795,16 @@ func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 	enrolled := make(chan struct{}, 1)
 	a.EnrollFunc = func(serviceID, participantID, serial string, _ []string, _, keyFile, _ string) (string, error) {
 		keyData, _ := os.ReadFile(keyFile)
-		// Reconstruct the connext_artifacts/ slot path the agent writes to (the
-		// EnrollDevice store path); mtls_artifacts/ is alongside it.
-		output := a.Store.ConnextArtifactsDir(serial, serviceID, participantID) + string(os.PathSeparator)
-		slotDir := filepath.Dir(strings.TrimSuffix(output, string(os.PathSeparator)))
-		mtlsDir := filepath.Join(slotDir, "mtls_artifacts")
+		// Simulate EnrollDevice returning a domain template and writing the node
+		// key into the layered mTLS slot at that domain.
+		mtlsDir := a.Store.NodeAgentDir(serviceID, "dom", participantID, serial)
 		ffs.MkdirAll(mtlsDir, 0o755)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		select {
 		case enrolled <- struct{}{}:
 		default:
 		}
-		return "", nil
+		return "dom", nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -899,12 +892,9 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	// Fake PEM key in the mtls_artifacts slot.
-	mtlsDir := "/connext/svc/part/dev/mtls_artifacts"
-	ffs.MkdirAll(mtlsDir, 0o755)
-	ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), []byte("KEY"), 0o600)
-	ffs.WriteFile(filepath.Join(mtlsDir, "node_url"), []byte("https://svc.devices.example.com"), 0o644)
-	ffs.WriteFile("/connext/svc/part/dev/node_url", []byte("https://svc.devices.example.com"), 0o644)
+	// Fake PEM key + URL in the layered mTLS slot (node = serial).
+	ffs.WriteFile(a.Store.NodeKeyPath("svc", "dom", "part", "SN-001"), []byte("KEY"), 0o600)
+	ffs.WriteFile(a.Store.NodeURLPath("svc", "dom", "part", "SN-001"), []byte("https://svc.devices.example.com"), 0o644)
 
 	// Build a minimal self-signed cert to act as the renewed device cert.
 	notAfterWant := time.Now().Add(24 * time.Hour).Truncate(time.Second)
@@ -928,6 +918,8 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
+	p.serial = "SN-001"
+	p.domainTemplateID = "dom"
 	// Expire the device-cert notAfter so the timer fires immediately.
 	p.notAfter[ArtifactDeviceCert] = now.Add(-1 * time.Second)
 	p.mu.Unlock()
@@ -1024,7 +1016,8 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 	pskANotAfter := now.Add(100 * time.Second)
 	pskBNotAfter := now.Add(200 * time.Second)
 
-	outDir := "/connext/svc/part/dev/connext_artifacts"
+	// PSK is domain-scoped.
+	outDir := a.Store.DomainDir("svc", "dom")
 	// renewPSKAt80 reads psk_primary.txt before the server call.
 	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
 
@@ -1038,6 +1031,7 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
+	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // old expiry, so newNotAfter advances
 	p.issuedAt[ArtifactPSK] = now
 	p.pskBaseTTL = 100 * time.Second // baseTTL of sA
@@ -1094,7 +1088,8 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 	pskBNotBefore := pskANotAfter
 	pskBNotAfter := pskANotAfter.Add(100 * time.Second)
 
-	outDir := "/connext/svc/part/dev/connext_artifacts"
+	// PSK is domain-scoped.
+	outDir := a.Store.DomainDir("svc", "dom")
 	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
 	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
@@ -1107,6 +1102,7 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
+	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // stale, so newNotAfter advances
 	p.issuedAt[ArtifactPSK] = now
 	p.pskBaseTTL = 100 * time.Second
@@ -1142,7 +1138,8 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 		return time.AfterFunc(10*time.Hour, f)
 	}
 
-	outDir := "/connext/svc/part/dev/connext_artifacts"
+	// PSK is domain-scoped.
+	outDir := a.Store.DomainDir("svc", "dom")
 	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
 	ffs.WriteFile(filepath.Join(outDir, "psk_temp.txt"), []byte("sB"), 0o644)
 
@@ -1152,6 +1149,7 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
+	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // stale sA expiry (== now → would render "needs renewal")
 	p.issuedAt[ArtifactPSK] = now.Add(-baseTTL)
 	p.notAfter[ArtifactPSKRotate] = now

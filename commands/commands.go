@@ -1069,10 +1069,17 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 
 	// Write to the local artifact store when available.
 	if runner.EdgeStore != nil && edgeSystemID != "" && participantID != "" {
-		// participantID is used directly as the store slot.  The caller
-		// (agent) passes storePart = participantID/deviceName when a device
-		// name is present, so no outputDir-based derivation is needed.
-		storeSlot := participantID
+		// Layered layout identifiers: the provisioning service, the domain
+		// template, the participant template and the node (device serial).
+		// Every enrolled node is fully qualified by all four; a missing
+		// domain_template_id means the enrollment response is incomplete and
+		// we cannot determine the artifact store location.
+		if domainTemplateID == "" {
+			return "", fmt.Errorf("enrollment response missing domain_template_id; cannot place artifacts")
+		}
+		service := edgeSystemID
+		domain := domainTemplateID
+		node := serial
 		arts := edgestore.EnrollArtifacts{
 			DeviceCertPEM: []byte(stringField(result, "certificate")),
 			CAChainPEM:    []byte(stringField(result, "caChain")),
@@ -1086,26 +1093,24 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 				arts.PrivateKeyPEM = keyData
 			}
 		}
-		// Use domainTemplateID as the first path segment when available;
-		// fall back to edgeSystemID for backward compatibility.
-		firstSeg := domainTemplateID
-		if firstSeg == "" {
-			firstSeg = edgeSystemID
-		}
-		if err := runner.EdgeStore.WriteArtifacts(serial, firstSeg, storeSlot, arts); err != nil {
+		if err := runner.EdgeStore.WriteEnrollArtifacts(service, domain, participantID, node, arts); err != nil {
 			return domainTemplateID, err
 		}
-		// enroll_lease.json — written to connext_artifacts/ when the response
+		// enroll_lease.json — written to the node directory when the response
 		// contains a top-level "lease" or "server_time_utc" key.
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-			leaseDest := filepath.Join(runner.EdgeStore.ConnextArtifactsDir(serial, firstSeg, storeSlot), "enroll_lease.json")
+			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantID, node)
+			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
+			}
+			leaseDest := filepath.Join(nodeDir, "enroll_lease.json")
 			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
 		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:          %s\n  Domain Template:  %s\n  Participant:      %s\n  Store:            %s\n",
-			edgeSystemID, firstSeg, participantID, runner.EdgeStore.SlotDir(serial, firstSeg, storeSlot))
+			edgeSystemID, domain, participantID, runner.EdgeStore.NodeAgentDir(service, domain, participantID, node))
 		return domainTemplateID, nil
 	}
 

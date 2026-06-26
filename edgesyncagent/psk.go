@@ -45,7 +45,7 @@ import (
 // pskPrimaryPath / pskExtraPath / pskTempPath / pskLeasePath return the
 // canonical file paths for the four PSK files under a profile's output dir.
 func (a *Agent) pskOutDir(p *profile) string {
-	return a.Store.ConnextArtifactsDir(p.serial, p.effectiveDomainID(), p.storeParticipant())
+	return a.Store.DomainDir(p.service(), p.domain())
 }
 
 func pskPrimaryPath(outDir string) string { return filepath.Join(outDir, "psk_primary.txt") }
