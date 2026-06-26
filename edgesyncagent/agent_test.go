@@ -715,7 +715,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 		ffs.MkdirAll(mtlsDir, 0o755)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.key"), keyData, 0o600)
 		ffs.WriteFile(filepath.Join(mtlsDir, "node.crt"), []byte("FAKE-CERT"), 0o644)
-		ffs.WriteFile(filepath.Join(mtlsDir, "ca-chain.pem"), []byte("FAKE-CA"), 0o644)
+		ffs.WriteFile(filepath.Join(mtlsDir, "ca-chain.crt"), []byte("FAKE-CA"), 0o644)
 		return "", nil
 	}
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
@@ -967,7 +967,7 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 		// Write the fake renewed cert where the agent expects it.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
 		ffs.WriteFile(filepath.Join(dir, "node.crt"), certPEM, 0o644)
-		ffs.WriteFile(filepath.Join(dir, "ca-chain.pem"), []byte("CA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "ca-chain.crt"), []byte("CA"), 0o644)
 		renewCalled <- struct{}{}
 		return nil
 	}

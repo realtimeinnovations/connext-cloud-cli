@@ -25,7 +25,7 @@ type Store struct {
 // EnrollArtifacts holds the security material returned by a successful enrollment.
 type EnrollArtifacts struct {
 	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
-	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.pem (0644)
+	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/ (0644)
 	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
 	GovernanceP7S []byte // written to connext_artifacts/governance.p7s (0644)
 }
@@ -71,7 +71,7 @@ func (s *Store) PrivateKeyPath(serial, domainTemplateID, participantID string) s
 
 // CAChainPath is the Provisioning Service CA chain path.
 func (s *Store) CAChainPath(serial, domainTemplateID, participantID string) string {
-	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "ca-chain.pem")
+	return filepath.Join(s.MTLSDir(serial, domainTemplateID, participantID), "ca-chain.crt")
 }
 
 // WriteArtifacts persists enrollment artifacts into the correct slot,
@@ -97,7 +97,10 @@ func (s *Store) WriteArtifacts(serial, domainTemplateID, participantID string, a
 		if err := s.WriteFile(s.CAChainPath(serial, domainTemplateID, participantID), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
-		if err := s.WriteFile(filepath.Join(connextDir, "ca-chain.pem"), a.CAChainPEM, 0o644); err != nil {
+		if err := s.WriteFile(filepath.Join(connextDir, "identity_ca.crt"), a.CAChainPEM, 0o644); err != nil {
+			return err
+		}
+		if err := s.WriteFile(filepath.Join(connextDir, "permissions_ca.crt"), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
 	}

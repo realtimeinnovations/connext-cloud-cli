@@ -588,8 +588,8 @@ func TestRenewDeviceCertToDirectory(t *testing.T) {
 	if string(written["node.crt"]) != certPEM {
 		t.Fatalf("unexpected node.crt: %s", written["node.crt"])
 	}
-	if string(written["ca-chain.pem"]) != caPEM {
-		t.Fatalf("unexpected ca-chain.pem: %s", written["ca-chain.pem"])
+	if string(written["ca-chain.crt"]) != caPEM {
+		t.Fatalf("unexpected ca-chain.crt: %s", written["ca-chain.crt"])
 	}
 	if !strings.Contains(out.String(), "Device certificate saved to") {
 		t.Fatalf("unexpected stdout: %s", out.String())

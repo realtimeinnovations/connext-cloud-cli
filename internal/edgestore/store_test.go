@@ -34,7 +34,7 @@ func TestSlotPaths(t *testing.T) {
 	if got := s.PrivateKeyPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "node.key") {
 		t.Fatalf("unexpected PrivateKeyPath: %s", got)
 	}
-	if got := s.CAChainPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "ca-chain.pem") {
+	if got := s.CAChainPath("SN-001", "dom", "p1"); got != filepath.Join("/base", "SN-001", "dom", "p1", "mtls_artifacts", "ca-chain.crt") {
 		t.Fatalf("unexpected CAChainPath: %s", got)
 	}
 }
@@ -64,7 +64,8 @@ func TestWriteArtifacts(t *testing.T) {
 
 	check(s.DeviceCertPath("SN-001", "svc1", "pp1"), "CERT")
 	check(s.CAChainPath("SN-001", "svc1", "pp1"), "CHAIN")
-	check(filepath.Join(s.ConnextArtifactsDir("SN-001", "svc1", "pp1"), "ca-chain.pem"), "CHAIN")
+	check(filepath.Join(s.ConnextArtifactsDir("SN-001", "svc1", "pp1"), "identity_ca.crt"), "CHAIN")
+	check(filepath.Join(s.ConnextArtifactsDir("SN-001", "svc1", "pp1"), "permissions_ca.crt"), "CHAIN")
 	check(s.PrivateKeyPath("SN-001", "svc1", "pp1"), "KEY")
 	check(filepath.Join(s.ConnextArtifactsDir("SN-001", "svc1", "pp1"), "governance.p7s"), "GOV")
 
@@ -87,7 +88,7 @@ func TestWriteArtifactsSkipsEmpty(t *testing.T) {
 		t.Fatal("node.crt should not exist when DeviceCertPEM is empty")
 	}
 	if _, err := os.Stat(s.CAChainPath("SN-001", "svc1", "pp1")); err != nil {
-		t.Fatalf("ca-chain.pem should exist: %v", err)
+		t.Fatalf("ca-chain.crt should exist: %v", err)
 	}
 }
 

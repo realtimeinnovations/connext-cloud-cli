@@ -383,7 +383,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 // When output is non-empty the response is written as two files:
 //
 //	<output>/node.crt     — the newly signed certificate
-//	<output>/ca-chain.pem   — the CA chain
+//	<output>/ca-chain.crt   — the CA chain
 //
 // When output is empty the raw JSON response is printed to stdout.
 func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr, csrFile string, validityMinutes int, output string) error {
@@ -413,7 +413,7 @@ func (runner *Runner) RenewDeviceCert(url, certFile, keyFile, caFile, serverAddr
 		return err
 	}
 	certPEM, _ := result["certificate"].(string)
-	caDest := resolveOutputPath(output, "ca-chain.pem")
+	caDest := resolveOutputPath(output, "ca-chain.crt")
 	certDest := resolveOutputPath(output, "node.crt")
 	if err := runner.saveToFile(certDest, []byte(certPEM)); err != nil {
 		return err

@@ -1753,7 +1753,7 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (must be signed by the same key as the current device certificate)")
 		c.Flags().IntVar(&validityMinutes, "validity-minutes", 0, "Requested certificate lifetime in minutes (0 = server default)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.pem (defaults to mtls_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.crt (defaults to mtls_artifacts/ "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
