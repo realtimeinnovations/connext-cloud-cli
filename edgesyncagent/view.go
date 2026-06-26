@@ -34,6 +34,10 @@ const (
 	// tabActiveLabelMax caps the expanded name shown on the selected profile.
 	tabActiveLabelMax = 24
 
+	// agentLogPanelMaxLines caps how many recent log lines the Agent Log panel
+	// shows at once, independent of terminal height.
+	agentLogPanelMaxLines = 12
+
 	// orangeFg is the foreground used for the selected profile's outline.
 	orangeFg = "\x1b[38;5;208m"
 )
@@ -210,8 +214,13 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	if tw == nil {
 		tw = a.Out
 	}
-	width, _ := tui.TerminalSize(tw, agentDefaultWidth, agentDefaultHeight)
-	contentWidth := tui.MaxInt(60, width-4)
+	width, height := tui.TerminalSize(tw, agentDefaultWidth, agentDefaultHeight)
+	// Reserve the last terminal column so the panel's right border never lands
+	// in the auto-wrap column.  Drawing into the final column, combined with
+	// framePaint's per-line erase-to-EOL, is why the orange vertical line on
+	// the right edge did not show in the terminal.
+	panelWidth := tui.MaxInt(12, width-1)
+	contentWidth := tui.MaxInt(60, panelWidth-4)
 
 	countLine := fmt.Sprintf("%d participant artifacts monitored  •  Logs: %s", len(profiles), a.LogFile)
 	body := []string{tui.PadStyled(countLine, contentWidth)}
@@ -287,8 +296,101 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 		BorderStyle: tui.StyleOrangeBorder,
 		PaddedBody:  true,
 	}
-	panelLines := tui.RenderPanel("Edge-Sync Agent", body, width, theme)
+	panelLines := tui.RenderPanel("Edge-Sync Agent", body, panelWidth, theme)
+
+	// Agent Log panel — same muted gray style as the gateway "Routing Log".
+	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines))...)
 	return framePaint(panelLines)
+}
+
+// renderAgentLogPanel renders the "Agent Log" panel that sits beneath the main
+// panel, mirroring the gateway "Routing Log" panel's style and colors.  It
+// shows the most recent log lines that fit within remainingHeight and returns
+// nil (no separator, no panel) when there is no vertical room.
+func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight int) []string {
+	// Overhead below the main panel: 1 blank separator + 2 panel borders.
+	logBudget := remainingHeight - 3
+	if logBudget < 1 {
+		return nil
+	}
+	if logBudget > agentLogPanelMaxLines {
+		logBudget = agentLogPanelMaxLines
+	}
+
+	recent := compactAgentLogLines(a.logs.recent())
+	var src []string
+	switch {
+	case len(recent) == 0:
+		src = []string{"Waiting for agent activity..."}
+	case len(recent) > logBudget:
+		src = recent[len(recent)-logBudget:]
+	default:
+		src = recent
+	}
+
+	body := make([]string, 0, len(src))
+	for _, line := range src {
+		body = append(body, agentFormatLogLine(line, contentWidth))
+	}
+
+	panel := tui.RenderPanel("Agent Log", body, panelWidth, agentLogPanelTheme())
+	return append([]string{""}, panel...)
+}
+
+// agentLogPanelTheme matches the gateway log panel: muted section title and a
+// gray border, with no body padding.
+func agentLogPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleMutedSection, BorderStyle: tui.StyleGrayBorder}
+}
+
+// agentFormatLogLine styles one log line for the Agent Log panel, using the
+// same glyphs and colors as the gateway Routing Log panel: green "•" for
+// positive lifecycle events, yellow "!" for problems, dim "·" otherwise.
+func agentFormatLogLine(line string, contentWidth int) string {
+	trimmed := strings.TrimSpace(line)
+	textWidth := tui.MaxInt(8, contentWidth-2)
+	formatted := tui.TruncateDisplay(trimmed, textWidth)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lower, "warning"):
+		return "· " + tui.Dim(formatted)
+	case strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "could not"):
+		return "! " + "\x1b[33m" + formatted + "\x1b[0m"
+	case strings.Contains(lower, "complete") || strings.Contains(lower, "rotated") ||
+		strings.Contains(lower, "started") || strings.Contains(lower, "cleared"):
+		return "• " + "\x1b[32m" + formatted + "\x1b[0m"
+	default:
+		return "· " + tui.Dim(formatted)
+	}
+}
+
+// compactAgentLogLines collapses runs of identical consecutive log lines into a
+// single "<line> (xN)" entry, matching the gateway log panel's behavior.
+func compactAgentLogLines(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	compacted := make([]string, 0, len(lines))
+	current := lines[0]
+	count := 1
+	flush := func() {
+		if count > 1 {
+			compacted = append(compacted, fmt.Sprintf("%s (x%d)", current, count))
+		} else {
+			compacted = append(compacted, current)
+		}
+	}
+	for _, line := range lines[1:] {
+		if line == current {
+			count++
+			continue
+		}
+		flush()
+		current = line
+		count = 1
+	}
+	flush()
+	return compacted
 }
 
 // framePaint emits one full refresh without a screen-clearing blank frame.
@@ -638,6 +740,9 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			repaint()
 		}
 
+		// Clear the screen once before the first render so that the orange
+		// panel border is not obscured by earlier terminal output.
+		_, _ = io.WriteString(tw, "\x1b[H\x1b[J")
 		repaint()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()

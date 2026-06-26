@@ -217,12 +217,20 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 		var pskBNA time.Time
 		newNotAfter, pskBNA, err = a.renewPSKAt80(p, url, cert, key, ca, output)
 		if err == nil {
-			// Reschedule PSK phase timers (PSKRotate / PSKCleanup) for the next cycle.
+			// Re-arm the PSK phase timers for the CURRENT primary.  At the 80%
+			// mark the active seed (sA) has not rotated out yet — it expires at
+			// newNotAfter (psk_a's notAfter, the 100% mark), so the rotation
+			// must fire at newNotAfter.  Arming it for pskBNotAfter (sB's
+			// expiry, a full key-period later) would cancel the imminent sA
+			// rotation and delay the first rotation by an entire period.
+			// pskRotate advances ArtifactPSKRotate to sB's expiry when sA
+			// actually rotates out, and the following 80% renewal re-arms it
+			// for the new primary.
 			now2 := a.Now()
 			p.mu.Lock()
-			p.notAfter[ArtifactPSKRotate] = p.pskBNotAfter
+			p.notAfter[ArtifactPSKRotate] = newNotAfter
 			if p.pskBaseTTL > 0 {
-				p.notAfter[ArtifactPSKCleanup] = p.pskBNotAfter.Add(p.pskBaseTTL / 5) // +20 %
+				p.notAfter[ArtifactPSKCleanup] = newNotAfter.Add(p.pskBaseTTL / 5) // +20 %
 			}
 			// Advance pskBNotAfter to the new sB's notAfter for the next cycle.
 			// Use sB's value if available; fall back to sA's.

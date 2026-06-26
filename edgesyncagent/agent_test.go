@@ -1040,3 +1040,76 @@ func buildFakeCertPEM(t *testing.T, notAfter time.Time) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+// ─── PSK rolling-key timers ───────────────────────────────────────────────────
+
+// pskLeaseJSON builds a psk_lease.json with separate pskA and pskB slots, as
+// returned by POST /psk and parsed by readPSKABNotAfter.
+func pskLeaseJSON(pskANotAfter, pskBNotAfter time.Time) []byte {
+	slot := func(notAfter time.Time) map[string]any {
+		return map[string]any{"lease": map[string]any{"notAfter": notAfter}}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"pskA": slot(pskANotAfter),
+		"pskB": slot(pskBNotAfter),
+	})
+	return data
+}
+
+// TestRenewPSKAt80_RotateFiresAtPrimaryExpiry verifies that the 80% PSK renewal
+// arms the rotation for the CURRENT primary's expiry (sA), not the next seed's
+// expiry (sB).  Arming it for sB would skip sA's rotation and delay the first
+// rotation by an entire key period (the "first interval is 2x the rest" bug).
+func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+
+	now := time.Unix(1000, 0)
+	a.Now = func() time.Time { return now }
+	// Keep timers from firing during the test.
+	a.AfterFunc = func(_ time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+
+	// sA (current primary) expires before sB (the staged next seed) — that
+	// stagger is the whole point of the overlap window.
+	pskANotAfter := now.Add(100 * time.Second)
+	pskBNotAfter := now.Add(200 * time.Second)
+
+	outDir := "/connext/svc/part/dev/connext_artifacts"
+	// renewPSKAt80 reads psk_primary.txt before the server call.
+	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
+
+	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"), pskLeaseJSON(pskANotAfter, pskBNotAfter), 0o644)
+		return nil
+	}
+
+	p := a.getOrCreateProfile("svc", "part", "dev")
+	p.mu.Lock()
+	p.notAfter[ArtifactPSK] = now           // old expiry, so newNotAfter advances
+	p.issuedAt[ArtifactPSK] = now
+	p.pskBaseTTL = 100 * time.Second        // baseTTL of sA
+	p.pskBNotAfter = pskBNotAfter           // current sB expiry (must NOT leak into rotate)
+	p.notAfter[ArtifactPSKRotate] = pskANotAfter
+	p.mu.Unlock()
+
+	a.renewArtifact(p, ArtifactPSK, "test")
+
+	p.mu.Lock()
+	gotRotate := p.notAfter[ArtifactPSKRotate]
+	gotCleanup := p.notAfter[ArtifactPSKCleanup]
+	p.mu.Unlock()
+
+	if !gotRotate.Equal(pskANotAfter) {
+		t.Errorf("ArtifactPSKRotate = %v, want sA's expiry %v (got sB's expiry %v means the first rotation is delayed a full period)",
+			gotRotate, pskANotAfter, pskBNotAfter)
+	}
+	wantCleanup := pskANotAfter.Add(100 * time.Second / 5)
+	if !gotCleanup.Equal(wantCleanup) {
+		t.Errorf("ArtifactPSKCleanup = %v, want %v (120%% of sA)", gotCleanup, wantCleanup)
+	}
+}

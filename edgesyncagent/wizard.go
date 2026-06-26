@@ -148,7 +148,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 
 		// Show a truncated confirmation so the user sees what was entered
 		// without flooding the terminal with the full JWT.
-		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m Campaign token: %s\n", truncateToken(token, 60))
+		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Campaign token: %s\n", truncateToken(token, 60))
 
 		serviceID, participantID, err := ParseCampaignToken(token)
 		if err != nil {
@@ -171,7 +171,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		var serial string
 		if a.DeviceID != "" {
 			serial = a.DeviceID
-			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m Serial number: %s\n", serial)
+			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", serial)
 		} else if a.ManualMode {
 			if detectedSerial != "" {
 				choice, err := a.SelectFunc(
@@ -198,7 +198,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		} else {
 			if detectedSerial != "" {
 				serial = detectedSerial
-				_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m Serial number: %s\n", serial)
+				_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", serial)
 			} else {
 				serial, err = a.InputFunc("Serial number")
 				if err != nil {
@@ -218,7 +218,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		var macs []string
 		if len(a.MACs) > 0 {
 			macs = a.MACs
-			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m MAC addresses: %s\n", strings.Join(macs, ", "))
+			_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m MAC addresses: %s\n", strings.Join(macs, ", "))
 		} else if a.ManualMode {
 			if len(detectedMACs) > 0 {
 				choice, err := a.SelectFunc(
@@ -248,7 +248,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		} else {
 			if len(detectedMACs) > 0 {
 				macs = detectedMACs
-				_, _ = fmt.Fprintf(a.promptOut(), "\x1b[38;5;208m✔\x1b[0m MAC addresses: %s\n", strings.Join(macs, ", "))
+				_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m MAC addresses: %s\n", strings.Join(macs, ", "))
 			} else {
 				macs, err = a.promptMultipleMACs()
 				if err != nil {

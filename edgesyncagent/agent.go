@@ -26,6 +26,11 @@ import (
 
 const renewalThreshold = 0.80 // renew at 80% of artifact lifetime
 
+// agentLogRingSize is the number of recent log lines retained in memory for the
+// TUI "Agent Log" panel.  Only a slice of these is shown at once, depending on
+// available terminal height.
+const agentLogRingSize = 200
+
 // ProfileState represents the lifecycle state of a Participant Profile.
 type ProfileState string
 
@@ -247,6 +252,52 @@ type Agent struct {
 	profiles sync.Map           // profileKey → *profile
 	wg       sync.WaitGroup
 	outMu    sync.Mutex // serializes writes to Out/LogOut across goroutines
+	logs     *logRing   // recent log lines surfaced in the TUI "Agent Log" panel
+}
+
+// logRing is a thread-safe, fixed-capacity ring buffer of the most recent agent
+// log lines.  It implements io.Writer so it can be teed onto LogOut, capturing
+// every diagnostic line for display in the TUI "Agent Log" panel.
+type logRing struct {
+	mu    sync.Mutex
+	lines []string
+	max   int
+}
+
+func newLogRing(max int) *logRing {
+	if max <= 0 {
+		max = agentLogRingSize
+	}
+	return &logRing{max: max, lines: make([]string, 0, max)}
+}
+
+// Write captures each newline-terminated line. The agent emits whole lines, so
+// no partial-line buffering is needed; blank lines are dropped.
+func (r *logRing) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		r.append(line)
+	}
+	return len(p), nil
+}
+
+func (r *logRing) append(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, line)
+	if len(r.lines) > r.max {
+		r.lines = append([]string(nil), r.lines[len(r.lines)-r.max:]...)
+	}
+}
+
+// recent returns a copy of the buffered lines, oldest first.
+func (r *logRing) recent() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.lines...)
 }
 
 // syncWriter serializes concurrent writes to an underlying writer using a
@@ -288,6 +339,7 @@ func NewAgent(store *edgestore.Store, out io.Writer) *Agent {
 		SweepInterval: 5 * time.Minute,
 		CRLInterval:   5 * time.Minute,
 		RetryInterval: 2 * time.Minute,
+		logs:          newLogRing(agentLogRingSize),
 	}
 	a.SelectFunc = a.defaultSelect
 	a.InputFunc = a.defaultInput
@@ -329,7 +381,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	// wrapped with a MultiWriter below.
 	a.termOut = a.Out
 
-	// Open log file — tee all output to both terminal and file.
+	// Open log file — tee all output to both terminal and file.  Diagnostics
+	// written to LogOut are additionally captured in the in-memory ring buffer
+	// so the TUI "Agent Log" panel can display them live.
+	if a.logs == nil {
+		a.logs = newLogRing(agentLogRingSize)
+	}
+	var fileSink io.Writer = io.Discard
 	if a.LogFile != "" {
 		if err := a.MkdirAll(filepath.Dir(a.LogFile), 0o755); err != nil {
 			return fmt.Errorf("creating log directory: %w", err)
@@ -339,10 +397,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("opening log file %s: %w", a.LogFile, err)
 		}
 		defer lf.Close()
-		logWriter := timestampWriter{w: lf}
-		a.LogOut = logWriter
-		a.Out = io.MultiWriter(a.Out, logWriter)
+		fileSink = timestampWriter{w: lf}
+		a.Out = io.MultiWriter(a.Out, fileSink)
 	}
+	a.LogOut = io.MultiWriter(fileSink, a.logs)
 
 	// Serialize all writes to Out/LogOut through one mutex: the sweep and inbox
 	// loops below run concurrently and both emit diagnostics. termOut is left
@@ -374,7 +432,11 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.runDisplay(ctx) // blocks until ctx is cancelled
 	a.wg.Wait()
-	_, _ = fmt.Fprintln(a.Out, "agent stopped")
+	_, _ = fmt.Fprint(a.Out, "\nEdge-Sync Agent interrupted.\n")
+	if a.LogFile != "" {
+		_, _ = fmt.Fprintf(a.Out, "• Logs saved under %s\n", filepath.Dir(a.LogFile))
+	}
+	_, _ = fmt.Fprintln(a.Out, "• Run 'rticloud agent' from this directory to start this agent again.")
 	return nil
 }
 
