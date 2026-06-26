@@ -222,14 +222,11 @@ type Agent struct {
 	WriteFile  func(string, []byte, os.FileMode) error
 	MkdirAll   func(string, os.FileMode) error
 	ReadDir    func(string) ([]fs.DirEntry, error)
-	Rename     func(string, string) error
 	RemoveFile func(string) error
 
 	// Configuration.
 	LogFile       string // Path to agent log file; created/appended by Run.
 	InboxDir      string
-	ProcessedDir  string
-	FailedDir     string
 	PollInterval  time.Duration
 	SweepInterval time.Duration
 	CRLInterval   time.Duration
@@ -391,11 +388,8 @@ func NewAgent(store *edgestore.Store, out io.Writer) *Agent {
 		WriteFile:     os.WriteFile,
 		MkdirAll:      os.MkdirAll,
 		ReadDir:       os.ReadDir,
-		Rename:        os.Rename,
 		RemoveFile:    os.Remove,
 		InboxDir:      filepath.Join(store.BaseDir, "inbox"),
-		ProcessedDir:  filepath.Join(store.BaseDir, "processed"),
-		FailedDir:     filepath.Join(store.BaseDir, "failed"),
 		PollInterval:  10 * time.Second,
 		SweepInterval: 5 * time.Minute,
 		CRLInterval:   5 * time.Minute,
@@ -475,10 +469,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.Out = &syncWriter{mu: &a.outMu, w: a.Out}
 	a.LogOut = &syncWriter{mu: &a.outMu, w: a.LogOut}
 
-	for _, dir := range []string{a.InboxDir, a.ProcessedDir, a.FailedDir} {
-		if err := a.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating directory %s: %w", dir, err)
-		}
+	if err := a.MkdirAll(a.InboxDir, 0o755); err != nil {
+		return fmt.Errorf("creating directory %s: %w", a.InboxDir, err)
 	}
 
 	a.rehydrate()
@@ -734,12 +726,12 @@ func (a *Agent) processInboxFile(path string) {
 	var req EnrollRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		a.emitf(catInbox, tui.LogWarn, "inbox invalid JSON path=%s err=%v", path, err)
-		a.moveInboxFile(path, a.FailedDir, "parse error: "+err.Error())
+		a.removeInboxFile(path)
 		return
 	}
 	if req.ServiceID == "" || req.ParticipantID == "" || req.Serial == "" || len(req.MACs) == 0 {
-		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields path=%s", path)
-		a.moveInboxFile(path, a.FailedDir, "missing required fields: service_id, participant_id, serial, macs")
+		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields (service_id, participant_id, serial, macs) path=%s", path)
+		a.removeInboxFile(path)
 		return
 	}
 
@@ -749,10 +741,10 @@ func (a *Agent) processInboxFile(path string) {
 	if err := a.enrollProfile(req); err != nil {
 		a.emitf(catInbox, tui.LogWarn, "inbox enrollment failed service=%s participant=%s err=%v",
 			req.ServiceID, req.ParticipantID, err)
-		a.moveInboxFile(path, a.FailedDir, err.Error())
+		a.removeInboxFile(path)
 		return
 	}
-	a.moveInboxFile(path, a.ProcessedDir, "")
+	a.removeInboxFile(path)
 	a.emitf(catEnroll, tui.LogGood, "inbox enrollment complete service=%s participant=%s",
 		req.ServiceID, req.ParticipantID)
 }
@@ -936,22 +928,12 @@ func (a *Agent) getOrCreateProfile(serviceID, participantID, deviceName string) 
 	return p
 }
 
-// moveInboxFile moves a processed or failed inbox file to targetDir, writing
-// an optional result sidecar when resultMsg is non-empty.
-func (a *Agent) moveInboxFile(src, targetDir, resultMsg string) {
-	if err := a.MkdirAll(targetDir, 0o755); err != nil {
-		a.emitf(catWarning, tui.LogWarn, "Warning: inbox could not create target dir %s: %v", targetDir, err)
-		return
-	}
-	dst := filepath.Join(targetDir, filepath.Base(src))
-	if err := a.Rename(src, dst); err != nil {
-		a.emitf(catWarning, tui.LogWarn, "Warning: inbox could not move file %s → %s: %v", src, dst, err)
-		return
-	}
-	if resultMsg != "" {
-		result := map[string]string{"error": resultMsg}
-		data, _ := json.MarshalIndent(result, "", "  ")
-		_ = a.WriteFile(dst+".result.json", append(data, '\n'), 0o644)
+// removeInboxFile deletes a fully-processed inbox request file. The outcome
+// (success or the failure reason) has already been emitted to the agent log,
+// so the request payload itself is no longer needed on disk.
+func (a *Agent) removeInboxFile(path string) {
+	if err := a.RemoveFile(path); err != nil {
+		a.emitf(catWarning, tui.LogWarn, "Warning: inbox could not remove file %s: %v", path, err)
 	}
 }
 

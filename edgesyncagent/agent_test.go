@@ -35,8 +35,8 @@ type fakeFS struct {
 	mu    sync.RWMutex
 	files map[string][]byte
 	dirs  map[string]bool
-	// renamed tracks (src → dst) pairs that were renamed.
-	renamed [][2]string
+	// removed tracks paths passed to RemoveFile.
+	removed []string
 }
 
 func newFakeFS() *fakeFS {
@@ -96,17 +96,6 @@ func (f *fakeFS) ReadDir(path string) ([]fs.DirEntry, error) {
 		}
 	}
 	return entries, nil
-}
-
-func (f *fakeFS) Rename(src, dst string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if data, ok := f.files[src]; ok {
-		f.files[dst] = data
-		delete(f.files, src)
-	}
-	f.renamed = append(f.renamed, [2]string{src, dst})
-	return nil
 }
 
 type fakeDirEntry struct {
@@ -216,16 +205,14 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	a.WriteFile = ffs.WriteFile
 	a.MkdirAll = ffs.MkdirAll
 	a.ReadDir = ffs.ReadDir
-	a.Rename = ffs.Rename
 	a.RemoveFile = func(path string) error {
 		ffs.mu.Lock()
 		defer ffs.mu.Unlock()
 		delete(ffs.files, path)
+		ffs.removed = append(ffs.removed, path)
 		return nil
 	}
 	a.InboxDir = "/connext/inbox"
-	a.ProcessedDir = "/connext/processed"
-	a.FailedDir = "/connext/failed"
 	a.PollInterval = 50 * time.Millisecond
 	a.SweepInterval = 50 * time.Millisecond
 	return a
@@ -516,17 +503,20 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 		t.Fatal("enroll not called within timeout")
 	}
 
-	// File should have been renamed to processed/.
-	found := false
-	for _, pair := range ffs.renamed {
-		if pair[0] == inboxFile && strings.HasPrefix(pair[1], "/connext/processed/") {
-			found = true
-			break
+	// File should have been removed from the inbox after a successful enroll.
+	if !contains(ffs.removed, inboxFile) {
+		t.Fatalf("inbox file not removed after success; removed: %v", ffs.removed)
+	}
+}
+
+// contains reports whether s is present in xs.
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
 		}
 	}
-	if !found {
-		t.Fatalf("inbox file not moved to processed; renames: %v", ffs.renamed)
-	}
+	return false
 }
 
 func TestDrainInbox_RejectsInvalidJSON(t *testing.T) {
@@ -538,15 +528,8 @@ func TestDrainInbox_RejectsInvalidJSON(t *testing.T) {
 
 	a.drainInbox()
 
-	movedToFailed := false
-	for _, pair := range ffs.renamed {
-		if pair[0] == inboxFile && strings.HasPrefix(pair[1], "/connext/failed/") {
-			movedToFailed = true
-			break
-		}
-	}
-	if !movedToFailed {
-		t.Fatalf("bad file not moved to failed; renames: %v", ffs.renamed)
+	if !contains(ffs.removed, inboxFile) {
+		t.Fatalf("bad file not removed from inbox; removed: %v", ffs.removed)
 	}
 }
 
@@ -561,15 +544,8 @@ func TestDrainInbox_RejectsMissingFields(t *testing.T) {
 
 	a.drainInbox()
 
-	movedToFailed := false
-	for _, pair := range ffs.renamed {
-		if pair[0] == inboxFile && strings.HasPrefix(pair[1], "/connext/failed/") {
-			movedToFailed = true
-			break
-		}
-	}
-	if !movedToFailed {
-		t.Fatal("incomplete request not moved to failed")
+	if !contains(ffs.removed, inboxFile) {
+		t.Fatalf("incomplete request not removed from inbox; removed: %v", ffs.removed)
 	}
 }
 
@@ -614,17 +590,10 @@ func TestDrainInbox_EnrollmentFailureMovesToFailed(t *testing.T) {
 
 	a.drainInbox()
 
-	// processInboxFile launches enrollProfile in the same goroutine, so by the
-	// time drainInbox returns the file has been moved.
-	movedToFailed := false
-	for _, pair := range ffs.renamed {
-		if pair[0] == inboxFile && strings.HasPrefix(pair[1], "/connext/failed/") {
-			movedToFailed = true
-			break
-		}
-	}
-	if !movedToFailed {
-		t.Fatalf("failed enrollment not moved to failed dir; renames: %v", ffs.renamed)
+	// processInboxFile runs enrollProfile in the same goroutine, so by the time
+	// drainInbox returns the file has been removed.
+	if !contains(ffs.removed, inboxFile) {
+		t.Fatalf("failed enrollment not removed from inbox; removed: %v", ffs.removed)
 	}
 }
 
@@ -905,43 +874,22 @@ func TestGetOrCreateProfile_DifferentDeviceNamesDistinct(t *testing.T) {
 	}
 }
 
-// ─── moveInboxFile ────────────────────────────────────────────────────────────
+// ─── removeInboxFile ──────────────────────────────────────────────────────────
 
-func TestMoveInboxFile_WritesResultSidecar(t *testing.T) {
+func TestRemoveInboxFile_DeletesFile(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
 	src := "/connext/inbox/enroll-x.json"
 	ffs.WriteFile(src, []byte("{}"), 0o644)
 
-	a.moveInboxFile(src, "/connext/failed", "something went wrong")
+	a.removeInboxFile(src)
 
-	dst := "/connext/failed/enroll-x.json.result.json"
-	data, err := ffs.ReadFile(dst)
-	if err != nil {
-		t.Fatalf("result sidecar not written: %v", err)
+	if _, err := ffs.ReadFile(src); err == nil {
+		t.Fatal("inbox file should have been removed")
 	}
-	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("sidecar unmarshal: %v", err)
-	}
-	if result["error"] != "something went wrong" {
-		t.Fatalf("unexpected sidecar content: %v", result)
-	}
-}
-
-func TestMoveInboxFile_NoSidecarOnSuccess(t *testing.T) {
-	ffs := newFakeFS()
-	a := buildTestAgent(t, ffs)
-
-	src := "/connext/inbox/enroll-ok.json"
-	ffs.WriteFile(src, []byte("{}"), 0o644)
-
-	a.moveInboxFile(src, "/connext/processed", "")
-
-	// No sidecar should be written.
-	if _, err := ffs.ReadFile(src + ".result.json"); err == nil {
-		t.Fatal("unexpected result sidecar for successful move")
+	if !contains(ffs.removed, src) {
+		t.Fatalf("removeInboxFile did not call RemoveFile; removed: %v", ffs.removed)
 	}
 }
 

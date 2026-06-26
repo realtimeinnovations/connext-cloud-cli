@@ -16,7 +16,17 @@ import (
 // Store manages the local artifact cache under BaseDir.
 // All file I/O fields are injectable for testing.
 type Store struct {
-	BaseDir   string
+	// BaseDir is the agent base directory (typically <workdir>/.connext). It
+	// always holds the agent's operational files (inbox, log, mTLS credentials
+	// and per-node state) regardless of ConnextDir.
+	BaseDir string
+
+	// ConnextDir, when non-empty (set via --connext-dir), relocates the
+	// connext_artifacts <service> root to an arbitrary directory. The agent
+	// base (BaseDir) is unaffected. When empty, the connext artifacts default
+	// to BaseDir/agent/connext_artifacts/<service>.
+	ConnextDir string
+
 	WriteFile func(path string, data []byte, perm os.FileMode) error
 	MkdirAll  func(path string, perm os.FileMode) error
 	Stat      func(path string) (os.FileInfo, error)
@@ -27,7 +37,7 @@ type EnrollArtifacts struct {
 	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
 	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/ (0644)
 	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
-	GovernanceP7S []byte // written to connext_artifacts/governance.p7s (0644)
+	GovernanceP7S []byte // written to connext_artifacts/signed_governance.p7s (0644)
 }
 
 // New creates a Store rooted at baseDir with real OS file operations.
@@ -110,7 +120,7 @@ func (s *Store) WriteArtifacts(serial, domainTemplateID, participantID string, a
 		}
 	}
 	if len(a.GovernanceP7S) > 0 {
-		dest := filepath.Join(connextDir, "governance.p7s")
+		dest := filepath.Join(connextDir, "signed_governance.p7s")
 		if err := s.WriteFile(dest, a.GovernanceP7S, 0o644); err != nil {
 			return err
 		}
@@ -233,4 +243,152 @@ func (s *Store) ListSlotsWithURL(serial string) []SlotInfo {
 		}
 	}
 	return slots
+}
+
+// ─── Layered artifact layout ─────────────────────────────────────────────────
+//
+// Artifacts are grouped by the scope at which they are shared:
+//
+//	<BaseDir>/agent/
+//	  inbox/
+//	  rticloud-edge-agent.log
+//	  connext_artifacts/<service>/                      SERVICE: identity_ca.crt, permissions_ca.crt
+//	    <domain>/                                       DOMAIN:  crl.pem, signed_governance.p7s, psk_*
+//	      <participant>/<node>/                         NODE:    identity.crt, signed_permissions.p7s, leases
+//	  mtls_artifacts/<service>/<domain>/<participant>/<node>/
+//	                                                    NODE:    node.crt, node.key, ca-chain.crt, node_url, agent_state.json
+//
+// When ConnextDir is set, the connext_artifacts <service> root is replaced by
+// ConnextDir (the <service> level collapses into the supplied directory); the
+// agent base — inbox, log, mtls_artifacts and per-node state — stays under
+// BaseDir.
+//
+// The identifiers used throughout are:
+//
+//	service     — provisioning service id      (e.g. edge-provisioning-greenfield)
+//	domain      — domain template id           (e.g. 0:domain-0849)
+//	participant — participant template id      (e.g. participant-sensors-0849)
+//	node        — node id (device serial)      (e.g. b9a00ae9a51d4086b52dc96015e4c5b0)
+//
+// NOTE: these methods supersede the serial-rooted SlotDir/ConnextArtifactsDir/
+// MTLSDir family above, which is removed once all callers have migrated.
+
+// AgentDir returns the agent base directory that holds the agent's operational
+// files (inbox, log, mTLS credentials, per-node state). It is never relocated
+// by ConnextDir.
+func (s *Store) AgentDir() string {
+	return filepath.Join(s.BaseDir, "agent")
+}
+
+// InboxDir returns the directory watched for enroll-*.json requests.
+func (s *Store) InboxDir() string {
+	return filepath.Join(s.AgentDir(), "inbox")
+}
+
+// LogPath returns the default agent log file path.
+func (s *Store) LogPath() string {
+	return filepath.Join(s.AgentDir(), "rticloud-edge-agent.log")
+}
+
+// ServiceDir returns the SERVICE-scope root that holds the CA certificates
+// shared by every domain template in the provisioning service. It is the
+// directory relocated by ConnextDir.
+func (s *Store) ServiceDir(service string) string {
+	if s.ConnextDir != "" {
+		return s.ConnextDir
+	}
+	return filepath.Join(s.AgentDir(), "connext_artifacts", service)
+}
+
+// IdentityCAPath is the DDS identity CA, shared across the whole service.
+func (s *Store) IdentityCAPath(service string) string {
+	return filepath.Join(s.ServiceDir(service), "identity_ca.crt")
+}
+
+// PermissionsCAPath is the DDS permissions/governance CA, shared across the
+// whole service.
+func (s *Store) PermissionsCAPath(service string) string {
+	return filepath.Join(s.ServiceDir(service), "permissions_ca.crt")
+}
+
+// DomainDir returns the DOMAIN-scope directory that holds artifacts shared by
+// every participant template in the domain (governance, CRL, PSK).
+func (s *Store) DomainDir(service, domain string) string {
+	return filepath.Join(s.ServiceDir(service), domain)
+}
+
+// GovernancePath is the signed governance document, shared across the domain.
+func (s *Store) GovernancePath(service, domain string) string {
+	return filepath.Join(s.DomainDir(service, domain), "signed_governance.p7s")
+}
+
+// CRLPath is the certificate revocation list, shared across the domain.
+func (s *Store) CRLPath(service, domain string) string {
+	return filepath.Join(s.DomainDir(service, domain), "crl.pem")
+}
+
+// NodeDir returns the NODE-scope directory that holds the participant-specific
+// DDS identity and permissions material.
+func (s *Store) NodeDir(service, domain, participant, node string) string {
+	return filepath.Join(s.DomainDir(service, domain), participant, node)
+}
+
+// IdentityCertPath is the DDS identity certificate for a node.
+func (s *Store) IdentityCertPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity.crt")
+}
+
+// IdentityKeyPath is the dedicated DDS identity private key for a node (kept
+// separate from the mTLS device key).
+func (s *Store) IdentityKeyPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity_key.pem")
+}
+
+// IdentityLeasePath is the DDS identity lease window for a node.
+func (s *Store) IdentityLeasePath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity_lease.json")
+}
+
+// PermissionsPath is the signed permissions document for a node.
+func (s *Store) PermissionsPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "signed_permissions.p7s")
+}
+
+// PermissionsLeasePath is the permissions lease window for a node.
+func (s *Store) PermissionsLeasePath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "permissions_lease.json")
+}
+
+// NodeAgentDir returns the per-node agent directory under mtls_artifacts that
+// holds the node's transport credentials and operational state. It mirrors the
+// connext_artifacts node path but always lives under BaseDir (never relocated
+// by ConnextDir).
+func (s *Store) NodeAgentDir(service, domain, participant, node string) string {
+	return filepath.Join(s.AgentDir(), "mtls_artifacts", service, domain, participant, node)
+}
+
+// NodeCertPath is the mTLS leaf certificate for a node.
+func (s *Store) NodeCertPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "node.crt")
+}
+
+// NodeKeyPath is the mTLS private key for a node.
+func (s *Store) NodeKeyPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "node.key")
+}
+
+// NodeCAChainPath is the Provisioning Service CA chain (mTLS transport trust)
+// for a node.
+func (s *Store) NodeCAChainPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "ca-chain.crt")
+}
+
+// NodeURLPath is the stored device endpoint URL for a node.
+func (s *Store) NodeURLPath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "node_url")
+}
+
+// NodeStatePath is the persisted agent state for a node.
+func (s *Store) NodeStatePath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "agent_state.json")
 }
