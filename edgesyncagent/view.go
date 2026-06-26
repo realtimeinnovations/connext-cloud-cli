@@ -34,10 +34,6 @@ const (
 	// tabActiveLabelMax caps the expanded name shown on the selected profile.
 	tabActiveLabelMax = 24
 
-	// agentLogPanelMaxLines caps how many recent log lines the Agent Log panel
-	// shows at once, independent of terminal height.
-	agentLogPanelMaxLines = 12
-
 	// orangeFg is the foreground used for the selected profile's outline.
 	orangeFg = "\x1b[38;5;208m"
 )
@@ -106,12 +102,10 @@ func (a *Agent) snapshotProfiles() []profileSnapshot {
 
 // agentViewState holds the mutable TUI navigation state for runDisplay.
 type agentViewState struct {
-	activeTab   int
-	rowSel      int
-	focus       focusZone
-	btnSel      int
-	status      string
-	statusUntil time.Time
+	activeTab int
+	rowSel    int
+	focus     focusZone
+	btnSel    int
 }
 
 // truncateLabel shortens s to at most max runes, appending "…" if truncated.
@@ -225,10 +219,8 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	countLine := fmt.Sprintf("%d participant artifacts monitored  •  Logs: %s", len(profiles), a.LogFile)
 	body := []string{tui.PadStyled(countLine, contentWidth)}
 
-	// Transient status line (shown for 4 s after a renew action).
-	if vs.status != "" && now.Before(vs.statusUntil) {
-		body = append(body, tui.Dim("  "+vs.status))
-	}
+	// Manual-renew outcomes are surfaced in the Agent Log panel (via emit), not
+	// as a transient line in the header.
 
 	if len(profiles) == 0 {
 		body = append(body, "")
@@ -299,42 +291,55 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	panelLines := tui.RenderPanel("Edge-Sync Agent", body, panelWidth, theme)
 
 	// Agent Log panel — same muted gray style as the gateway "Routing Log".
-	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines))...)
+	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines), now)...)
 	return framePaint(panelLines)
 }
 
 // renderAgentLogPanel renders the "Agent Log" panel that sits beneath the main
-// panel, mirroring the gateway "Routing Log" panel's style and colors.  It
-// shows the most recent log lines that fit within remainingHeight and returns
-// nil (no separator, no panel) when there is no vertical room.
-func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight int) []string {
+// panel, mirroring the gateway "Routing Log" panel's style and colors.  It shows
+// the most recent log lines that fit within remainingHeight (relative to now,
+// for the per-line age stamp) and returns nil (no separator, no panel) when
+// there is no vertical room.
+func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight int, now time.Time) []string {
+	entries := tui.CompactLogEntries(a.agentLogEntries())
+	total := len(entries)
+	if total == 0 {
+		entries = []tui.LogEntry{{Text: "Waiting for agent activity..."}}
+		total = 1
+	}
+
 	// Overhead below the main panel: 1 blank separator + 2 panel borders.
-	logBudget := remainingHeight - 3
-	if logBudget < 1 {
+	budget := tui.ClampLogBudget(remainingHeight-3, total, tui.LogPanelMaxLines)
+	if budget < 1 {
 		return nil
 	}
-	if logBudget > agentLogPanelMaxLines {
-		logBudget = agentLogPanelMaxLines
+	if len(entries) > budget {
+		entries = entries[len(entries)-budget:]
 	}
 
-	recent := compactAgentLogLines(a.logs.recent())
-	var src []string
-	switch {
-	case len(recent) == 0:
-		src = []string{"Waiting for agent activity..."}
-	case len(recent) > logBudget:
-		src = recent[len(recent)-logBudget:]
-	default:
-		src = recent
-	}
-
-	body := make([]string, 0, len(src))
-	for _, line := range src {
-		body = append(body, agentFormatLogLine(line, contentWidth))
+	body := make([]string, 0, len(entries))
+	for _, e := range entries {
+		body = append(body, tui.FormatLogEntry(e, contentWidth, now))
 	}
 
 	panel := tui.RenderPanel("Agent Log", body, panelWidth, agentLogPanelTheme())
 	return append([]string{""}, panel...)
+}
+
+// agentLogEntries resolves the ring's buffered entries into renderable
+// tui.LogEntry values: classified entries use their authoritative severity;
+// unclassified ones fall back to keyword classification of the text.
+func (a *Agent) agentLogEntries() []tui.LogEntry {
+	raw := a.logs.recentEntries()
+	out := make([]tui.LogEntry, len(raw))
+	for i, e := range raw {
+		sev := e.sev
+		if !e.classified {
+			sev = agentLogSeverity(e.text)
+		}
+		out[i] = tui.LogEntry{Text: e.text, Severity: sev, Time: e.t}
+	}
+	return out
 }
 
 // agentLogPanelTheme matches the gateway log panel: muted section title and a
@@ -345,52 +350,28 @@ func agentLogPanelTheme() tui.PanelTheme {
 
 // agentFormatLogLine styles one log line for the Agent Log panel, using the
 // same glyphs and colors as the gateway Routing Log panel: green "•" for
-// positive lifecycle events, yellow "!" for problems, dim "·" otherwise.
+// positive lifecycle events, yellow "!" for problems, dim "·" otherwise. The
+// glyph/color rendering is shared via tui.FormatLogLine; only the keyword
+// classification below is agent-specific. It is the fallback path for entries
+// that arrive without an authoritative severity (e.g. raw io.Writer output).
 func agentFormatLogLine(line string, contentWidth int) string {
-	trimmed := strings.TrimSpace(line)
-	textWidth := tui.MaxInt(8, contentWidth-2)
-	formatted := tui.TruncateDisplay(trimmed, textWidth)
-	lower := strings.ToLower(trimmed)
-	switch {
-	case strings.Contains(lower, "warning"):
-		return "· " + tui.Dim(formatted)
-	case strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "could not"):
-		return "! " + "\x1b[33m" + formatted + "\x1b[0m"
-	case strings.Contains(lower, "complete") || strings.Contains(lower, "rotated") ||
-		strings.Contains(lower, "started") || strings.Contains(lower, "cleared"):
-		return "• " + "\x1b[32m" + formatted + "\x1b[0m"
-	default:
-		return "· " + tui.Dim(formatted)
-	}
+	return tui.FormatLogLine(line, contentWidth, agentLogSeverity(line))
 }
 
-// compactAgentLogLines collapses runs of identical consecutive log lines into a
-// single "<line> (xN)" entry, matching the gateway log panel's behavior.
-func compactAgentLogLines(lines []string) []string {
-	if len(lines) == 0 {
-		return nil
+// agentLogSeverity maps an agent log line to its display severity by keyword.
+func agentLogSeverity(line string) tui.LogSeverity {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case strings.Contains(lower, "warning"):
+		return tui.LogInfo
+	case strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "could not"):
+		return tui.LogWarn
+	case strings.Contains(lower, "complete") || strings.Contains(lower, "rotated") ||
+		strings.Contains(lower, "started") || strings.Contains(lower, "cleared"):
+		return tui.LogGood
+	default:
+		return tui.LogInfo
 	}
-	compacted := make([]string, 0, len(lines))
-	current := lines[0]
-	count := 1
-	flush := func() {
-		if count > 1 {
-			compacted = append(compacted, fmt.Sprintf("%s (x%d)", current, count))
-		} else {
-			compacted = append(compacted, current)
-		}
-	}
-	for _, line := range lines[1:] {
-		if line == current {
-			count++
-			continue
-		}
-		flush()
-		current = line
-		count = 1
-	}
-	flush()
-	return compacted
 }
 
 // framePaint emits one full refresh without a screen-clearing blank frame.
@@ -451,19 +432,47 @@ func agentRenewalCell(now, issuedAt, notAfter time.Time) string {
 	}
 }
 
+// Calendar-scale display approximations for agentFormatDuration.  Months and
+// years are not exact (real ones vary), but at these magnitudes a renewal
+// countdown only needs a readable order-of-magnitude, so a fixed 30-day month
+// and 365-day year are the conventional choice.
+const (
+	durDay   = 24 * time.Hour
+	durMonth = 30 * durDay
+	durYear  = 365 * durDay
+)
+
+// agentFormatDuration renders a remaining duration with granularity scaled to
+// its magnitude, showing the two or three most significant units (akin to
+// `systemctl`/`uptime` style countdowns).  Precision drops as the value grows,
+// so large countdowns stay readable instead of trailing noise like "400d 5h 3m":
+//
+//	d < 0      → "needs renewal"
+//	d < 1m     → seconds            e.g. "42s"
+//	d < 1h     → minutes + seconds  e.g. "12m 5s"
+//	d < 24h    → hours + minutes    e.g. "5h 20m"
+//	d < 30d    → days + hours + min e.g. "2d 3h 15m"
+//	d < 365d   → months + days      e.g. "3mo 12d"
+//	d >= 365d  → years + days        e.g. "1y 35d"
 func agentFormatDuration(d time.Duration) string {
 	if d < 0 {
 		return "needs renewal"
 	}
-	if d < time.Minute {
-		return "<1m"
+
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm %ds", int(d/time.Minute), int(d/time.Second)%60)
+	case d < durDay:
+		return fmt.Sprintf("%dh %dm", int(d/time.Hour), int(d/time.Minute)%60)
+	case d < durMonth:
+		return fmt.Sprintf("%dd %dh %dm", int(d/durDay), int(d/time.Hour)%24, int(d/time.Minute)%60)
+	case d < durYear:
+		return fmt.Sprintf("%dmo %dd", int(d/durMonth), int(d%durMonth/durDay))
+	default:
+		return fmt.Sprintf("%dy %dd", int(d/durYear), int(d%durYear/durDay))
 	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	if h > 0 {
-		return fmt.Sprintf("%dh %dm", h, m)
-	}
-	return fmt.Sprintf("%dm", m)
 }
 
 // agentExpirationCell returns the local-time expiration string for a given
@@ -652,6 +661,11 @@ func (a *Agent) runDisplay(ctx context.Context) {
 		tw = a.Out
 	}
 	if agentIsTerminal(tw) {
+		// The live TUI owns the terminal: emit() must route events to the file
+		// sink and ring, not stdout, so it does not corrupt the rendered frame.
+		a.tuiActive.Store(true)
+		defer a.tuiActive.Store(false)
+
 		// Hide cursor while rendering.
 		_, _ = io.WriteString(tw, "\x1b[?25l")
 		defer func() { _, _ = io.WriteString(tw, "\x1b[?25h") }()
@@ -709,11 +723,10 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			p := profs[vs.activeTab]
 			art := displayArtifacts[vs.rowSel]
 			if err := a.RenewArtifact(p.domainTemplateID, p.participantID, p.deviceName, art); err != nil {
-				vs.status = fmt.Sprintf("renew %s failed: %v", artifactLabel[art], err)
+				a.emitf(catRenewal, tui.LogWarn, "manual renew %s failed: %v", artifactLabel[art], err)
 			} else {
-				vs.status = fmt.Sprintf("renew %s requested", artifactLabel[art])
+				a.emitf(catRenewal, tui.LogGood, "manual renew %s requested", artifactLabel[art])
 			}
-			vs.statusUntil = a.Now().Add(4 * time.Second)
 		}
 
 		addProfile := func() {
@@ -814,7 +827,7 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			}
 		}
 	} else {
-		_, _ = fmt.Fprintf(a.Out, "agent started inbox=%s\n", a.InboxDir)
+		a.emitf(catState, tui.LogInfo, "agent started inbox=%s", a.InboxDir)
 		<-ctx.Done()
 	}
 }

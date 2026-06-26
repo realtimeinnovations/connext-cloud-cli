@@ -105,6 +105,7 @@ func (a *Agent) persistState(p *profile) error {
 		NotAfter:              make(map[ArtifactID]time.Time, len(p.notAfter)),
 		IssuedAt:              make(map[ArtifactID]time.Time, len(p.issuedAt)),
 		PSKBNotAfter:          p.pskBNotAfter,
+		PSKBNotBefore:         p.pskBNotBefore,
 		PSKBaseTTL:            p.pskBaseTTL,
 	}
 	for k, v := range p.notAfter {

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 // ─── PSK rolling-key protocol ────────────────────────────────────────────────
@@ -97,32 +99,40 @@ func (a *Agent) initializePSKFiles(p *profile, outDir string, enrolledAt time.Ti
 	}
 
 	// Read individual slot leases to set up phase timers.
-	pskANotAfter, pskBNotAfter := a.readPSKABNotAfter(leasePath)
+	pskA, pskB := a.readPSKABLease(leasePath)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	// Override the notAfter already set by enrollProfile with psk_a's expiry.
-	// The 80% timer fires at 80% of sA's lifetime.
-	if !pskANotAfter.IsZero() {
-		p.notAfter[ArtifactPSK] = pskANotAfter
-		p.issuedAt[ArtifactPSK] = enrolledAt
+	// The 80% timer fires at 80% of sA's lifetime.  Anchor issuedAt to sA's
+	// real validity start (lease not_before) rather than enrolledAt: the key
+	// may have been minted before this agent picked it up, and a stable
+	// issuedAt keeps the 80% point fixed across renewals.
+	if !pskA.notAfter.IsZero() {
+		p.notAfter[ArtifactPSK] = pskA.notAfter
+		issuedAt := pskA.notBefore
+		if issuedAt.IsZero() {
+			issuedAt = enrolledAt
+		}
+		p.issuedAt[ArtifactPSK] = issuedAt
 	}
 
 	// PSKRotate fires at sA's notAfter (= 100% mark).
-	if !pskANotAfter.IsZero() {
-		p.notAfter[ArtifactPSKRotate] = pskANotAfter
+	if !pskA.notAfter.IsZero() {
+		p.notAfter[ArtifactPSKRotate] = pskA.notAfter
 	}
 
-	baseTTL := pskANotAfter.Sub(enrolledAt)
+	baseTTL := pskA.notAfter.Sub(p.issuedAt[ArtifactPSK])
 	if baseTTL > 0 {
 		p.pskBaseTTL = baseTTL
 		// PSKCleanup fires at 120% = sA.notAfter + 20% of baseTTL.
-		p.notAfter[ArtifactPSKCleanup] = pskANotAfter.Add(baseTTL / 5)
+		p.notAfter[ArtifactPSKCleanup] = pskA.notAfter.Add(baseTTL / 5)
 	}
 
-	// Store sB's expiry so the 80% handler can schedule the next rotate/cleanup.
-	p.pskBNotAfter = pskBNotAfter
+	// Store sB's window so pskRotate can hand it to the next cycle.
+	p.pskBNotAfter = pskB.notAfter
+	p.pskBNotBefore = pskB.notBefore
 }
 
 // renewPSKAt80 executes the 80% phase of the PSK rolling-key protocol.
@@ -139,9 +149,9 @@ func (a *Agent) initializePSKFiles(p *profile, outDir string, enrolledAt time.Ti
 //  4. Extract sB (second line of psk_extra.txt) → write psk_temp.txt = sB
 //     so that pskRotate can promote it at 100% without a server call.
 //
-// Returns the new notAfter for the ArtifactPSK 80%-threshold timer
-// (= psk_a's notAfter) and psk_b's notAfter for advancing pskBNotAfter.
-func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (pskANotAfter, pskBNotAfter time.Time, err error) {
+// Returns psk_a's validity window (for the ArtifactPSK 80%-threshold timer)
+// and psk_b's validity window (for advancing the staged-key state).
+func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (pskA, pskB pskSlotLease, err error) {
 	outDir := strings.TrimSuffix(output, string(os.PathSeparator))
 	primaryPath := pskPrimaryPath(outDir)
 	extraPath := pskExtraPath(outDir)
@@ -152,7 +162,7 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	//    unexpected rotation and build the extra overlap if needed.
 	savedPrimary, readErr := a.ReadFile(primaryPath)
 	if readErr != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("psk 80%%: reading psk_primary.txt: %w", readErr)
+		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_primary.txt: %w", readErr)
 	}
 
 	// 2. Call the server. RequestPSKFunc writes:
@@ -160,7 +170,7 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	//      psk_extra.txt   = psk_a + "\n" + psk_b (overlap pair)
 	//      psk_lease.json  = leases for both slots
 	if callErr := a.RequestPSKFunc(url, cert, key, ca, "", output); callErr != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("psk 80%%: fetching next PSK: %w", callErr)
+		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: fetching next PSK: %w", callErr)
 	}
 
 	// 3. Check whether the server's psk_a matches our saved primary.
@@ -172,9 +182,9 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	savedStr := pskFirstLine(savedPrimary)
 	receivedStr := pskFirstLine(receivedPrimary)
 	if receivedStr != savedStr {
-		_, _ = fmt.Fprintf(a.LogOut,
+		a.emitf(catPSK, tui.LogInfo,
 			"psk 80%%: WARNING: server primary (%q) differs from local primary (%q) — "+
-				"server has already rotated; keeping server value service=%s participant=%s\n",
+				"server has already rotated; keeping server value service=%s participant=%s",
 			receivedStr, savedStr, p.serviceID, p.participantID)
 		// Prepend the old primary so any peers still using it can decrypt.
 		// Deduplicate and limit to 2 entries to prevent cascading corruption.
@@ -194,12 +204,12 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	//    so pskRotate can apply it at 100% without a server call.
 	extraData, readExtraErr := a.ReadFile(extraPath)
 	if readExtraErr != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("psk 80%%: reading psk_extra.txt: %w", readExtraErr)
+		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_extra.txt: %w", readExtraErr)
 	}
 	// Stage sB as a single line — pskRotate must never receive multi-line content.
 	nextPrimary := pskFirstLine([]byte(pskSecondLine(extraData)))
 	if err := a.WriteFile(tempPath, []byte(nextPrimary), 0o644); err != nil {
-		_, _ = fmt.Fprintf(a.LogOut, "psk 80%%: writing psk_temp.txt: %v\n", err)
+		a.emitf(catPSK, tui.LogWarn, "psk 80%%: writing psk_temp.txt: %v", err)
 	}
 
 	// Strip the current primary from extra so primary and extra never share the
@@ -217,9 +227,9 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	}
 	_ = a.WriteFile(extraPath, []byte(strings.Join(filteredLines, "\n")), 0o644)
 
-	// Return psk_a's notAfter for the 80%-threshold timer and psk_b's notAfter
-	// so the caller can correctly advance pskBNotAfter for the next cycle.
-	pskA, pskB := a.readPSKABNotAfter(leasePath)
+	// Return psk_a's window for the 80%-threshold timer and psk_b's window
+	// so the caller can correctly advance the staged-key state for the next cycle.
+	pskA, pskB = a.readPSKABLease(leasePath)
 	return pskA, pskB, nil
 }
 
@@ -231,7 +241,7 @@ func (a *Agent) pskRotate(p *profile) {
 	outDir := a.pskOutDir(p)
 	tempData, err := a.ReadFile(pskTempPath(outDir))
 	if err != nil {
-		_, _ = fmt.Fprintf(a.LogOut, "psk_rotate: reading psk_temp.txt service=%s participant=%s: %v\n",
+		a.emitf(catPSK, tui.LogWarn, "psk_rotate: reading psk_temp.txt service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
@@ -244,7 +254,7 @@ func (a *Agent) pskRotate(p *profile) {
 	oldPrimary := pskFirstLine(oldPrimaryData)
 
 	if err := a.WriteFile(pskPrimaryPath(outDir), []byte(nextPrimary), 0o644); err != nil {
-		_, _ = fmt.Fprintf(a.LogOut, "psk_rotate: writing psk_primary.txt service=%s participant=%s: %v\n",
+		a.emitf(catPSK, tui.LogWarn, "psk_rotate: writing psk_primary.txt service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
@@ -255,21 +265,41 @@ func (a *Agent) pskRotate(p *profile) {
 		_ = a.WriteFile(pskExtraPath(outDir), []byte(oldPrimary), 0o644)
 	}
 
-	_, _ = fmt.Fprintf(a.LogOut, "psk_rotate: seed rotated to sB service=%s participant=%s\n",
+	a.emitf(catPSK, tui.LogGood, "psk_rotate: seed rotated to sB service=%s participant=%s",
 		p.serviceID, p.participantID)
 
-	// Update ArtifactPSKRotate to sB's expiry (= pskBNotAfter) so the TUI
-	// always shows the current key's expiration time after rotation.
+	// sB is now the active primary.  Advance the ENTIRE ArtifactPSK window to
+	// sB's lease so the TUI reflects the new key immediately — otherwise
+	// ArtifactPSK still points at the stale sA expiry (now in the past) and the
+	// row briefly shows a false "needs renewal" until the next renewal runs.
+	// Also arm a fresh 80% renewal timer (and the rotate/cleanup phase timers)
+	// against sB's real window so the cycle continues for the new key.
+	now := a.Now()
 	p.mu.Lock()
 	if !p.pskBNotAfter.IsZero() {
+		issuedAt := p.pskBNotBefore
+		if issuedAt.IsZero() && p.pskBaseTTL > 0 {
+			// Older persisted state predates pskBNotBefore: derive sB's start.
+			issuedAt = p.pskBNotAfter.Add(-p.pskBaseTTL)
+		}
+		p.notAfter[ArtifactPSK] = p.pskBNotAfter
+		if !issuedAt.IsZero() {
+			p.issuedAt[ArtifactPSK] = issuedAt
+		}
 		p.notAfter[ArtifactPSKRotate] = p.pskBNotAfter
+		if p.pskBaseTTL > 0 {
+			p.notAfter[ArtifactPSKCleanup] = p.pskBNotAfter.Add(p.pskBaseTTL / 5) // +20 %
+		}
+		a.schedulePSKPhasesLocked(p, now)
+		a.scheduleArtifactLocked(p, ArtifactPSK, now, p.pskBNotAfter)
 	} else {
+		// No staged sB known — clear the rotate marker.
 		delete(p.notAfter, ArtifactPSKRotate)
 	}
 	p.mu.Unlock()
 
 	if err := a.persistState(p); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: could not persist agent state after psk_rotate: %v\n", err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state after psk_rotate: %v", err)
 	}
 }
 
@@ -279,11 +309,11 @@ func (a *Agent) pskRotate(p *profile) {
 func (a *Agent) pskCleanup(p *profile) {
 	outDir := a.pskOutDir(p)
 	if err := a.WriteFile(pskExtraPath(outDir), []byte{}, 0o644); err != nil {
-		_, _ = fmt.Fprintf(a.LogOut, "psk_cleanup: clearing psk_extra.txt service=%s participant=%s: %v\n",
+		a.emitf(catPSK, tui.LogWarn, "psk_cleanup: clearing psk_extra.txt service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
-	_, _ = fmt.Fprintf(a.LogOut, "psk_cleanup: seed_extra cleared service=%s participant=%s\n",
+	a.emitf(catPSK, tui.LogGood, "psk_cleanup: seed_extra cleared service=%s participant=%s",
 		p.serviceID, p.participantID)
 
 	p.mu.Lock()
@@ -291,7 +321,7 @@ func (a *Agent) pskCleanup(p *profile) {
 	p.mu.Unlock()
 
 	if err := a.persistState(p); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: could not persist agent state after psk_cleanup: %v\n", err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state after psk_cleanup: %v", err)
 	}
 }
 
@@ -347,8 +377,16 @@ func pskSecondLine(data []byte) string {
 	return ""
 }
 
-// readPSKABNotAfter reads psk_a and psk_b not_after timestamps from a psk_lease.json.
-func (a *Agent) readPSKABNotAfter(path string) (pskA, pskB time.Time) {
+// pskSlotLease is the validity window of one PSK slot (pskA or pskB).
+type pskSlotLease struct {
+	notBefore time.Time
+	notAfter  time.Time
+}
+
+// readPSKABLease reads the psk_a and psk_b validity windows from a
+// psk_lease.json.  Both slots' not_before and not_after are returned so the
+// caller can anchor issuedAt to the key's real window (not to "now").
+func (a *Agent) readPSKABLease(path string) (pskA, pskB pskSlotLease) {
 	data, err := a.ReadFile(path)
 	if err != nil {
 		return
@@ -357,20 +395,21 @@ func (a *Agent) readPSKABNotAfter(path string) (pskA, pskB time.Time) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return
 	}
-	readSlot := func(key string) time.Time {
+	readSlot := func(key string) pskSlotLease {
 		slotData, ok := raw[key]
 		if !ok {
-			return time.Time{}
+			return pskSlotLease{}
 		}
 		var slot struct {
 			Lease struct {
-				NotAfter time.Time `json:"notAfter"`
+				NotBefore time.Time `json:"notBefore"`
+				NotAfter  time.Time `json:"notAfter"`
 			} `json:"lease"`
 		}
 		if err := json.Unmarshal(slotData, &slot); err != nil {
-			return time.Time{}
+			return pskSlotLease{}
 		}
-		return slot.Lease.NotAfter
+		return pskSlotLease{notBefore: slot.Lease.NotBefore, notAfter: slot.Lease.NotAfter}
 	}
 	pskA = readSlot("pskA")
 	pskB = readSlot("pskB")

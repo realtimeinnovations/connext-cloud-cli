@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 // ─── Timer scheduling ────────────────────────────────────────────────────────
@@ -185,7 +187,7 @@ func (a *Agent) RenewArtifact(effectiveDomainID, participantID, deviceName strin
 
 // renewArtifact performs the renewal for one artifact and reschedules its timer.
 func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
-	_, _ = fmt.Fprintf(a.LogOut, "artifact renewal started service=%s participant=%s artifact=%s reason=%s\n",
+	a.emitf(catRenewal, tui.LogInfo, "artifact renewal started service=%s participant=%s artifact=%s reason=%s",
 		p.serviceID, p.participantID, artifact, reason)
 
 	p.mu.Lock()
@@ -214,9 +216,14 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			newNotBefore, newNotAfter = a.readLease(leasePath)
 		}
 	case ArtifactPSK:
-		var pskBNA time.Time
-		newNotAfter, pskBNA, err = a.renewPSKAt80(p, url, cert, key, ca, output)
+		var pskA, pskB pskSlotLease
+		pskA, pskB, err = a.renewPSKAt80(p, url, cert, key, ca, output)
 		if err == nil {
+			// Anchor issuedAt to sA's real validity start (lease not_before) so
+			// the 80% point stays fixed across renewals instead of drifting.
+			newNotAfter = pskA.notAfter
+			newNotBefore = pskA.notBefore
+
 			// Re-arm the PSK phase timers for the CURRENT primary.  At the 80%
 			// mark the active seed (sA) has not rotated out yet — it expires at
 			// newNotAfter (psk_a's notAfter, the 100% mark), so the rotation
@@ -224,20 +231,21 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			// expiry, a full key-period later) would cancel the imminent sA
 			// rotation and delay the first rotation by an entire period.
 			// pskRotate advances ArtifactPSKRotate to sB's expiry when sA
-			// actually rotates out, and the following 80% renewal re-arms it
-			// for the new primary.
+			// actually rotates out, and arms the next 80% renewal for sB.
 			now2 := a.Now()
 			p.mu.Lock()
 			p.notAfter[ArtifactPSKRotate] = newNotAfter
 			if p.pskBaseTTL > 0 {
 				p.notAfter[ArtifactPSKCleanup] = newNotAfter.Add(p.pskBaseTTL / 5) // +20 %
 			}
-			// Advance pskBNotAfter to the new sB's notAfter for the next cycle.
-			// Use sB's value if available; fall back to sA's.
-			if !pskBNA.IsZero() {
-				p.pskBNotAfter = pskBNA
+			// Advance the staged sB window for the next cycle.  Use sB's values
+			// if available; fall back to sA's.
+			if !pskB.notAfter.IsZero() {
+				p.pskBNotAfter = pskB.notAfter
+				p.pskBNotBefore = pskB.notBefore
 			} else {
 				p.pskBNotAfter = newNotAfter
+				p.pskBNotBefore = newNotBefore
 			}
 			a.schedulePSKPhasesLocked(p, now2)
 			p.mu.Unlock()
@@ -252,7 +260,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	}
 
 	if err != nil {
-		_, _ = fmt.Fprintf(a.LogOut, "artifact renewal failed service=%s participant=%s artifact=%s err=%v\n",
+		a.emitf(catRenewal, tui.LogWarn, "artifact renewal failed service=%s participant=%s artifact=%s err=%v",
 			p.serviceID, p.participantID, artifact, err)
 		p.mu.Lock()
 		p.setState(StateActive)
@@ -276,11 +284,20 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	p.setState(StateActive)
 	p.mu.Unlock()
 
-	_, _ = fmt.Fprintf(a.LogOut, "artifact renewal complete service=%s participant=%s artifact=%s old_not_after=%s new_not_after=%s\n",
+	a.emitf(catRenewal, tui.LogGood, "artifact renewal complete service=%s participant=%s artifact=%s old_not_after=%s new_not_after=%s",
 		p.serviceID, p.participantID, artifact, oldNotAfter.Format(time.RFC3339), newNotAfter.Format(time.RFC3339))
 
 	if err := a.persistState(p); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: could not persist agent state: %v\n", err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state: %v", err)
+	}
+
+	// PSK renews once per key cycle, not on a repeating 80% threshold: the 80%
+	// fetch has staged sB, and the rotate phase timer (armed above) owns the
+	// 80%→100% window.  Re-arming a threshold timer here would re-fire
+	// renewPSKAt80 in a tight loop until 100% (RenewalDelay is already 0 past
+	// 80%).  pskRotate arms the next 80% renewal for sB once it rotates in.
+	if artifact == ArtifactPSK {
+		return
 	}
 
 	// Guard against immediate retry: if newNotAfter didn't advance (stale

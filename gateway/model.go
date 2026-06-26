@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 )
@@ -63,9 +64,11 @@ type RoutingState struct {
 	routes            map[routeKey]*RouteState
 	discoveredStreams map[discoveredKey]discoveredValue
 	recentLogs        []string
+	recentLogTimes    []time.Time
 	topicEvents       map[string]string
 	serviceState      string
 	maxLogs           int
+	now               func() time.Time
 }
 
 var (
@@ -98,9 +101,11 @@ func NewRoutingState(maxLogs int) *RoutingState {
 		routes:            map[routeKey]*RouteState{},
 		discoveredStreams: map[discoveredKey]discoveredValue{},
 		recentLogs:        make([]string, 0, maxLogs),
+		recentLogTimes:    make([]time.Time, 0, maxLogs),
 		topicEvents:       map[string]string{},
 		serviceState:      "starting",
 		maxLogs:           maxLogs,
+		now:               time.Now,
 	}
 }
 
@@ -118,6 +123,12 @@ func (state *RoutingState) Routes() map[string]RouteState {
 
 func (state *RoutingState) RecentLogs() []string {
 	return append([]string(nil), state.recentLogs...)
+}
+
+// RecentLogTimes returns the arrival time of each line in RecentLogs (parallel
+// slice), so the TUI can show a compact relative age per line.
+func (state *RoutingState) RecentLogTimes() []time.Time {
+	return append([]time.Time(nil), state.recentLogTimes...)
 }
 
 func (state *RoutingState) Update(line string) {
@@ -545,9 +556,22 @@ func (state *RoutingState) summarizeLogLine(line string) string {
 
 func (state *RoutingState) appendLog(line string) {
 	state.recentLogs = append(state.recentLogs, line)
+	state.recentLogTimes = append(state.recentLogTimes, state.clock())
 	if len(state.recentLogs) > state.maxLogs {
 		state.recentLogs = append([]string(nil), state.recentLogs[len(state.recentLogs)-state.maxLogs:]...)
 	}
+	if len(state.recentLogTimes) > state.maxLogs {
+		state.recentLogTimes = append([]time.Time(nil), state.recentLogTimes[len(state.recentLogTimes)-state.maxLogs:]...)
+	}
+}
+
+// clock returns the configured time source, defaulting to time.Now when a
+// RoutingState was constructed without one (e.g. a zero value in tests).
+func (state *RoutingState) clock() time.Time {
+	if state.now != nil {
+		return state.now()
+	}
+	return time.Now()
 }
 
 func RouteDirection(routeName string) string {

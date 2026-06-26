@@ -10,9 +10,44 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
+
+func TestAgentFormatDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{-1 * time.Second, "needs renewal"},
+		{0, "0s"},
+		{45 * time.Second, "45s"},
+		{59*time.Second + 999*time.Millisecond, "59s"},
+		{time.Minute, "1m 0s"},
+		{12*time.Minute + 5*time.Second, "12m 5s"},
+		{59*time.Minute + 59*time.Second, "59m 59s"},
+		{time.Hour, "1h 0m"},
+		{5*time.Hour + 20*time.Minute + 30*time.Second, "5h 20m"},
+		{23*time.Hour + 59*time.Minute, "23h 59m"},
+		{24 * time.Hour, "1d 0h 0m"},
+		{2*24*time.Hour + 3*time.Hour + 15*time.Minute, "2d 3h 15m"},
+		{155*time.Hour + 6*time.Minute, "6d 11h 6m"},
+		{29*24*time.Hour + 23*time.Hour, "29d 23h 0m"},
+		{30 * 24 * time.Hour, "1mo 0d"},
+		{45 * 24 * time.Hour, "1mo 15d"},
+		{3*30*24*time.Hour + 12*24*time.Hour, "3mo 12d"},
+		{364 * 24 * time.Hour, "12mo 4d"},
+		{365 * 24 * time.Hour, "1y 0d"},
+		{400 * 24 * time.Hour, "1y 35d"},
+		{2 * 365 * 24 * time.Hour, "2y 0d"},
+	}
+	for _, c := range cases {
+		if got := agentFormatDuration(c.d); got != c.want {
+			t.Errorf("agentFormatDuration(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
 
 // visibleFrameLines strips framePaint's control codes and returns the rendered
 // lines with their visible (ANSI-free) width.

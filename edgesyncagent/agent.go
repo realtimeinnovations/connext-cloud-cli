@@ -18,10 +18,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 const renewalThreshold = 0.80 // renew at 80% of artifact lifetime
@@ -113,6 +115,10 @@ type AgentState struct {
 	// (or the most recently fetched sC at a prior 80% phase).  It is used to
 	// schedule the PSKRotate and PSKCleanup timers for the next cycle.
 	PSKBNotAfter time.Time `json:"psk_b_not_after,omitempty"`
+	// PSKBNotBefore is the validity start of the "B" slot PSK.  pskRotate uses
+	// it to anchor issuedAt[ArtifactPSK] to sB's real window (so the post-
+	// rotation 80% renewal fires at 80% of sB's lifetime, not of "now").
+	PSKBNotBefore time.Time `json:"psk_b_not_before,omitempty"`
 	// PSKBaseTTL is the duration of sA's original lease (psk_a.notAfter −
 	// issuedAt) and is used to compute the PSKCleanup fire-time (120% mark).
 	PSKBaseTTL time.Duration `json:"psk_base_ttl,omitempty"`
@@ -132,8 +138,13 @@ type profile struct {
 	timers           map[ArtifactID]*time.Timer
 
 	// PSK rolling-key protocol state (see AgentState for field semantics).
-	pskBNotAfter time.Time
-	pskBaseTTL   time.Duration
+	pskBNotAfter  time.Time
+	pskBNotBefore time.Time
+	pskBaseTTL    time.Duration
+
+	// lastSweepState is the profile state last surfaced to the Agent Log panel
+	// by a sweep, so unchanged per-tick sweeps can be downgraded to file-only.
+	lastSweepState ProfileState
 }
 
 func (p *profile) setState(s ProfileState) { p.state = s }
@@ -247,57 +258,107 @@ type Agent struct {
 	MACs []string
 
 	// Internal state.
-	termOut  io.Writer          // original terminal writer for TUI rendering
-	stopFunc context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
-	profiles sync.Map           // profileKey → *profile
-	wg       sync.WaitGroup
-	outMu    sync.Mutex // serializes writes to Out/LogOut across goroutines
-	logs     *logRing   // recent log lines surfaced in the TUI "Agent Log" panel
+	termOut   io.Writer          // original terminal writer for TUI rendering
+	stopFunc  context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
+	profiles  sync.Map           // profileKey → *profile
+	wg        sync.WaitGroup
+	outMu     sync.Mutex  // serializes writes to Out/LogOut/event sinks across goroutines
+	logs      *logRing    // recent log events surfaced in the TUI "Agent Log" panel
+	tuiActive atomic.Bool // true while the live TUI is painting the terminal
+
+	// Raw (unwrapped) sinks for emit, written under outMu. eventStdout reaches
+	// stdout+file; eventFile reaches the file only. They are the pre-syncWriter
+	// writers so emit can serialize via outMu without re-entering syncWriter.
+	eventStdout io.Writer
+	eventFile   io.Writer
+}
+
+// logEntry is one buffered Agent Log line. When classified is true, sev is the
+// authoritative severity supplied by the emitting event (see Agent.emit); when
+// false the renderer falls back to keyword classification (agentLogSeverity).
+// t is the arrival time, used to show a compact relative age in the panel.
+type logEntry struct {
+	text       string
+	sev        tui.LogSeverity
+	classified bool
+	t          time.Time
 }
 
 // logRing is a thread-safe, fixed-capacity ring buffer of the most recent agent
-// log lines.  It implements io.Writer so it can be teed onto LogOut, capturing
-// every diagnostic line for display in the TUI "Agent Log" panel.
+// log entries.  It implements io.Writer so external diagnostics (e.g. raw HTTP
+// debug output) can still be teed in; those arrive unclassified.
 type logRing struct {
-	mu    sync.Mutex
-	lines []string
-	max   int
+	mu      sync.Mutex
+	entries []logEntry
+	max     int
 }
 
 func newLogRing(max int) *logRing {
 	if max <= 0 {
 		max = agentLogRingSize
 	}
-	return &logRing{max: max, lines: make([]string, 0, max)}
+	return &logRing{max: max, entries: make([]logEntry, 0, max)}
 }
 
-// Write captures each newline-terminated line. The agent emits whole lines, so
-// no partial-line buffering is needed; blank lines are dropped.
+// Write captures each newline-terminated line (io.Writer). Lines arriving this
+// way are unclassified and fall back to keyword severity at render time. Blank
+// lines are dropped.
 func (r *logRing) Write(p []byte) (int, error) {
 	for _, line := range strings.Split(string(p), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		r.append(line)
+		r.appendEntry(logEntry{text: line, t: time.Now()})
 	}
 	return len(p), nil
 }
 
+// append adds an unclassified line (used by tests and direct callers).
 func (r *logRing) append(line string) {
+	r.appendEntry(logEntry{text: line})
+}
+
+// appendEvent adds a line with the authoritative severity and arrival time from
+// Agent.emit.
+func (r *logRing) appendEvent(line string, sev tui.LogSeverity, t time.Time) {
+	r.appendEntry(logEntry{text: line, sev: sev, classified: true, t: t})
+}
+
+func (r *logRing) appendEntry(e logEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lines = append(r.lines, line)
-	if len(r.lines) > r.max {
-		r.lines = append([]string(nil), r.lines[len(r.lines)-r.max:]...)
+	r.entries = append(r.entries, e)
+	if len(r.entries) > r.max {
+		r.entries = append([]logEntry(nil), r.entries[len(r.entries)-r.max:]...)
 	}
 }
 
-// recent returns a copy of the buffered lines, oldest first.
+// recent returns the buffered line texts, oldest first.
 func (r *logRing) recent() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.lines...)
+	out := make([]string, len(r.entries))
+	for i, e := range r.entries {
+		out[i] = e.text
+	}
+	return out
+}
+
+// recentEntries returns a copy of the buffered entries, oldest first.
+func (r *logRing) recentEntries() []logEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]logEntry(nil), r.entries...)
+}
+
+// clockNow returns the agent's time source, defaulting to time.Now when Now is
+// unset (e.g. an Agent built directly in a unit test).
+func (a *Agent) clockNow() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 // syncWriter serializes concurrent writes to an underlying writer using a
@@ -381,9 +442,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	// wrapped with a MultiWriter below.
 	a.termOut = a.Out
 
-	// Open log file — tee all output to both terminal and file.  Diagnostics
-	// written to LogOut are additionally captured in the in-memory ring buffer
-	// so the TUI "Agent Log" panel can display them live.
+	// Open log file — tee terminal output to the file too.  Agent lifecycle
+	// events flow through a.emit, which appends to the in-memory ring buffer
+	// (TUI "Agent Log" panel) and writes to the file sink; LogOut is therefore
+	// just the timestamped file sink (no longer teed to the ring).
 	if a.logs == nil {
 		a.logs = newLogRing(agentLogRingSize)
 	}
@@ -400,7 +462,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		fileSink = timestampWriter{w: lf}
 		a.Out = io.MultiWriter(a.Out, fileSink)
 	}
-	a.LogOut = io.MultiWriter(fileSink, a.logs)
+	a.LogOut = fileSink
+
+	// Raw sinks for emit (written under outMu, never via syncWriter): events go
+	// to stdout+file when no TUI paints the terminal, file-only while it does.
+	a.eventStdout = a.Out
+	a.eventFile = fileSink
 
 	// Serialize all writes to Out/LogOut through one mutex: the sweep and inbox
 	// loops below run concurrently and both emit diagnostics. termOut is left
@@ -515,7 +582,7 @@ func (a *Agent) loadProfile(serial, dirName, participantID, deviceName string) {
 	}
 	var st AgentState
 	if err := json.Unmarshal(data, &st); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: corrupt agent state file for %s/%s/%s, skipping: %v\n", dirName, participantID, deviceName, err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: corrupt agent state file for %s/%s/%s, skipping: %v", dirName, participantID, deviceName, err)
 		return
 	}
 
@@ -546,6 +613,7 @@ func (a *Agent) loadProfile(serial, dirName, participantID, deviceName string) {
 		issuedAt:         st.IssuedAt,
 		timers:           make(map[ArtifactID]*time.Timer),
 		pskBNotAfter:     st.PSKBNotAfter,
+		pskBNotBefore:    st.PSKBNotBefore,
 		pskBaseTTL:       st.PSKBaseTTL,
 	}
 	if p.deviceName == "" {
@@ -559,7 +627,7 @@ func (a *Agent) loadProfile(serial, dirName, participantID, deviceName string) {
 	}
 	a.profiles.Store(profileKey(p.effectiveDomainID(), participantID, p.deviceName), p)
 	a.scheduleAll(p)
-	_, _ = fmt.Fprintf(a.Out, "profile rehydrated serial=%s service=%s domain=%s participant=%s device=%s state=%s\n",
+	a.emitf(catState, tui.LogInfo, "profile rehydrated serial=%s service=%s domain=%s participant=%s device=%s state=%s",
 		restoredSerial, serviceID, p.effectiveDomainID(), participantID, p.deviceName, p.state)
 }
 
@@ -610,8 +678,16 @@ func (a *Agent) sweep() {
 		}
 		// Sweep PSK phase timers (exact-time single-shot events).
 		a.schedulePSKPhasesLocked(p, now)
-		_, _ = fmt.Fprintf(a.Out, "sweep status service=%s participant=%s state=%s\n",
-			p.serviceID, p.participantID, p.state)
+		// Routine per-tick sweeps go to the file only; surface in the panel just
+		// when the profile state changed since the last sweep.
+		stateChanged := p.lastSweepState != p.state
+		p.lastSweepState = p.state
+		a.emit(agentEvent{
+			cat:      catSweep,
+			sev:      tui.LogInfo,
+			detail:   fmt.Sprintf("sweep status service=%s participant=%s state=%s", p.serviceID, p.participantID, p.state),
+			fileOnly: !stateChanged,
+		})
 		return true
 	})
 }
@@ -652,32 +728,32 @@ func (a *Agent) drainInbox() {
 func (a *Agent) processInboxFile(path string) {
 	data, err := a.ReadFile(path)
 	if err != nil {
-		_, _ = fmt.Fprintf(a.Out, "inbox read failed path=%s err=%v\n", path, err)
+		a.emitf(catInbox, tui.LogWarn, "inbox read failed path=%s err=%v", path, err)
 		return
 	}
 	var req EnrollRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "inbox invalid JSON path=%s err=%v\n", path, err)
+		a.emitf(catInbox, tui.LogWarn, "inbox invalid JSON path=%s err=%v", path, err)
 		a.moveInboxFile(path, a.FailedDir, "parse error: "+err.Error())
 		return
 	}
 	if req.ServiceID == "" || req.ParticipantID == "" || req.Serial == "" || len(req.MACs) == 0 {
-		_, _ = fmt.Fprintf(a.Out, "inbox missing required fields path=%s\n", path)
+		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields path=%s", path)
 		a.moveInboxFile(path, a.FailedDir, "missing required fields: service_id, participant_id, serial, macs")
 		return
 	}
 
-	_, _ = fmt.Fprintf(a.Out, "inbox enrollment request received service=%s participant=%s\n",
+	a.emitf(catInbox, tui.LogInfo, "inbox enrollment request received service=%s participant=%s",
 		req.ServiceID, req.ParticipantID)
 
 	if err := a.enrollProfile(req); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "inbox enrollment failed service=%s participant=%s err=%v\n",
+		a.emitf(catInbox, tui.LogWarn, "inbox enrollment failed service=%s participant=%s err=%v",
 			req.ServiceID, req.ParticipantID, err)
 		a.moveInboxFile(path, a.FailedDir, err.Error())
 		return
 	}
 	a.moveInboxFile(path, a.ProcessedDir, "")
-	_, _ = fmt.Fprintf(a.Out, "inbox enrollment complete service=%s participant=%s\n",
+	a.emitf(catEnroll, tui.LogGood, "inbox enrollment complete service=%s participant=%s",
 		req.ServiceID, req.ParticipantID)
 }
 
@@ -731,7 +807,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 			return fmt.Errorf("enrollment: %w", enrollErr)
 		}
 		// Already enrolled: fall through using the stored credentials.
-		_, _ = fmt.Fprintf(a.Out, "Note: device already enrolled; resuming artifact fetch.\n")
+		a.emitf(catEnroll, tui.LogInfo, "Note: device already enrolled; resuming artifact fetch.")
 	}
 
 	// Record the domainTemplateID on the profile and re-key it in the profiles
@@ -835,7 +911,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	p.mu.Unlock()
 
 	if err := a.persistState(p); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: could not persist agent state: %v\n", err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state: %v", err)
 	}
 	a.scheduleAll(p)
 	return nil
@@ -864,12 +940,12 @@ func (a *Agent) getOrCreateProfile(serviceID, participantID, deviceName string) 
 // an optional result sidecar when resultMsg is non-empty.
 func (a *Agent) moveInboxFile(src, targetDir, resultMsg string) {
 	if err := a.MkdirAll(targetDir, 0o755); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: inbox could not create target dir %s: %v\n", targetDir, err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: inbox could not create target dir %s: %v", targetDir, err)
 		return
 	}
 	dst := filepath.Join(targetDir, filepath.Base(src))
 	if err := a.Rename(src, dst); err != nil {
-		_, _ = fmt.Fprintf(a.Out, "Warning: inbox could not move file %s → %s: %v\n", src, dst, err)
+		a.emitf(catWarning, tui.LogWarn, "Warning: inbox could not move file %s → %s: %v", src, dst, err)
 		return
 	}
 	if resultMsg != "" {

@@ -1090,10 +1090,10 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
 	p.mu.Lock()
-	p.notAfter[ArtifactPSK] = now           // old expiry, so newNotAfter advances
+	p.notAfter[ArtifactPSK] = now // old expiry, so newNotAfter advances
 	p.issuedAt[ArtifactPSK] = now
-	p.pskBaseTTL = 100 * time.Second        // baseTTL of sA
-	p.pskBNotAfter = pskBNotAfter           // current sB expiry (must NOT leak into rotate)
+	p.pskBaseTTL = 100 * time.Second // baseTTL of sA
+	p.pskBNotAfter = pskBNotAfter    // current sB expiry (must NOT leak into rotate)
 	p.notAfter[ArtifactPSKRotate] = pskANotAfter
 	p.mu.Unlock()
 
@@ -1111,5 +1111,128 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 	wantCleanup := pskANotAfter.Add(100 * time.Second / 5)
 	if !gotCleanup.Equal(wantCleanup) {
 		t.Errorf("ArtifactPSKCleanup = %v, want %v (120%% of sA)", gotCleanup, wantCleanup)
+	}
+}
+
+// pskLeaseJSONFull builds a psk_lease.json with both not_before and not_after
+// for each slot, so tests can exercise the lease-anchored issuedAt path.
+func pskLeaseJSONFull(aNotBefore, aNotAfter, bNotBefore, bNotAfter time.Time) []byte {
+	slot := func(nb, na time.Time) map[string]any {
+		return map[string]any{"lease": map[string]any{"notBefore": nb, "notAfter": na}}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"pskA": slot(aNotBefore, aNotAfter),
+		"pskB": slot(bNotBefore, bNotAfter),
+	})
+	return data
+}
+
+// TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore verifies the 80% renewal anchors
+// issuedAt[psk] to sA's real lease not_before (not "now"), so the 80% point is
+// stable across renewals instead of drifting toward the expiry.
+func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+
+	now := time.Unix(10000, 0)
+	a.Now = func() time.Time { return now }
+	a.AfterFunc = func(_ time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+
+	// sA was minted before this agent picked it up: notBefore is in the past.
+	pskANotBefore := now.Add(-30 * time.Second)
+	pskANotAfter := now.Add(70 * time.Second)
+	pskBNotBefore := pskANotAfter
+	pskBNotAfter := pskANotAfter.Add(100 * time.Second)
+
+	outDir := "/connext/svc/part/dev/connext_artifacts"
+	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
+	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"),
+			pskLeaseJSONFull(pskANotBefore, pskANotAfter, pskBNotBefore, pskBNotAfter), 0o644)
+		return nil
+	}
+
+	p := a.getOrCreateProfile("svc", "part", "dev")
+	p.mu.Lock()
+	p.notAfter[ArtifactPSK] = now // stale, so newNotAfter advances
+	p.issuedAt[ArtifactPSK] = now
+	p.pskBaseTTL = 100 * time.Second
+	p.mu.Unlock()
+
+	a.renewArtifact(p, ArtifactPSK, "test")
+
+	p.mu.Lock()
+	gotIssued := p.issuedAt[ArtifactPSK]
+	gotBNotBefore := p.pskBNotBefore
+	p.mu.Unlock()
+
+	if !gotIssued.Equal(pskANotBefore) {
+		t.Errorf("issuedAt[psk] = %v, want sA lease notBefore %v (anchored, not now=%v — drifting issuedAt pushes the 80%% point toward expiry)",
+			gotIssued, pskANotBefore, now)
+	}
+	if !gotBNotBefore.Equal(pskBNotBefore) {
+		t.Errorf("pskBNotBefore = %v, want %v (needed by pskRotate to anchor sB's window)", gotBNotBefore, pskBNotBefore)
+	}
+}
+
+// TestPSKRotate_AdvancesWindowToSB verifies that the 100% rotation advances the
+// ENTIRE ArtifactPSK window (notAfter + issuedAt) to sB and arms a fresh 80%
+// renewal timer — so the TUI never shows a false "needs renewal" for the freshly
+// rotated-in key.
+func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+
+	now := time.Unix(50000, 0)
+	a.Now = func() time.Time { return now }
+	a.AfterFunc = func(_ time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+
+	outDir := "/connext/svc/part/dev/connext_artifacts"
+	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
+	ffs.WriteFile(filepath.Join(outDir, "psk_temp.txt"), []byte("sB"), 0o644)
+
+	baseTTL := 100 * time.Second
+	pskBNotBefore := now // sB starts exactly as sA expires
+	pskBNotAfter := now.Add(baseTTL)
+
+	p := a.getOrCreateProfile("svc", "part", "dev")
+	p.mu.Lock()
+	p.notAfter[ArtifactPSK] = now // stale sA expiry (== now → would render "needs renewal")
+	p.issuedAt[ArtifactPSK] = now.Add(-baseTTL)
+	p.notAfter[ArtifactPSKRotate] = now
+	p.pskBaseTTL = baseTTL
+	p.pskBNotAfter = pskBNotAfter
+	p.pskBNotBefore = pskBNotBefore
+	p.mu.Unlock()
+
+	a.pskRotate(p)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if got := p.notAfter[ArtifactPSK]; !got.Equal(pskBNotAfter) {
+		t.Errorf("notAfter[psk] = %v, want sB expiry %v (stale sA value causes a false \"needs renewal\")", got, pskBNotAfter)
+	}
+	if !p.notAfter[ArtifactPSK].After(now) {
+		t.Error("notAfter[psk] must be in the future after rotation (no false needs-renewal)")
+	}
+	if got := p.issuedAt[ArtifactPSK]; !got.Equal(pskBNotBefore) {
+		t.Errorf("issuedAt[psk] = %v, want sB notBefore %v", got, pskBNotBefore)
+	}
+	if got := p.notAfter[ArtifactPSKRotate]; !got.Equal(pskBNotAfter) {
+		t.Errorf("rotate = %v, want sB expiry %v", got, pskBNotAfter)
+	}
+	wantCleanup := pskBNotAfter.Add(baseTTL / 5)
+	if got := p.notAfter[ArtifactPSKCleanup]; !got.Equal(wantCleanup) {
+		t.Errorf("cleanup = %v, want %v (120%% of sB)", got, wantCleanup)
+	}
+	if p.timers[ArtifactPSK] == nil {
+		t.Error("expected a fresh ArtifactPSK 80% renewal timer armed for sB after rotation")
 	}
 }
