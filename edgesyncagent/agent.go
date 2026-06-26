@@ -165,6 +165,64 @@ func (p *profile) participant() string { return p.participantID }
 // but is not part of the on-disk path.
 func (p *profile) node() string { return p.serial }
 
+// ─── Domain-scoped artifact ownership ────────────────────────────────────────
+// PSK and CRL (and the PSK phase events) are shared by every participant in a
+// (service, domain): their on-disk state lives in the shared domain directory
+// (psk_*.txt, psk_lease.json, crl.pem).  To avoid redundant fetches and, more
+// importantly, concurrent corruption of the PSK rolling-key files, exactly one
+// profile per (service, domain) — the "domain owner" — fetches, schedules and
+// renews them.  Every profile still manages its own node-scoped artifacts
+// (identity, permissions, device certificate).
+
+// isDomainArtifact reports whether an artifact is managed once per domain by
+// the domain owner rather than once per node.
+func isDomainArtifact(id ArtifactID) bool {
+	switch id {
+	case ArtifactPSK, ArtifactCRL, ArtifactPSKRotate, ArtifactPSKCleanup:
+		return true
+	}
+	return false
+}
+
+// domainOwnerKey identifies the (service, domain) whose domain-scoped artifacts
+// are managed by a single owner profile.
+func domainOwnerKey(service, domain string) string { return service + "/" + domain }
+
+// claimDomainOwner records p as the owner of its (service, domain).  Ownership
+// prefers the profile that already holds the domain state (a non-zero PSK
+// expiry) so that, after a restart, the profile that originally fetched the PSK
+// reclaims ownership regardless of rehydration order.  Callers must not hold
+// p.mu; it is only invoked from the serial enroll and rehydrate paths.
+func (a *Agent) claimDomainOwner(p *profile) {
+	key := domainOwnerKey(p.service(), p.domain())
+	existing, loaded := a.domainOwners.LoadOrStore(key, p)
+	if !loaded {
+		return
+	}
+	cur := existing.(*profile)
+	if cur == p {
+		return
+	}
+	if a.hasDomainState(p) && !a.hasDomainState(cur) {
+		a.domainOwners.Store(key, p)
+	}
+}
+
+// isDomainOwner reports whether p owns the domain-scoped artifacts for its
+// (service, domain).
+func (a *Agent) isDomainOwner(p *profile) bool {
+	v, ok := a.domainOwners.Load(domainOwnerKey(p.service(), p.domain()))
+	return ok && v.(*profile) == p
+}
+
+// hasDomainState reports whether p carries live domain state (a known PSK
+// expiry), used to prefer the original fetcher as owner across restarts.
+func (a *Agent) hasDomainState(p *profile) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.notAfter[ArtifactPSK].IsZero()
+}
+
 func profileKey(domainOrService, participantID, deviceName string) string {
 	// The first segment is the profile's domain template id (p.domain()) once
 	// enrolled; getOrCreateProfile keys the transient pre-enrollment profile by
@@ -246,9 +304,10 @@ type Agent struct {
 	MACs []string
 
 	// Internal state.
-	termOut   io.Writer          // original terminal writer for TUI rendering
-	stopFunc  context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
-	profiles  sync.Map           // profileKey → *profile
+	termOut      io.Writer          // original terminal writer for TUI rendering
+	stopFunc     context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
+	profiles     sync.Map           // profileKey → *profile
+	domainOwners sync.Map           // "service/domain" → *profile that manages the domain-scoped artifacts (PSK, CRL)
 	wg        sync.WaitGroup
 	outMu     sync.Mutex  // serializes writes to Out/LogOut/event sinks across goroutines
 	logs      *logRing    // recent log events surfaced in the TUI "Agent Log" panel
@@ -507,6 +566,26 @@ func (a *Agent) rehydrate() {
 	}
 }
 
+// findNodeDomain searches the mTLS tree for an already-stored node key under
+// the given service and returns the domain template id it lives in, or "" when
+// no such node is found.  Used to resume a 409 (already-enrolled) response,
+// which does not carry the domain template, without guessing the path.
+func (a *Agent) findNodeDomain(service, participant, node string) string {
+	domains, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(), service))
+	if err != nil {
+		return ""
+	}
+	for _, d := range domains {
+		if !d.IsDir() {
+			continue
+		}
+		if _, err := a.ReadFile(a.Store.NodeKeyPath(service, d.Name(), participant, node)); err == nil {
+			return d.Name()
+		}
+	}
+	return ""
+}
+
 // findStateFiles returns every agent_state.json path under dir (recursively).
 func (a *Agent) findStateFiles(dir string) []string {
 	entries, err := a.ReadDir(dir)
@@ -586,9 +665,14 @@ func (a *Agent) sweep() {
 	now := a.Now()
 	a.profiles.Range(func(_, val any) bool {
 		p := val.(*profile)
+		owner := a.isDomainOwner(p)
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for _, artifact := range allArtifacts {
+			// Domain-scoped artifacts are renewed only by the domain owner.
+			if isDomainArtifact(artifact) && !owner {
+				continue
+			}
 			notAfter, ok := p.notAfter[artifact]
 			if !ok || notAfter.IsZero() {
 				continue
@@ -609,8 +693,10 @@ func (a *Agent) sweep() {
 				}()
 			}
 		}
-		// Sweep PSK phase timers (exact-time single-shot events).
-		a.schedulePSKPhasesLocked(p, now)
+		// Sweep PSK phase timers (exact-time single-shot events) for the owner.
+		if owner {
+			a.schedulePSKPhasesLocked(p, now)
+		}
 		// Routine per-tick sweeps go to the file only; surface in the panel just
 		// when the profile state changed since the last sweep.
 		stateChanged := p.lastSweepState != p.state
@@ -718,19 +804,15 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	domainTemplateID, enrollErr := a.EnrollFunc(req.ServiceID, req.ParticipantID, req.Serial, req.MACs, csrPath, keyPath, req.CampaignToken)
 	if enrollErr != nil {
 		// HTTP 409 means the device is already enrolled in this campaign (e.g. a
-		// previous attempt succeeded but a later step failed).  If the device key
-		// is already stored we can skip re-enrollment and proceed directly to
-		// artifact fetching using the existing credentials.
-		effectiveID := domainTemplateID
-		if effectiveID == "" {
-			effectiveID = req.ServiceID
-		}
-		keyAlreadyStored := func() bool {
-			_, err := a.ReadFile(a.Store.NodeKeyPath(req.ServiceID, effectiveID, req.ParticipantID, req.Serial))
-			return err == nil
-		}
+		// previous attempt succeeded but a later step failed).  The 409 response
+		// does not carry the domain template, so locate the already-stored node
+		// in the layered store to recover its real domain and resume the fetch
+		// using the existing credentials.
 		alreadyEnrolled := strings.Contains(enrollErr.Error(), "409")
-		if !alreadyEnrolled || !keyAlreadyStored() {
+		if alreadyEnrolled {
+			domainTemplateID = a.findNodeDomain(req.ServiceID, req.ParticipantID, req.Serial)
+		}
+		if !alreadyEnrolled || domainTemplateID == "" {
 			p.mu.Lock()
 			p.setState(StateUnregistered)
 			p.mu.Unlock()
@@ -799,20 +881,31 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
-	if err := a.RequestPSKFunc(url, cert, key, ca, "", domainOut); err != nil {
-		return fmt.Errorf("psk: %w", err)
-	}
-	if err := a.GetCRLFunc(url, cert, key, ca, "", domainOut); err != nil {
-		return fmt.Errorf("crl: %w", err)
+
+	// PSK and CRL are domain-scoped: their files live in the shared domain
+	// directory and must be fetched and managed by a single owner per
+	// (service, domain). The first participant to enroll into a domain becomes
+	// the owner; later participants reuse the owner's files.
+	a.claimDomainOwner(p)
+	owner := a.isDomainOwner(p)
+	if owner {
+		if err := a.RequestPSKFunc(url, cert, key, ca, "", domainOut); err != nil {
+			return fmt.Errorf("psk: %w", err)
+		}
+		if err := a.GetCRLFunc(url, cert, key, ca, "", domainOut); err != nil {
+			return fmt.Errorf("crl: %w", err)
+		}
 	}
 
 	enrolledAt := a.Now()
 
-	// Set up the PSK rolling-key initial file layout and phase timers.
-	// initializePSKFiles also populates p.notAfter[ArtifactPSK],
+	// Set up the PSK rolling-key initial file layout and phase timers (owner
+	// only). initializePSKFiles populates p.notAfter[ArtifactPSK],
 	// p.notAfter[ArtifactPSKRotate], p.notAfter[ArtifactPSKCleanup],
 	// p.pskBNotAfter, and p.pskBaseTTL.
-	a.initializePSKFiles(p, domainDir, enrolledAt)
+	if owner {
+		a.initializePSKFiles(p, domainDir, enrolledAt)
+	}
 	p.mu.Lock()
 	if !notAfterIdentity.IsZero() {
 		p.notAfter[ArtifactIdentity] = notAfterIdentity
@@ -831,11 +924,13 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		}
 	}
 	// ArtifactPSK notAfter and the PSK phase timer entries (ArtifactPSKRotate,
-	// ArtifactPSKCleanup) are set by initializePSKFiles above; no need to
-	// re-read psk_lease.json here.
-	// CRL has no server-side lease; refresh periodically.
-	p.notAfter[ArtifactCRL] = enrolledAt.Add(a.CRLInterval)
-	p.issuedAt[ArtifactCRL] = enrolledAt
+	// ArtifactPSKCleanup) are set by initializePSKFiles above (owner only); no
+	// need to re-read psk_lease.json here.
+	// CRL has no server-side lease; refresh periodically (owner only).
+	if owner {
+		p.notAfter[ArtifactCRL] = enrolledAt.Add(a.CRLInterval)
+		p.issuedAt[ArtifactCRL] = enrolledAt
+	}
 	// Track device cert expiry for display (not yet renewable).
 	if na := a.readCertNotAfter(a.Store.NodeCertPath(service, domain, participant, node)); !na.IsZero() {
 		p.notAfter[ArtifactDeviceCert] = na

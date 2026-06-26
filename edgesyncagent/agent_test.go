@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -721,6 +722,117 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	p.mu.Unlock()
 	if st != StateActive {
 		t.Fatalf("expected StateActive after enroll, got %q", st)
+	}
+}
+
+func TestEnrollProfile_DomainArtifactsDedupedAcrossParticipants(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	// Lease far in the future so no immediate background renewal fires.
+	pskNotAfter := time.Unix(0, 0).Add(1000 * time.Second)
+
+	var pskCalls, crlCalls int32
+	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
+		atomic.AddInt32(&pskCalls, 1)
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"), pskLeaseJSON(pskNotAfter, pskNotAfter.Add(100*time.Second)), 0o644)
+		return nil
+	}
+	a.GetCRLFunc = func(_, _, _, _, _, _ string) error { atomic.AddInt32(&crlCalls, 1); return nil }
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("CERT"), 0o644)
+		return nil
+	}
+
+	token := buildJWT(map[string]any{"device_domain": "svc.devices.cloud.dev-rti.com"})
+	mkReq := func(part string) EnrollRequest {
+		return EnrollRequest{ServiceID: "svc", ParticipantID: part, CampaignToken: token, Serial: "SN-001", MACs: []string{"AA:BB:CC:DD:EE:01"}}
+	}
+	// Two participants in the SAME (service, domain) — the mock returns "dom".
+	if err := a.enrollProfile(mkReq("part1")); err != nil {
+		t.Fatalf("enroll part1: %v", err)
+	}
+	if err := a.enrollProfile(mkReq("part2")); err != nil {
+		t.Fatalf("enroll part2: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&pskCalls); got != 1 {
+		t.Fatalf("PSK fetched %d times, want 1 (domain-scoped dedup)", got)
+	}
+	if got := atomic.LoadInt32(&crlCalls); got != 1 {
+		t.Fatalf("CRL fetched %d times, want 1 (domain-scoped dedup)", got)
+	}
+
+	v1, _ := a.profiles.Load(profileKey("dom", "part1", ""))
+	v2, _ := a.profiles.Load(profileKey("dom", "part2", ""))
+	if v1 == nil || v2 == nil {
+		t.Fatal("both participant profiles should be stored")
+	}
+	if !a.isDomainOwner(v1.(*profile)) {
+		t.Fatal("part1 (first to enroll) should own the domain")
+	}
+	if a.isDomainOwner(v2.(*profile)) {
+		t.Fatal("part2 should not own the domain")
+	}
+	// The non-owner must not schedule domain-scoped timers.
+	p2 := v2.(*profile)
+	p2.mu.Lock()
+	_, hasPSK := p2.timers[ArtifactPSK]
+	_, hasCRL := p2.timers[ArtifactCRL]
+	p2.mu.Unlock()
+	if hasPSK || hasCRL {
+		t.Fatal("non-owner participant must not schedule PSK/CRL timers")
+	}
+}
+
+func TestClaimDomainOwner_PrefersProfileWithDomainState(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	mk := func(part string, withPSK bool) *profile {
+		p := &profile{
+			serviceID: "svc", domainTemplateID: "dom", participantID: part, serial: "SN-001",
+			notAfter: map[ArtifactID]time.Time{}, issuedAt: map[ArtifactID]time.Time{},
+			timers: map[ArtifactID]*time.Timer{},
+		}
+		if withPSK {
+			p.notAfter[ArtifactPSK] = time.Unix(100, 0)
+		}
+		return p
+	}
+	owner := mk("part1", true) // the original fetcher carries the domain state
+	other := mk("part2", false)
+
+	// Claim in the "wrong" order (stateless first), as rehydrate might.
+	a.claimDomainOwner(other)
+	a.claimDomainOwner(owner)
+
+	if !a.isDomainOwner(owner) {
+		t.Fatal("the profile holding domain state should win ownership regardless of claim order")
+	}
+	if a.isDomainOwner(other) {
+		t.Fatal("the stateless profile should yield ownership")
+	}
+}
+
+func TestFindNodeDomain_ResolvesStoredNode(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	// Simulate a node enrolled under domain "dom".
+	ffs.WriteFile(a.Store.NodeKeyPath("svc", "dom", "part", "SN-001"), []byte("KEY"), 0o600)
+
+	if got := a.findNodeDomain("svc", "part", "SN-001"); got != "dom" {
+		t.Fatalf("findNodeDomain = %q, want dom", got)
+	}
+	if got := a.findNodeDomain("svc", "part", "SN-999"); got != "" {
+		t.Fatalf("findNodeDomain for unknown node = %q, want empty", got)
 	}
 }
 

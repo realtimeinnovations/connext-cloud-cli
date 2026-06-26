@@ -43,17 +43,25 @@ func RenewalDelay(now, notBefore, notAfter time.Time) time.Duration {
 // 80%-threshold timers are set for allArtifacts; PSK phase timers (exact-time
 // single-shot events) are handled separately by schedulePSKPhasesLocked.
 func (a *Agent) scheduleAll(p *profile) {
+	a.claimDomainOwner(p)
+	owner := a.isDomainOwner(p)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := a.Now()
 	for _, artifact := range allArtifacts {
+		// Domain-scoped artifacts are scheduled only by the domain owner.
+		if isDomainArtifact(artifact) && !owner {
+			continue
+		}
 		notAfter, ok := p.notAfter[artifact]
 		if !ok || notAfter.IsZero() {
 			continue
 		}
 		a.scheduleArtifactLocked(p, artifact, now, notAfter)
 	}
-	a.schedulePSKPhasesLocked(p, now)
+	if owner {
+		a.schedulePSKPhasesLocked(p, now)
+	}
 }
 
 // schedulePSKPhasesLocked arms the single-shot PSK phase timers (PSKRotate at
@@ -171,6 +179,13 @@ func (a *Agent) RenewArtifact(domainTemplateID, participantID, deviceName string
 		return fmt.Errorf("profile not found: %s", key)
 	}
 	p := val.(*profile)
+	// Domain-scoped artifacts (PSK, CRL) are managed by the domain owner; renew
+	// them on the owner so the shared files are not touched concurrently.
+	if isDomainArtifact(art) {
+		if v, ok := a.domainOwners.Load(domainOwnerKey(p.service(), p.domain())); ok {
+			p = v.(*profile)
+		}
+	}
 	p.mu.Lock()
 	if t, ok := p.timers[art]; ok && t != nil {
 		t.Stop()
