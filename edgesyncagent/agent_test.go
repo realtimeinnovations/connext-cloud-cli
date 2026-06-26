@@ -443,12 +443,14 @@ func TestSweep_TriggersRenewalForExpiredArtifact(t *testing.T) {
 	}
 
 	p := a.getOrCreateProfile("svc", "part", "dev")
-	// Write device URL so ResolveDeviceURL succeeds.
-	ffs.WriteFile("/connext/svc/part/dev/node_url", []byte("https://svc.devices.example.com"), 0o644)
 	p.mu.Lock()
+	p.domainTemplateID = "dom"
+	p.serial = "SN-001"
 	// notAfter in the past — threshold already passed.
 	p.notAfter[ArtifactPermissions] = now.Add(-10 * time.Second)
 	p.mu.Unlock()
+	// Write device URL so ResolveNodeURL succeeds.
+	ffs.WriteFile(a.Store.NodeURLPath("svc", "dom", "part", "SN-001"), []byte("https://svc.devices.example.com"), 0o644)
 
 	a.wg.Add(0)
 	a.sweep()

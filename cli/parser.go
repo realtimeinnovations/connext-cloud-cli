@@ -28,7 +28,7 @@ const commandGroupAnnotation = "rticloud.commandGroup"
 
 // slotResolutionNote is embedded in --url and --output flag descriptions to
 // document when the value is auto-resolved from the local store.
-const slotResolutionNote = "when --service and --participant-tpl-id are set"
+const slotResolutionNote = "when --service, --domain-tpl-id, --participant-tpl-id and --serial are set"
 
 var rootCommandGroups = []string{
 	"Connect to Connext Cloud",
@@ -174,19 +174,37 @@ func printCommandList(out io.Writer, commands []*cobra.Command) {
 	}
 }
 
-// resolveConnextOutput returns the connext_artifacts directory (with trailing
-// separator so resolveOutputPath treats it as a directory) when --service and
-// --participant-tpl-id are set and the caller did not supply an explicit --output.
-// Falls back to the caller-supplied value (including "") in all other cases.
-func resolveConnextOutput(rt *app.Runtime, serial, service, domainID, participantID, output string) string {
-	if output != "" || service == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
+// resolveNodeOutput returns the node-scoped Connext artifacts directory (with a
+// trailing separator so resolveOutputPath treats it as a directory) when the
+// slot is fully identified and the caller did not supply an explicit --output.
+// Identity and permissions are node-scoped. Falls back to the caller-supplied
+// value (including "") in all other cases.
+func resolveNodeOutput(rt *app.Runtime, service, domainID, participantID, serial, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" || participantID == "" || serial == "" {
 		return output
 	}
-	slotDomain := domainID
-	if slotDomain == "" {
-		slotDomain = service
+	return rt.EdgeStore.NodeDir(service, domainID, participantID, serial) + string(os.PathSeparator)
+}
+
+// resolveDomainOutput returns the domain-scoped Connext artifacts directory.
+// PSK and CRL are shared by every participant in the domain.
+func resolveDomainOutput(rt *app.Runtime, service, domainID, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" {
+		return output
 	}
-	return rt.EdgeStore.ConnextArtifactsDir(serial, slotDomain, participantID) + string(os.PathSeparator)
+	return rt.EdgeStore.DomainDir(service, domainID) + string(os.PathSeparator)
+}
+
+// resolveMTLSOutput returns the node-scoped mTLS directory (renew-cert writes
+// node.crt and ca-chain.crt here).
+func resolveMTLSOutput(rt *app.Runtime, service, domainID, participantID, serial, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" || participantID == "" || serial == "" {
+		return output
+	}
+	return rt.EdgeStore.NodeAgentDir(service, domainID, participantID, serial) + string(os.PathSeparator)
 }
 
 // resolveConnextURL returns the device endpoint URL from the local store when
@@ -203,26 +221,26 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 	if serial == "" {
 		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
 	}
-	if u := rt.EdgeStore.ResolveDeviceURL(serial, domainID, participantID); u != "" {
+	if u := rt.EdgeStore.ResolveNodeURL(service, domainID, participantID, serial); u != "" {
 		return u, nil
 	}
-	// Requested slot has no node_url; list alternatives for diagnosis.
-	others := rt.EdgeStore.ListSlotsWithURL(serial)
+	// Requested node has no node_url; list enrolled nodes for diagnosis.
+	others := rt.EdgeStore.ListNodesWithURL()
 	if len(others) > 0 {
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "no enrolled slot for domain template %q under serial %s.\n\tfound instead:", domainID, serial)
-		for _, si := range others {
+		fmt.Fprintf(&sb, "no enrolled node for service %q / domain %q / participant %q / serial %s.\n\tfound instead:", service, domainID, participantID, serial)
+		for _, ni := range others {
 			ts := ""
-			if !si.EnrolledAt.IsZero() {
-				ts = "  (enrolled " + si.EnrolledAt.UTC().Format(time.RFC3339) + ")"
+			if !ni.EnrolledAt.IsZero() {
+				ts = "  (enrolled " + ni.EnrolledAt.UTC().Format(time.RFC3339) + ")"
 			}
-			fmt.Fprintf(&sb, "\n\t  %s / %s%s", si.DomainTemplateID, si.ParticipantID, ts)
+			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --serial %s%s",
+				ni.Service, ni.Domain, ni.Participant, ni.Node, ts)
 		}
-		fmt.Fprintf(&sb, "\n\tpass --domain-tpl-id %s to use the enrolled slot.", others[0].DomainTemplateID)
 		return "", fmt.Errorf("%s", sb.String())
 	}
 	return "", fmt.Errorf("--url is required (node_url not found in store at %s)",
-		rt.EdgeStore.DeviceURLPath(serial, domainID, participantID))
+		rt.EdgeStore.NodeURLPath(service, domainID, participantID, serial))
 }
 
 // campaignTokenClaims decodes the payload of a JWT and returns its claims as a
@@ -1472,17 +1490,19 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	// Persistent slot-selection flags shared by all subcommands.
 	var connextDir, service, domainID, participantID, serial string
 	var debug bool
-	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Override the local artifact store base directory (default: <workdir>/.connext)")
+	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Directory for the Connext artifacts tree (default: <workdir>/.connext/agent/connext_artifacts/<service>); does not affect the agent's inbox, log or mTLS files")
 	cmd.PersistentFlags().StringVar(&service, "service", "", "Provisioning Service ID (selects the store slot)")
 	cmd.PersistentFlags().StringVar(&domainID, "domain-tpl-id", "", "Domain Template ID")
 	cmd.PersistentFlags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID")
-	cmd.PersistentFlags().StringVar(&serial, "serial", "", "Device serial number (selects the store slot under .connext/<serial>/)")
+	cmd.PersistentFlags().StringVar(&serial, "serial", "", "Device serial number (node id; selects the store slot)")
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Log HTTP request and response bodies to stdout (or to --log-file for the agent subcommand)")
 
 	// All edge-sync endpoints use mTLS and require certificate verification.
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		// --connext-dir relocates only the Connext artifacts tree; the agent
+		// base (inbox, log, mTLS, state) stays under BaseDir.
 		if runtime != nil && runtime.EdgeStore != nil && connextDir != "" {
-			runtime.EdgeStore.BaseDir = connextDir
+			runtime.EdgeStore.ConnextDir = connextDir
 		}
 		if runtime != nil {
 			if runtime.EdgeProvision != nil {
@@ -1516,7 +1536,6 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				// token when the user has not supplied them explicitly.
 				effectiveService := service
 				effectiveParticipant := participantID
-				effectiveDomain := domainID
 				if campaignToken != "" {
 					if claims := campaignTokenClaims(campaignToken); claims != nil {
 						if effectiveService == "" {
@@ -1524,9 +1543,6 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 						}
 						if effectiveParticipant == "" {
 							effectiveParticipant = claimString(claims, "participant_id")
-						}
-						if effectiveDomain == "" {
-							effectiveDomain = claimString(claims, "domain_id")
 						}
 					}
 				}
@@ -1540,22 +1556,16 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				// Persist the device endpoint URL using the serial+domainTemplateID-based
-				// slot so subsequent commands resolve it from the correct folder.
+				// Persist the device endpoint URL into the node slot so subsequent
+				// commands resolve it from the correct folder. domainTemplateID is
+				// guaranteed non-empty here (EnrollDevice errors otherwise).
 				if runtime.EdgeStore != nil {
-					slotID := domainTemplateID
-					if slotID == "" {
-						slotID = effectiveDomain
-					}
-					if slotID == "" {
-						slotID = effectiveService
-					}
 					domain := edgesyncagent.CampaignTokenDeviceDomain(campaignToken)
 					if domain == "" {
 						return fmt.Errorf("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
 					}
 					deviceURL := "https://" + domain
-					if err := runtime.EdgeStore.WriteDeviceURL(serial, slotID, effectiveParticipant, deviceURL); err != nil {
+					if err := runtime.EdgeStore.WriteNodeURL(effectiveService, domainTemplateID, effectiveParticipant, serial, deviceURL); err != nil {
 						_, _ = fmt.Fprintf(runtime.Out, "Warning: could not save device URL: %v\n", err)
 					}
 				}
@@ -1581,13 +1591,9 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
-					slotDomain := domainID
-					if slotDomain == "" {
-						slotDomain = service
-					}
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
-				out := resolveConnextOutput(runtime, serial, service, domainID, participantID, output)
+				out := resolveNodeOutput(runtime, service, domainID, participantID, serial, output)
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
 					return err
@@ -1601,7 +1607,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to the node's Connext artifacts dir "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1617,13 +1623,9 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
-					slotDomain := domainID
-					if slotDomain == "" {
-						slotDomain = service
-					}
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
-				out := resolveConnextOutput(runtime, serial, service, domainID, participantID, output)
+				out := resolveNodeOutput(runtime, service, domainID, participantID, serial, output)
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
 					return err
@@ -1636,7 +1638,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to the node's Connext artifacts dir "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1649,13 +1651,9 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
-					slotDomain := domainID
-					if slotDomain == "" {
-						slotDomain = service
-					}
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
-				out := resolveConnextOutput(runtime, serial, service, domainID, participantID, output)
+				out := resolveDomainOutput(runtime, service, domainID, output)
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
 					return err
@@ -1668,7 +1666,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to connext_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to the domain's Connext artifacts dir when --service and --domain-tpl-id are set)")
 		cmd.AddCommand(c)
 	}
 
@@ -1684,13 +1682,9 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
-					slotDomain := domainID
-					if slotDomain == "" {
-						slotDomain = service
-					}
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
-				out := resolveConnextOutput(runtime, serial, service, domainID, participantID, output)
+				out := resolveDomainOutput(runtime, service, domainID, output)
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
 					return err
@@ -1703,7 +1697,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
 		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
-		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to connext_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to the domain's Connext artifacts dir when --service and --domain-tpl-id are set)")
 		cmd.AddCommand(c)
 	}
 
@@ -1720,29 +1714,23 @@ the CSR subject and public key match the current certificate before signing and
 returning a fresh certificate valid for a new period.
 
 Provide a CSR generated from the same private key currently in use
-(mtls_artifacts/node.key).  When --service and --participant-tpl-id are set the
-renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
+(the node's mtls_artifacts/node.key).  When the slot is fully identified the
+renewed certificate and CA chain are saved directly into the node's
+mtls_artifacts/ directory.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
-				slotDomain := domainID
-				if slotDomain == "" {
-					slotDomain = service
-				}
 				if runtime != nil && runtime.EdgeStore != nil {
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
 					return err
 				}
-				out := output
-				if out == "" && service != "" && participantID != "" && runtime != nil && runtime.EdgeStore != nil {
-					out = runtime.EdgeStore.MTLSDir(serial, slotDomain, participantID) + string(os.PathSeparator)
-				}
+				out := resolveMTLSOutput(runtime, service, domainID, participantID, serial, output)
 				return runtime.EdgeProvision.RenewDeviceCert(resolvedURL, cert, key, ca, serverAddr, csrFile, validityMinutes, out)
 			},
 		}
@@ -1753,7 +1741,7 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (must be signed by the same key as the current device certificate)")
 		c.Flags().IntVar(&validityMinutes, "validity-minutes", 0, "Requested certificate lifetime in minutes (0 = server default)")
-		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.crt (defaults to mtls_artifacts/ "+slotResolutionNote+")")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.crt (defaults to the node's mtls_artifacts dir "+slotResolutionNote+")")
 		cmd.AddCommand(c)
 	}
 
@@ -1766,11 +1754,7 @@ renewed certificate and CA chain are saved directly into mtls_artifacts/.`,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
-					slotDomain := domainID
-					if slotDomain == "" {
-						slotDomain = service
-					}
-					cert, key, ca = runtime.EdgeStore.ResolveMTLSDefaults(serial, slotDomain, participantID, cert, key, ca)
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
 				}
 				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
 				if err != nil {
