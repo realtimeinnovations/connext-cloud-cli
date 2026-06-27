@@ -439,7 +439,7 @@ func NewAgent(store *edgestore.Store, out io.Writer) *Agent {
 		MkdirAll:      os.MkdirAll,
 		ReadDir:       os.ReadDir,
 		RemoveFile:    os.Remove,
-		InboxDir:      filepath.Join(store.BaseDir, "inbox"),
+		InboxDir:      store.InboxDir(),
 		PollInterval:  10 * time.Second,
 		SweepInterval: 5 * time.Minute,
 		CRLInterval:   5 * time.Minute,

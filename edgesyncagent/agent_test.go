@@ -219,7 +219,7 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 		ffs.removed = append(ffs.removed, path)
 		return nil
 	}
-	a.InboxDir = "/connext/inbox"
+	a.InboxDir = a.Store.InboxDir()
 	a.PollInterval = 50 * time.Millisecond
 	a.SweepInterval = 50 * time.Millisecond
 	return a
@@ -495,7 +495,7 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 		MACs:          []string{"AA:BB:CC:DD:EE:01"},
 	}
 	data, _ := json.Marshal(req)
-	inboxFile := "/connext/inbox/enroll-test.json"
+	inboxFile := "/connext/agent/inbox/enroll-test.json"
 	ffs.WriteFile(inboxFile, data, 0o644)
 
 	a.drainInbox()
@@ -526,7 +526,7 @@ func TestDrainInbox_RejectsInvalidJSON(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	inboxFile := "/connext/inbox/enroll-bad.json"
+	inboxFile := "/connext/agent/inbox/enroll-bad.json"
 	ffs.WriteFile(inboxFile, []byte("{not json"), 0o644)
 
 	a.drainInbox()
@@ -542,7 +542,7 @@ func TestDrainInbox_RejectsMissingFields(t *testing.T) {
 
 	req := EnrollRequest{ServiceID: "svc"} // participant_id, serial, macs missing
 	data, _ := json.Marshal(req)
-	inboxFile := "/connext/inbox/enroll-incomplete.json"
+	inboxFile := "/connext/agent/inbox/enroll-incomplete.json"
 	ffs.WriteFile(inboxFile, data, 0o644)
 
 	a.drainInbox()
@@ -563,7 +563,7 @@ func TestDrainInbox_SkipsTmpFiles(t *testing.T) {
 	}
 
 	// .tmp file should be ignored by drainInbox.
-	ffs.WriteFile("/connext/inbox/enroll-pending.json.tmp", []byte("{}"), 0o644)
+	ffs.WriteFile("/connext/agent/inbox/enroll-pending.json.tmp", []byte("{}"), 0o644)
 
 	a.drainInbox()
 
@@ -588,7 +588,7 @@ func TestDrainInbox_EnrollmentFailureMovesToFailed(t *testing.T) {
 		MACs: []string{"AA:BB:CC:DD:EE:01"},
 	}
 	data, _ := json.Marshal(req)
-	inboxFile := "/connext/inbox/enroll-fail.json"
+	inboxFile := "/connext/agent/inbox/enroll-fail.json"
 	ffs.WriteFile(inboxFile, data, 0o644)
 
 	a.drainInbox()
@@ -936,7 +936,7 @@ func TestRun_ProcessesInboxFileDuringOperation(t *testing.T) {
 		MACs:          []string{"AA:BB:CC:DD:EE:01"},
 	}
 	data, _ := json.Marshal(req)
-	ffs.WriteFile("/connext/inbox/enroll-live.json", data, 0o644)
+	ffs.WriteFile("/connext/agent/inbox/enroll-live.json", data, 0o644)
 
 	select {
 	case <-enrolled:
@@ -987,7 +987,7 @@ func TestRemoveInboxFile_DeletesFile(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	src := "/connext/inbox/enroll-x.json"
+	src := "/connext/agent/inbox/enroll-x.json"
 	ffs.WriteFile(src, []byte("{}"), 0o644)
 
 	a.removeInboxFile(src)
