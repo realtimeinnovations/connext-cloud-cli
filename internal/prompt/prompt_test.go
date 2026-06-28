@@ -21,6 +21,26 @@ func TestSelectorUsesNumberedFallback(t *testing.T) {
 	}
 }
 
+func TestSelectorUsesNumberedFallbackWithDetails(t *testing.T) {
+	var out bytes.Buffer
+	selector := Selector{In: strings.NewReader("1\n"), Out: &out}
+	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("one", "one\nfirst.example.com"), ChoiceWithLabel("two", "two\nsecond.example.com")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "one" {
+		t.Fatalf("unexpected selection: %s", selected)
+	}
+	rendered := strings.ReplaceAll(out.String(), "\x1b[2m", "")
+	rendered = strings.ReplaceAll(rendered, "\x1b[0m", "")
+	checks := []string{"1. one", "first.example.com", "2. two", "second.example.com"}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in output: %s", check, rendered)
+		}
+	}
+}
+
 func TestSelectorReturnsValueForLabeledSingleChoice(t *testing.T) {
 	selector := Selector{SpecialLabels: map[string]string{"create": "Create new..."}}
 	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("create", "Create new...")})

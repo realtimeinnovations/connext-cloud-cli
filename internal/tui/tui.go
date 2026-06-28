@@ -151,6 +151,14 @@ func StyleSection(value string) string {
 	return "\x1b[1;38;5;110m" + value + "\x1b[0m"
 }
 
+func StyleLink(value string) string {
+	return "\x1b[1;4m" + value + "\x1b[0m"
+}
+
+func StyleStrong(value string) string {
+	return "\x1b[1m" + value + "\x1b[0m"
+}
+
 func StyleMutedSection(value string) string {
 	return "\x1b[1;38;5;245m" + value + "\x1b[0m"
 }
