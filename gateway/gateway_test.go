@@ -351,6 +351,12 @@ func TestRoutingStateSeedsListeningRoutesFromGatewayXML(t *testing.T) {
 }
 
 func TestDashboardURLUsesTelemetryServicesForObservability(t *testing.T) {
+	if got := DashboardURL("us-east-2", "inventory", "databus"); got != "https://cloud.rti.com/dashboard/databuses/inventory" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
+	if got := DashboardURL("eu-central-1", "inventory", "databus"); got != "https://eu-central-1.cloud.rti.com/dashboard/databuses/inventory" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
 	if got := DashboardURL("dev-cloud", "luis-secobs-77", "observability"); got != "https://test.cloud.dev-rti.com/dashboard/observability-services/luis-secobs-77" {
 		t.Fatalf("unexpected URL: %s", got)
 	}
@@ -364,7 +370,7 @@ func TestAPIConnectionErrorReportsConfiguredHost(t *testing.T) {
 	checks := []string{
 		"Cannot reach Connext Cloud API.",
 		"Configured API host:\n  http://localhost:8090",
-		"rticloud configure --region us-west-2",
+		"rticloud configure --region us-east-2",
 		"GET /databuses?extra_fields=true failed: connection refused",
 	}
 	for _, check := range checks {

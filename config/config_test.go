@@ -32,7 +32,7 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
 	var out bytes.Buffer
-	ok, err := manager.ConfigureRegion("us-west-2", false, strings.NewReader(""), &out)
+	ok, err := manager.ConfigureRegion("us-east-2", false, strings.NewReader(""), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	if !strings.Contains(out.String(), "Configuration updated") {
@@ -58,7 +58,7 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
 	var out bytes.Buffer
-	ok, err := manager.ConfigureRegion("", false, strings.NewReader("2\n"), &out)
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("1\n"), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	checks := []string{
@@ -79,7 +79,11 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 		previewWarning,
 		"rticloud dev",
 		"Select region:",
-		"2. us-west-2",
+		"1. us-east-2",
+		"cloud.rti.com",
+		"2. eu-central-1",
+		"eu-central-1.cloud.rti.com",
+		"3. Custom domain",
 	}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {
@@ -88,6 +92,52 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	}
 	if strings.Index(rendered, "Select region:") < strings.Index(rendered, "rticloud dev") {
 		t.Fatalf("expected region prompt after welcome box: %s", rendered)
+	}
+}
+
+func TestConfigureRegionPromptsForCustomCloudDomain(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("3\ntest.cloud.dev-rti.com\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config["api_host"], "https://test.cloud.dev-rti.com/api/v1"; got != want {
+		t.Fatalf("api_host = %q, want %q", got, want)
+	}
+	rendered := tui.StripANSIEscapes(out.String())
+	for _, check := range []string{"3. Custom domain", "Enter the full domain by hand", "Enter full cloud domain", "Configuration updated"} {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in output: %s", check, rendered)
+		}
+	}
+}
+
+func TestConfigureRegionCustomCloudDomainAcceptsURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("3\nhttps://latest-region.cloud.rti.com/api/v1\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config["api_host"], "https://latest-region.cloud.rti.com/api/v1"; got != want {
+		t.Fatalf("api_host = %q, want %q", got, want)
 	}
 }
 
@@ -106,7 +156,7 @@ func TestConfigureRegionUsesDefaultForBlankPromptSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 }
@@ -152,6 +202,9 @@ func TestGetRegionReportsNotConfiguredWhenNoAPIHost(t *testing.T) {
 func TestGetClientIDUsesEnvironmentFirst(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
+	if err := manager.WriteConfig(map[string]string{"auth0_client_id": "config-client"}); err != nil {
+		t.Fatal(err)
+	}
 	previousDefault := defaultClientID
 	defaultClientID = "build-client"
 	t.Cleanup(func() { defaultClientID = previousDefault })
@@ -163,6 +216,21 @@ func TestGetClientIDUsesEnvironmentFirst(t *testing.T) {
 	}
 	if got := manager.GetClientID(); got != "env-client" {
 		t.Fatalf("GetClientID() = %q, want env-client", got)
+	}
+}
+
+func TestGetClientIDUsesConfigBeforeBuildTimeDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	if err := manager.WriteConfig(map[string]string{"auth0_client_id": "config-client"}); err != nil {
+		t.Fatal(err)
+	}
+	previousDefault := defaultClientID
+	defaultClientID = "build-client"
+	t.Cleanup(func() { defaultClientID = previousDefault })
+	manager.Env = func(string) string { return "" }
+	if got := manager.GetClientID(); got != "config-client" {
+		t.Fatalf("GetClientID() = %q, want config-client", got)
 	}
 }
 
@@ -205,14 +273,14 @@ func TestGetWorkspacesClientIDFallsBackToBuildTimeDefault(t *testing.T) {
 func TestWriteConfigCreatesRticloudDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(filepath.Join(tmpDir, ".rticloud", "config.json"))
-	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-west-2"]}); err != nil {
+	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-east-2"]}); err != nil {
 		t.Fatal(err)
 	}
 	config, err := manager.GetConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config["api_host"]; got != RegionURLMap["us-west-2"] {
+	if got := config["api_host"]; got != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config value: %q", got)
 	}
 }
@@ -221,7 +289,7 @@ func TestWriteConfigUsesUserOnlyPermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".rticloud", "config.json")
 	manager := New(configPath)
-	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-west-2"]}); err != nil {
+	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-east-2"]}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(configPath)

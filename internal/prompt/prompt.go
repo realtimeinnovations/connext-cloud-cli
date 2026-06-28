@@ -12,6 +12,7 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 const choiceSeparator = "\x00"
@@ -29,6 +30,11 @@ type Input struct {
 	Out           io.Writer
 	CancelMessage string
 	DefaultValue  string
+}
+
+type selectItem struct {
+	Label  string
+	Detail string
 }
 
 func (selector Selector) Select(message string, choices []string) (string, error) {
@@ -52,11 +58,11 @@ func (selector Selector) Select(message string, choices []string) (string, error
 }
 
 func (selector Selector) numberedSelect(message string, choices []string) (string, error) {
-	reader := bufio.NewReader(selector.input())
+	reader := bufferedReader(selector.input())
 	for {
 		_, _ = fmt.Fprintln(selector.Out, message)
 		for idx, choice := range choices {
-			_, _ = fmt.Fprintf(selector.Out, "  %d. %s\n", idx+1, selector.SelectionLabel(choice))
+			selector.printNumberedChoice(idx+1, selector.SelectionLabel(choice))
 		}
 		_, _ = fmt.Fprint(selector.Out, selector.selectionPrompt(choices))
 		line, err := reader.ReadString('\n')
@@ -77,7 +83,8 @@ func (selector Selector) numberedSelect(message string, choices []string) (strin
 			return SelectionValue(choices[index]), nil
 		}
 		for _, choice := range choices {
-			if input == choice || input == selector.SelectionLabel(choice) {
+			label := selector.SelectionLabel(choice)
+			if input == choice || input == SelectionValue(choice) || input == label || input == selectionTitle(label) {
 				return SelectionValue(choice), nil
 			}
 		}
@@ -89,35 +96,78 @@ func (selector Selector) numberedSelect(message string, choices []string) (strin
 }
 
 func (selector Selector) cursorSelect(message string, choices []string, inputFile io.ReadCloser, outputFile io.WriteCloser) (string, error) {
-	labels := make([]string, 0, len(choices))
+	items := make([]selectItem, 0, len(choices))
+	hasDetails := false
 	for _, choice := range choices {
-		labels = append(labels, selector.SelectionLabel(choice))
+		item := newSelectItem(selector.SelectionLabel(choice))
+		if item.Detail != "" {
+			hasDetails = true
+		}
+		items = append(items, item)
 	}
 	prefix, label := splitPromptMessage(message)
 	if prefix != "" {
 		_, _ = fmt.Fprintln(outputFile, prefix)
 		_, _ = fmt.Fprintln(outputFile)
 	}
+	templates := &promptui.SelectTemplates{
+		Label:    "{{ . }}",
+		Active:   "\x1b[38;5;208m▸ {{ .Label }}\x1b[0m",
+		Inactive: "  {{ .Label }}",
+		Selected: "\x1b[38;5;208m▸ {{ .Label }}\x1b[0m",
+	}
+	if hasDetails {
+		templates.Details = "    \x1b[2m{{ .Detail }}\x1b[0m"
+	}
 	prompt := promptui.Select{
 		Label:     label,
-		Items:     labels,
-		Size:      minInt(len(labels), 10),
+		Items:     items,
+		Size:      minInt(len(items), 10),
 		CursorPos: selector.defaultCursorPos(choices),
 		HideHelp:  true,
 		Stdin:     inputFile,
 		Stdout:    outputFile,
-		Templates: &promptui.SelectTemplates{
-			Label:    "{{ . }}",
-			Active:   "\x1b[38;5;208m▸ {{ . }}\x1b[0m",
-			Inactive: "  {{ . }}",
-			Selected: "\x1b[38;5;208m▸ {{ . }}\x1b[0m",
-		},
+		Templates: templates,
 	}
 	index, _, err := prompt.Run()
 	if err != nil {
 		return "", err
 	}
 	return SelectionValue(choices[index]), nil
+}
+
+func (selector Selector) printNumberedChoice(index int, label string) {
+	title, detail := splitSelectionLabel(label)
+	prefix := fmt.Sprintf("  %d. ", index)
+	_, _ = fmt.Fprintf(selector.Out, "%s%s\n", prefix, title)
+	if detail == "" {
+		return
+	}
+	indent := strings.Repeat(" ", len(prefix))
+	for _, line := range strings.Split(detail, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(selector.Out, "%s%s\n", indent, tui.Dim(strings.TrimSpace(line)))
+	}
+}
+
+func newSelectItem(label string) selectItem {
+	title, detail := splitSelectionLabel(label)
+	return selectItem{Label: title, Detail: detail}
+}
+
+func selectionTitle(label string) string {
+	title, _ := splitSelectionLabel(label)
+	return title
+}
+
+func splitSelectionLabel(label string) (string, string) {
+	parts := strings.SplitN(label, "\n", 2)
+	if len(parts) == 1 {
+		return strings.TrimSpace(parts[0]), ""
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 }
 
 func (selector Selector) SelectionLabel(choice string) string {
@@ -160,7 +210,7 @@ func (selector Selector) defaultCursorPos(choices []string) int {
 func (selector Selector) selectionPrompt(choices []string) string {
 	for _, choice := range choices {
 		if SelectionValue(choice) == selector.DefaultChoice {
-			return fmt.Sprintf("Select an option [%s]: ", selector.SelectionLabel(choice))
+			return fmt.Sprintf("Select an option [%s]: ", selectionTitle(selector.SelectionLabel(choice)))
 		}
 	}
 	return "Select an option: "
@@ -232,7 +282,7 @@ func (input Input) Prompt(message string) (string, error) {
 }
 
 func (input Input) linePrompt(message string) (string, error) {
-	reader := bufio.NewReader(input.input())
+	reader := bufferedReader(input.input())
 	_, _ = fmt.Fprintln(input.Out, message)
 	if input.DefaultValue != "" {
 		_, _ = fmt.Fprintf(input.Out, "Value [%s]: ", input.DefaultValue)
@@ -292,4 +342,11 @@ func splitPromptMessage(message string) (string, string) {
 		return "", trimmed
 	}
 	return strings.TrimRight(trimmed[:index], "\n"), trimmed[index+1:]
+}
+
+func bufferedReader(input io.Reader) *bufio.Reader {
+	if reader, ok := input.(*bufio.Reader); ok {
+		return reader
+	}
+	return bufio.NewReader(input)
 }

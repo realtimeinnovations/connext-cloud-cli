@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,20 +14,24 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 var RegionURLMap = map[string]string{
-	"us-west-2":    "https://us-west-2.cloud.dev-rti.com/api/v1",
-	"eu-central-1": "https://eu-central-1.cloud.dev-rti.com/api/v1",
+	"us-east-2":    "https://cloud.rti.com/api/v1",
+	"eu-central-1": "https://eu-central-1.cloud.rti.com/api/v1",
 	"dev-cloud":    "https://test.cloud.dev-rti.com/api/v1",
 	"dev-local":    "http://localhost:8090",
 }
+
+var standardRegionOrder = []string{"us-east-2", "eu-central-1"}
 
 var defaultClientID = ""
 var defaultWorkspacesClientID = ""
 
 const previewWarning = "⚠ Connext Cloud is in preview. Do not use in production."
+const customCloudDomainChoice = "__custom_cloud_domain__"
 
 const NotConfiguredMessage = "RTI Connext Cloud CLI not configured.\n\nFirst run:\n  rticloud configure\n  rticloud login"
 
@@ -122,6 +128,12 @@ func (manager *Manager) GetClientID() string {
 			return value
 		}
 	}
+	config, err := manager.GetConfig()
+	if err == nil {
+		if value := config["auth0_client_id"]; value != "" {
+			return value
+		}
+	}
 	return defaultClientID
 }
 
@@ -180,7 +192,15 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 		return true, nil
 	}
 	if region == "" {
-		defaultRegion := "us-west-2"
+		input := in
+		if input == nil {
+			input = os.Stdin
+		}
+		promptInput := input
+		if _, _, ok := terminal.PromptFiles(input, out); !ok {
+			promptInput = bufio.NewReader(input)
+		}
+		defaultRegion := "us-east-2"
 		currentAPIHost := manager.GetAPIURLSafe()
 		for configuredRegion, url := range RegionURLMap {
 			if currentAPIHost != url {
@@ -194,15 +214,37 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 		}
 		_, _ = fmt.Fprint(out, renderConfigureWelcome(out))
 		selectedRegion, err := prompt.Selector{
-			In:            in,
+			In:            promptInput,
 			Out:           out,
 			CancelMessage: "Configuration cancelled.",
 			DefaultChoice: defaultRegion,
-		}.Select("Select region:", standardRegions())
+		}.Select("Select region:", interactiveRegionChoices())
 		if err != nil {
 			return false, err
 		}
 		region = selectedRegion
+		if region == customCloudDomainChoice {
+			domain, err := prompt.Input{
+				In:            promptInput,
+				Out:           out,
+				CancelMessage: "Configuration cancelled.",
+			}.Prompt("Enter full cloud domain (for example, my-region.cloud.rti.com)")
+			if err != nil {
+				return false, err
+			}
+			apiHost, err := customDomainAPIHost(domain)
+			if err != nil {
+				_, _ = fmt.Fprintf(out, "Error: %v\n", err)
+				return false, nil
+			}
+			currentConfig["api_host"] = apiHost
+			if err := manager.WriteConfig(currentConfig); err != nil {
+				_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
+				return false, nil
+			}
+			_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or export CONNEXT_CLOUD_API_KEY.")
+			return true, nil
+		}
 	} else {
 		_, _ = fmt.Fprintf(out, "%s\n\n", previewWarning)
 	}
@@ -236,14 +278,63 @@ func configurePanelTheme() tui.PanelTheme {
 
 func standardRegions() []string {
 	regions := make([]string, 0, len(RegionURLMap))
+	seen := map[string]bool{}
+	for _, configuredRegion := range standardRegionOrder {
+		if _, ok := RegionURLMap[configuredRegion]; ok {
+			regions = append(regions, configuredRegion)
+			seen[configuredRegion] = true
+		}
+	}
+	extraRegions := []string{}
 	for configuredRegion := range RegionURLMap {
+		if seen[configuredRegion] {
+			continue
+		}
 		if strings.HasPrefix(configuredRegion, "dev-") {
 			continue
 		}
-		regions = append(regions, configuredRegion)
+		extraRegions = append(extraRegions, configuredRegion)
 	}
-	sort.Strings(regions)
-	return regions
+	sort.Strings(extraRegions)
+	return append(regions, extraRegions...)
+}
+
+func interactiveRegionChoices() []string {
+	regions := standardRegions()
+	choices := make([]string, 0, len(regions)+1)
+	for _, region := range regions {
+		choices = append(choices, prompt.ChoiceWithLabel(region, regionChoiceLabel(region)))
+	}
+	return append(choices, prompt.ChoiceWithLabel(customCloudDomainChoice, "Custom domain\nEnter the full domain by hand"))
+}
+
+func regionChoiceLabel(region string) string {
+	return region + "\n" + regionDomain(region)
+}
+
+func regionDomain(region string) string {
+	apiHost := RegionURLMap[region]
+	parsed, err := url.Parse(apiHost)
+	if err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(apiHost, "https://"), "http://")
+	return strings.SplitN(trimmed, "/", 2)[0]
+}
+
+func customDomainAPIHost(value string) (string, error) {
+	domain := strings.TrimSpace(value)
+	if parsed, err := url.Parse(domain); err == nil && parsed.Host != "" {
+		domain = parsed.Host
+	}
+	domain = strings.Trim(strings.SplitN(domain, "/", 2)[0], ".")
+	if domain == "" {
+		return "", errors.New("cloud domain is required")
+	}
+	if strings.ContainsAny(domain, " \t\r\n") {
+		return "", fmt.Errorf("invalid cloud domain %q", value)
+	}
+	return "https://" + domain + "/api/v1", nil
 }
 
 func copyMap(input map[string]string) map[string]string {

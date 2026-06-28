@@ -17,6 +17,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1162,7 +1163,7 @@ func (app *GatewayApp) ValidateConfigResources(config map[string]any) error {
 			if zone == "" {
 				zone = app.currentZone()
 			}
-			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\nCreate a Gateway in the Applications tab\n  - Open %s\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"))}
+			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\n1. Open the Databus dashboard:\n   %s\n2. %s\n\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"), edgeGatewayApplicationInstruction())}
 		}
 	}
 	if HasObservability(config) {
@@ -1262,12 +1263,12 @@ func (app *GatewayApp) waitForTemplateCreation(resourceName string, resourceLabe
 		reloadMessage := "Reload template list after creating it in the dashboard."
 		switch templateKind {
 		case "gateway":
-			title = "• Create a Gateway in the Applications tab:"
-			reloadMessage = "Reload application list after creating it in the dashboard."
+			title = "• Create an Edge Gateway application"
+			reloadMessage = "After you've created the gateway application in the dashboard, reload."
 		case "telemetry-service-collector", "observability-collector":
 			title = "• Create collector template in Connext Cloud dashboard:"
 		}
-		_, _ = fmt.Fprint(app.Out, RenderKeyValuePanel(title, []KeyValueRow{{Value: dashboard}}))
+		_, _ = fmt.Fprint(app.Out, RenderKeyValuePanel(title, dashboardCreationSteps(templateKind, dashboard)))
 		confirm, err := app.confirmReload(reloadMessage)
 		if err != nil {
 			return nil, nil, err
@@ -1285,6 +1286,21 @@ func (app *GatewayApp) waitForTemplateCreation(resourceName string, resourceLabe
 			return resource, templates, nil
 		}
 	}
+}
+
+func dashboardCreationSteps(templateKind string, dashboard string) []KeyValueRow {
+	if templateKind != "gateway" {
+		return []KeyValueRow{{Value: dashboard}}
+	}
+	return []KeyValueRow{
+		{Key: "Step 1", Value: "Open the Databus dashboard:"},
+		{Value: tui.StyleLink(dashboard)},
+		{Key: "Step 2", Value: edgeGatewayApplicationInstruction()},
+	}
+}
+
+func edgeGatewayApplicationInstruction() string {
+	return fmt.Sprintf("Create an %s; choose %s.", tui.StyleStrong("Application"), tui.StyleStrong("Edge Gateway"))
 }
 
 // sanitizeCollectorName replaces any character not in [a-zA-Z0-9_] with "_".

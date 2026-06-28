@@ -27,7 +27,7 @@ func FormatAPIConnectionError(method string, apiHost string, path string, detail
 		"The CLI could not connect to the configured management API.",
 		"",
 		"To use Connext Cloud:",
-		"  rticloud configure --region us-west-2",
+		"  rticloud configure --region us-east-2",
 		"  rticloud login",
 		"  rticloud gateway",
 		"",
@@ -48,8 +48,10 @@ func DashboardURL(zone string, resourceName string, resourceKind string) string 
 		scheme = "http"
 	case "dev-cloud":
 		host = "test.cloud.dev-rti.com"
+	case "us-east-2":
+		host = "cloud.rti.com"
 	default:
-		host = zone + ".cloud.dev-rti.com"
+		host = zone + ".cloud.rti.com"
 	}
 	path := "databuses"
 	if resourceKind == "observability" {

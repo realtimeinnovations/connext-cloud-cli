@@ -655,9 +655,13 @@ func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 		if rows[0].Key != "" {
 			content = append(content, tui.Dim(rows[0].Key+":"))
 		}
-		content = append(content, rows[0].Value)
+		content = append(content, tui.StyleLink(rows[0].Value))
 	} else {
 		for _, row := range rows {
+			if row.Key == "" {
+				content = append(content, row.Value)
+				continue
+			}
 			content = append(content, fmt.Sprintf("%s %s", tui.Dim(row.Key+":"), row.Value))
 		}
 	}
@@ -671,7 +675,7 @@ func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
 	lines := []string{"\x1b[38;5;110m" + top + "\x1b[0m"}
 	for _, row := range content {
-		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", tui.PadDisplay(row, width)))
+		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", tui.PadStyled(row, width)))
 	}
 	lines = append(lines, "\x1b[38;5;110m"+bottom+"\x1b[0m", "")
 	return strings.Join(lines, "\n")
