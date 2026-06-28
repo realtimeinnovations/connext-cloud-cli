@@ -141,6 +141,23 @@ func TestConfigureRegionCustomCloudDomainAcceptsURL(t *testing.T) {
 	}
 }
 
+func TestCustomDomainAPIHostRejectsURLPartsOutsideHostAndPath(t *testing.T) {
+	for _, value := range []string{
+		"example.com?x=y",
+		"example.com#section",
+		"user@example.com",
+		"https://user@example.com",
+		"https://example.com?x=y",
+		"https://example.com#section",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if got, err := customDomainAPIHost(value); err == nil {
+				t.Fatalf("customDomainAPIHost(%q) = %q, want error", value, got)
+			}
+		})
+	}
+}
+
 func TestConfigureRegionUsesDefaultForBlankPromptSelection(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")

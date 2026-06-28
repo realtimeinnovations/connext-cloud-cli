@@ -323,11 +323,22 @@ func regionDomain(region string) string {
 }
 
 func customDomainAPIHost(value string) (string, error) {
-	domain := strings.TrimSpace(value)
-	if parsed, err := url.Parse(domain); err == nil && parsed.Host != "" {
-		domain = parsed.Host
+	rawValue := strings.TrimSpace(value)
+	if rawValue == "" {
+		return "", errors.New("cloud domain is required")
 	}
-	domain = strings.Trim(strings.SplitN(domain, "/", 2)[0], ".")
+	parseValue := rawValue
+	if !strings.Contains(parseValue, "://") {
+		parseValue = "https://" + parseValue
+	}
+	parsed, err := url.Parse(parseValue)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid cloud domain %q", value)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", fmt.Errorf("invalid cloud domain %q", value)
+	}
+	domain := strings.Trim(parsed.Host, ".")
 	if domain == "" {
 		return "", errors.New("cloud domain is required")
 	}
