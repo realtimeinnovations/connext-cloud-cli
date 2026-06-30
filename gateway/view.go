@@ -138,7 +138,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 			Title:           GatewayPanelTitle(),
 			Header:          header,
 			Resource:        resource,
-			LogLines:        append([]string(nil), view.State.RecentLogs()...),
+			LogLines:        view.State.RecentLogs(),
 			Border:          tui.RTIOrange,
 			HideRoutes:      true,
 			LogTitle:        "Collector Log",
@@ -194,7 +194,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		Header:   header,
 		Resource: resource,
 		Routes:   routes,
-		LogLines: append([]string(nil), view.State.RecentLogs()...),
+		LogLines: view.State.RecentLogs(),
 		Border:   tui.RTIOrange,
 	}
 }
