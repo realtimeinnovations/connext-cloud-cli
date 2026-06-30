@@ -1027,7 +1027,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	_, _, cursorSelection := app.promptTerminal()
 	_, _ = fmt.Fprint(app.Out, RenderSetupIntro(len(databuses), len(observabilityServices), cursorSelection))
 	connext := ConnextInstall{}
-	if len(databuses) > 0 {
+	if len(databuses) > 0 || len(observabilityServices) > 0 {
 		connext, err = app.discoverConnextInstall(prompt)
 		if err != nil {
 			return nil, err
@@ -1054,9 +1054,6 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	}
 	includeData := capability == "Data and Observability" || capability == "Data only"
 	includeObservability := capability == "Data and Observability" || capability == "Observability only"
-	if !includeData {
-		connext = ConnextInstall{}
-	}
 	databusName := ""
 	gatewayTemplate := ""
 	var databus map[string]any
@@ -1133,7 +1130,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 			"collector_client_id": nullableClientID(collectorTemplate),
 		},
 	}
-	if includeData {
+	if includeData || includeObservability {
 		config["runtime"].(map[string]any)["connext_home"] = connext.Path
 	}
 	if err := app.WriteConfig(config); err != nil {
