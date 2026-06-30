@@ -73,7 +73,7 @@ func TestEnsureConnextLicenseDownloadsMissingLMInstallLicense(t *testing.T) {
 	prompted := false
 	if err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
 		prompted = true
-		if !strings.Contains(message, install) || len(choices) != 2 || choices[0] != downloadConnextLicenseLabel {
+		if !strings.Contains(message, install) || len(choices) != 3 || choices[0] != downloadConnextLicenseLabel || choices[1] != manualDownloadConnextLicenseLabel {
 			t.Fatalf("unexpected prompt: %q %#v", message, choices)
 		}
 		return downloadConnextLicenseLabel, nil
@@ -95,6 +95,52 @@ func TestEnsureConnextLicenseDownloadsMissingLMInstallLicense(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Connext license saved to "+filepath.Join(install, "rti_license.dat")) {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestEnsureConnextLicenseShowsManualDownloadInstructions(t *testing.T) {
+	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
+	if err := os.MkdirAll(install, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install, "rti_versions.xml"), []byte(`
+<rti>
+  <host>
+    <installation_type>LM</installation_type>
+  </host>
+</rti>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, "license-body")}}
+	var out bytes.Buffer
+	runtime := &Runtime{Out: &out, License: commands.New(api, &out)}
+	licensePath := filepath.Join(install, "rti_license.dat")
+	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
+		if !strings.Contains(message, install) || len(choices) != 3 || choices[1] != manualDownloadConnextLicenseLabel {
+			t.Fatalf("unexpected prompt: %q %#v", message, choices)
+		}
+		return manualDownloadConnextLicenseLabel, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "Copy the license file to "+licensePath) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if api.calls != 0 {
+		t.Fatalf("expected no API calls, got %d", api.calls)
+	}
+	rendered := out.String()
+	checks := []string{
+		"Manually download Connext license",
+		"Step 1",
+		evaluationLicenseURL,
+		"Step 2",
+		"Download the license file.",
+		"Step 3",
+		"Copy it to " + licensePath,
+	}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in output: %s", check, rendered)
+		}
 	}
 }
 
@@ -140,7 +186,7 @@ func TestEnsureConnextLicenseCanBeCancelledBeforeEvaluationLogin(t *testing.T) {
 	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, "license-body")}}
 	runtime := &Runtime{License: commands.New(api, io.Discard)}
 	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
-		if !strings.Contains(message, install) || len(choices) != 2 || choices[1] != cancelConnextLicenseLabel {
+		if !strings.Contains(message, install) || len(choices) != 3 || choices[2] != cancelConnextLicenseLabel {
 			t.Fatalf("unexpected prompt: %q %#v", message, choices)
 		}
 		return cancelConnextLicenseLabel, nil

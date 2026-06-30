@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
@@ -38,9 +40,10 @@ const NotConfiguredMessage = "RTI Connext Cloud CLI not configured.\n\nFirst run
 var ErrNotConfigured = errors.New(NotConfiguredMessage)
 
 type Manager struct {
-	Path  string
-	Env   func(string) string
-	cache map[string]string
+	Path       string
+	Env        func(string) string
+	HTTPClient *http.Client
+	cache      map[string]string
 }
 
 func DefaultDir() string {
@@ -60,7 +63,7 @@ func New(path string) *Manager {
 	if path == "" {
 		path = DefaultConfigPath()
 	}
-	return &Manager{Path: path, Env: os.Getenv}
+	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}}
 }
 
 func (manager *Manager) GetConfig() (map[string]string, error) {
@@ -237,7 +240,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 				_, _ = fmt.Fprintf(out, "Error: %v\n", err)
 				return false, nil
 			}
-			currentConfig["api_host"] = apiHost
+			manager.applyAuthConfig(currentConfig, apiHost, out)
 			if err := manager.WriteConfig(currentConfig); err != nil {
 				_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
 				return false, nil
@@ -252,7 +255,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 		_, _ = fmt.Fprintf(out, "Error: Invalid region '%s'. Available regions: %s\n", region, strings.Join(standardRegions(), ", "))
 		return false, nil
 	}
-	currentConfig["api_host"] = RegionURLMap[region]
+	manager.applyAuthConfig(currentConfig, RegionURLMap[region], out)
 	if err := manager.WriteConfig(currentConfig); err != nil {
 		_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
 		return false, nil
@@ -346,6 +349,56 @@ func customDomainAPIHost(value string) (string, error) {
 		return "", fmt.Errorf("invalid cloud domain %q", value)
 	}
 	return "https://" + domain + "/api/v1", nil
+}
+
+type authConfigResponse struct {
+	Auth0Domain string `json:"auth0_domain"`
+	ClientID    string `json:"client_id"`
+	Audience    string `json:"audience"`
+}
+
+func (manager *Manager) applyAuthConfig(config map[string]string, apiHost string, out io.Writer) {
+	config["api_host"] = apiHost
+	authConfig, err := manager.fetchAuthConfig(apiHost)
+	if err != nil {
+		delete(config, "auth0_domain")
+		delete(config, "auth0_client_id")
+		delete(config, "audience")
+		_, _ = fmt.Fprintln(out, "Warning: Could not load auth configuration; using built-in defaults.")
+		return
+	}
+	config["auth0_domain"] = authConfig.Auth0Domain
+	config["auth0_client_id"] = authConfig.ClientID
+	config["audience"] = authConfig.Audience
+}
+
+func (manager *Manager) fetchAuthConfig(apiHost string) (authConfigResponse, error) {
+	request, err := http.NewRequest(http.MethodGet, strings.TrimRight(apiHost, "/")+"/auth/config", nil)
+	if err != nil {
+		return authConfigResponse{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	httpClient := manager.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return authConfigResponse{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		return authConfigResponse{}, fmt.Errorf("GET /auth/config failed: %d - %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload authConfigResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return authConfigResponse{}, err
+	}
+	if payload.Auth0Domain == "" || payload.ClientID == "" || payload.Audience == "" {
+		return authConfigResponse{}, errors.New("auth configuration response missing required field")
+	}
+	return payload, nil
 }
 
 func copyMap(input map[string]string) map[string]string {
