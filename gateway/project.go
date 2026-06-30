@@ -529,6 +529,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 				}
 				continue
 			}
+			liveView.HandleCollectorLine(line)
 			if options.TextOutput && strings.TrimSpace(line) != "" {
 				_, _ = fmt.Fprintln(app.Out, line)
 			}

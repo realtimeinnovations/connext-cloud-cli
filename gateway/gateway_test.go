@@ -561,6 +561,61 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 	}
 }
 
+func TestObservabilityOnlyLiveViewShowsCollectorLogOnly(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "running"
+	layout := view.Render(0)
+	if !layout.HideRoutes || layout.LogTitle != "Collector Log" {
+		t.Fatalf("unexpected observability-only section labels: %#v", layout)
+	}
+	if len(layout.Routes) != 0 {
+		t.Fatalf("unexpected collector rows: %#v", layout.Routes)
+	}
+	rendered := tui.StripANSIEscapes(renderANSI(layout))
+	checks := []string{"OBSERVABILITY", "running", "Collector Log", "Waiting for telemetry from Connext applications and gateways"}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in rendered output: %s", check, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Component") || strings.Contains(rendered, "running; waiting for telemetry") {
+		t.Fatalf("unexpected collector table in rendered output: %s", rendered)
+	}
+}
+
+func TestObservabilityOnlyStoppedSnapshotDoesNotSayCollectorIsRunning(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "stopped"
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+	if !strings.Contains(rendered, "stopped") || strings.Contains(rendered, "Collector is running") {
+		t.Fatalf("unexpected stopped collector output: %s", rendered)
+	}
+}
+
+func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.HandleCollectorLine("connected to telemetry service")
+	layout := view.Render(0)
+	if len(layout.LogLines) != 1 || layout.LogLines[0] != "collector connected to telemetry service" {
+		t.Fatalf("unexpected collector log lines: %#v", layout.LogLines)
+	}
+}
+
 func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 	view := RenderedView{
 		Title:    GatewayPanelTitle(),
