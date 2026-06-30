@@ -529,6 +529,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 				}
 				continue
 			}
+			liveView.HandleCollectorLine(line)
 			if options.TextOutput && strings.TrimSpace(line) != "" {
 				_, _ = fmt.Fprintln(app.Out, line)
 			}
@@ -1025,18 +1026,15 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	}
 	_, _, cursorSelection := app.promptTerminal()
 	_, _ = fmt.Fprint(app.Out, RenderSetupIntro(len(databuses), len(observabilityServices), cursorSelection))
-	connext := ConnextInstall{}
-	if len(databuses) > 0 {
-		connext, err = app.discoverConnextInstall(prompt)
-		if err != nil {
-			return nil, err
-		}
-		connextMsg := fmt.Sprintf("Using Connext Pro %s at %s", connext.Version, connext.Path)
-		if connext.Reason != "" {
-			connextMsg += fmt.Sprintf(" (%s)", connext.Reason)
-		}
-		_, _ = fmt.Fprint(app.Out, RenderInfoMessage(connextMsg))
+	connext, err := app.discoverConnextInstall(prompt)
+	if err != nil {
+		return nil, err
 	}
+	connextMsg := fmt.Sprintf("Using Connext Pro %s at %s", connext.Version, connext.Path)
+	if connext.Reason != "" {
+		connextMsg += fmt.Sprintf(" (%s)", connext.Reason)
+	}
+	_, _ = fmt.Fprint(app.Out, RenderInfoMessage(connextMsg))
 	capabilityChoices := []string{}
 	if len(databuses) > 0 && len(observabilityServices) > 0 {
 		capabilityChoices = append(capabilityChoices, "Data and Observability")
@@ -1053,9 +1051,6 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	}
 	includeData := capability == "Data and Observability" || capability == "Data only"
 	includeObservability := capability == "Data and Observability" || capability == "Observability only"
-	if !includeData {
-		connext = ConnextInstall{}
-	}
 	databusName := ""
 	gatewayTemplate := ""
 	var databus map[string]any
@@ -1132,9 +1127,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 			"collector_client_id": nullableClientID(collectorTemplate),
 		},
 	}
-	if includeData {
-		config["runtime"].(map[string]any)["connext_home"] = connext.Path
-	}
+	config["runtime"].(map[string]any)["connext_home"] = connext.Path
 	if err := app.WriteConfig(config); err != nil {
 		return nil, err
 	}
