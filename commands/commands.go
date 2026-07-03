@@ -1125,6 +1125,98 @@ func stringField(m map[string]any, key string) string {
 	return v
 }
 
+// EnrollDeviceDirect performs operator-initiated direct enrollment: creates the
+// node inventory row and signs its certificate in one API call, authenticated
+// with a normal management token (no campaign JWT required).
+//
+// The domainTemplateID and participantTemplateID must already exist on the
+// Provisioning Service identified by edgeSystemID.  serial is the unique
+// identifier chosen by the operator for this participant.  macs and deviceName
+// are optional.
+func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, error) {
+	data, err := runner.ReadFile(csrFile)
+	if err != nil {
+		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
+		return "", fmt.Errorf("reading CSR file: %w", err)
+	}
+	payload := map[string]any{
+		"serial":                serial,
+		"csr":                   string(data),
+		"domainTemplateId":      domainTemplateID,
+		"participantTemplateId": participantTemplateID,
+	}
+	if len(macs) > 0 {
+		payload["macs"] = macs
+	}
+	if deviceName != "" {
+		payload["name"] = deviceName
+	}
+	path := edgePath("edge-systems", edgeSystemID, "enroll-node")
+	response, err := runner.API.Post(path, payload)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return "", fmt.Errorf("HTTP %d: direct enrollment rejected", response.StatusCode)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", err
+	}
+
+	// The server confirms (or overrides) the domain_template_id; fall back to
+	// the caller-supplied value if the response omits it.
+	retDomainTemplateID := stringField(result, "domain_template_id")
+	if retDomainTemplateID == "" {
+		retDomainTemplateID = domainTemplateID
+	}
+
+	// Write to the local artifact store when available.
+	if runner.EdgeStore != nil && edgeSystemID != "" && participantTemplateID != "" {
+		service := edgeSystemID
+		domain := retDomainTemplateID
+		node := serial
+		arts := edgestore.EnrollArtifacts{
+			DeviceCertPEM: []byte(stringField(result, "certificate")),
+			CAChainPEM:    []byte(stringField(result, "caChain")),
+			GovernanceP7S: []byte(stringField(result, "governanceP7s")),
+		}
+		if keyFile != "" {
+			keyData, err := runner.ReadFile(keyFile)
+			if err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not read key file %s: %v\n", keyFile, err)
+			} else {
+				arts.PrivateKeyPEM = keyData
+			}
+		}
+		if err := runner.EdgeStore.WriteEnrollArtifacts(service, domain, participantTemplateID, node, arts); err != nil {
+			return retDomainTemplateID, err
+		}
+		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
+			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
+			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantTemplateID, node)
+			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
+			}
+			leaseDest := filepath.Join(nodeDir, "enroll_lease.json")
+			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
+			}
+		}
+		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:          %s\n  Domain Template:  %s\n  Participant:      %s\n  Store:            %s\n",
+			edgeSystemID, domain, participantTemplateID, runner.EdgeStore.NodeAgentDir(service, domain, participantTemplateID, node))
+		return retDomainTemplateID, nil
+	}
+
+	// No local store configured (unit tests / dry run): print the raw response.
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	return retDomainTemplateID, nil
+}
+
 // enrollExtractLease picks "lease" and "server_time_utc" from an enrollment
 // response, returning nil when neither key is present.
 func enrollExtractLease(result map[string]any) map[string]any {

@@ -1362,7 +1362,7 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
 		c.Flags().StringVar(&enrollmentList, "enrollment-list", "", "Path to JSON or CSV file with the list of devices to enroll")
-		c.Flags().StringVar(&domainTemplateID, "domain-tpl-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: tag)")
+		c.Flags().StringVar(&domainTemplateID, "domain-tpl-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
 		cmd.AddCommand(c)
 	}
 
@@ -1576,6 +1576,62 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
 		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required by the enrollment endpoint)")
+		cmd.AddCommand(c)
+	}
+
+	{ // enroll-direct
+		var csrFile, keyFile, domainTemplateIDFlag, participantTemplateIDFlag, deviceName string
+		var macs []string
+		c := &cobra.Command{
+			Use:   "enroll-direct",
+			Short: "Operator-initiated direct enrollment (no campaign required)",
+			Long: `Enroll a device directly using your management token, without a pre-existing campaign.
+
+Unlike 'enroll' (which requires a campaign JWT), this command authenticates
+with your regular login credentials and performs enrollment in a single API call.
+
+The --serial flag identifies this participant on the Provisioning Service.
+You may choose any stable, unique string (e.g. device serial number, hostname,
+or UUID) — it is stored permanently and cannot be changed after enrollment.
+
+Requires:
+  rticloud login
+
+Example:
+  rticloud edge-sync enroll-direct \
+    --service my-provisioning-service \
+    --domain-template-id 1:my-domain \
+    --participant-template-id my-participant \
+    --serial my-device-001 \
+    --csr-file device.csr \
+    --key-file device.key`,
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if service == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if domainTemplateIDFlag == "" {
+					return fmt.Errorf("--domain-template-id is required")
+				}
+				if participantTemplateIDFlag == "" {
+					return fmt.Errorf("--participant-template-id is required")
+				}
+				if serial == "" {
+					return fmt.Errorf("--serial is required")
+				}
+				if csrFile == "" {
+					return fmt.Errorf("--csr-file is required")
+				}
+				_, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile)
+				return err
+			},
+		}
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
+		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
+		c.Flags().StringVar(&domainTemplateIDFlag, "domain-template-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
+		c.Flags().StringVar(&participantTemplateIDFlag, "participant-template-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
+		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (optional, can be specified multiple times)")
+		c.Flags().StringVar(&deviceName, "device-name", "", "Device name to record in the inventory (optional)")
 		cmd.AddCommand(c)
 	}
 
