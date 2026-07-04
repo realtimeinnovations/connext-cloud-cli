@@ -1170,6 +1170,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	// The server confirms (or overrides) the domain_template_id; fall back to
 	// the caller-supplied value if the response omits it.
 	retDomainTemplateID := stringField(result, "domain_template_id")
+	nodeURL := stringField(result, "nodeUrl")
 	if retDomainTemplateID == "" {
 		retDomainTemplateID = domainTemplateID
 	}
@@ -1194,6 +1195,13 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		}
 		if err := runner.EdgeStore.WriteEnrollArtifacts(service, domain, participantTemplateID, node, arts); err != nil {
 			return retDomainTemplateID, err
+		}
+		// Persist the device endpoint URL into the node slot so subsequent
+		// commands (e.g. edge-sync identity) resolve it from the correct
+		// folder without requiring --url. An empty nodeURL is silently
+		// ignored by WriteNodeURL.
+		if err := runner.EdgeStore.WriteNodeURL(service, domain, participantTemplateID, node, nodeURL); err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Warning: could not save device URL: %v\n", err)
 		}
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
