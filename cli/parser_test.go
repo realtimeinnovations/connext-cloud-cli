@@ -9,8 +9,15 @@ package cli
 import (
 	"bytes"
 	"io"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
 
 func TestParserShowsGeneratedHelp(t *testing.T) {
@@ -25,6 +32,7 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 		!strings.Contains(out.String(), "rticloud [command] [flags]") ||
 		!strings.Contains(out.String(), "gateway") ||
 		!strings.Contains(out.String(), "databus") ||
+		!strings.Contains(out.String(), "update") ||
 		!strings.Contains(out.String(), "--version") {
 		t.Fatalf("unexpected root help: %s", out.String())
 	}
@@ -60,6 +68,41 @@ func TestParserShowsGeneratedHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--network-name") || !strings.Contains(out.String(), "--non-secure") {
 		t.Fatalf("unexpected observability create help: %s", out.String())
+	}
+}
+
+func TestParserUpdateHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"update", "--help"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for update --help, got %v", err)
+	}
+	for _, want := range []string{"Update rticloud", "--check", "--force"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in output: %s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "--yes") {
+		t.Fatalf("update help should not expose --yes: %s", out.String())
+	}
+}
+
+func TestParserUpdateCheck(t *testing.T) {
+	var out bytes.Buffer
+	runtime := &app.Runtime{Updater: update.New(config.New(filepath.Join(t.TempDir(), "config.json")), &out)}
+	runtime.Updater.CurrentVersion = func() string { return "1.2.3" }
+	runtime.Updater.Now = func() time.Time { return time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC) }
+	runtime.Updater.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+		return stringResponse(http.StatusOK, `{"tag_name":"v1.2.4","html_url":"https://example.test/release"}`), nil
+	})
+	err := Execute([]string{"update", "--check"}, &out, io.Discard, runtime)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"Current version: 1.2.3", "Latest version:  1.2.4", "Update available"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in output: %s", want, out.String())
+		}
 	}
 }
 
@@ -221,4 +264,18 @@ func TestRootHelpShowsOperatorCommands(t *testing.T) {
 		!strings.Contains(output, "edge-sync") {
 		t.Fatalf("expected operator commands in root help: %s", output)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func roundTripClient(fn roundTripFunc) *http.Client {
+	return &http.Client{Transport: fn}
+}
+
+func stringResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }

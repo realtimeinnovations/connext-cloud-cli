@@ -859,8 +859,10 @@ func DashboardURL(zone string, resourceName string) string {
 		scheme = "http"
 	case "dev-cloud":
 		host = "test.cloud.dev-rti.com"
+	case "us-east-2":
+		host = "cloud.rti.com"
 	default:
-		host = zone + ".cloud.dev-rti.com"
+		host = zone + ".cloud.rti.com"
 	}
 	return fmt.Sprintf("%s://%s/dashboard/databuses/%s", scheme, host, resourceName)
 }
@@ -930,7 +932,7 @@ func (app *App) waitForAppCreation(databusName string) (map[string]any, []Templa
 	dashboard := DashboardURL(zone, databusName)
 	for {
 		_, _ = fmt.Fprintf(app.Out, "• Create Cloud Native application in Connext Cloud dashboard:\n  %s\n\n", dashboard)
-		confirm, err := app.confirmReload("Reload application list after creating it in the dashboard.")
+		confirm, err := app.confirmReload("After you've created the Cloud Native application in the dashboard, reload.")
 		if err != nil {
 			return nil, nil, err
 		}

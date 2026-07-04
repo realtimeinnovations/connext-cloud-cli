@@ -244,6 +244,31 @@ func TestLoginIncludesStateAndExchangesCode(t *testing.T) {
 	}
 }
 
+func TestDefaultAuth0DomainUsesDevDomainForDevAPIHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiHost string
+		want    string
+	}{
+		{name: "production", apiHost: "https://cloud.rti.com/api/v1", want: "auth.rti.com"},
+		{name: "dev cloud", apiHost: "https://test.cloud.dev-rti.com/api/v1", want: "auth.dev-rti.com"},
+		{name: "dev local", apiHost: config.RegionURLMap["dev-local"], want: "auth.dev-rti.com"},
+		{name: "missing", want: "auth.rti.com"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configValues := map[string]string{}
+			if test.apiHost != "" {
+				configValues["api_host"] = test.apiHost
+			}
+			if got := defaultAuth0Domain(configValues); got != test.want {
+				t.Fatalf("defaultAuth0Domain() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLoginRejectsMismatchedState(t *testing.T) {
 	manager := New(staticConfigProvider{values: map[string]string{
 		"api_host": "https://example.test/api/v1",

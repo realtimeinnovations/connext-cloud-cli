@@ -297,7 +297,7 @@ func (manager *Manager) Login() (string, error) {
 	}
 	auth0Domain := configValues["auth0_domain"]
 	if auth0Domain == "" {
-		auth0Domain = "auth.dev-rti.com"
+		auth0Domain = defaultAuth0Domain(configValues)
 	}
 	audience := configValues["audience"]
 	if audience == "" {
@@ -396,6 +396,14 @@ func (manager *Manager) Login() (string, error) {
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+func defaultAuth0Domain(configValues map[string]string) string {
+	apiHost := configValues["api_host"]
+	if strings.Contains(apiHost, "cloud.dev-rti.com") || apiHost == config.RegionURLMap["dev-local"] {
+		return "auth.dev-rti.com"
+	}
+	return "auth.rti.com"
 }
 
 func writeCallbackError(writer http.ResponseWriter, message string) {

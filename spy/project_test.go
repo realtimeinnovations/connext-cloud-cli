@@ -140,7 +140,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		if message != "Reload application list after creating it in the dashboard." {
+		if message != "After you've created the Cloud Native application in the dashboard, reload." {
 			return false, UserError{Message: message}
 		}
 		return true, nil

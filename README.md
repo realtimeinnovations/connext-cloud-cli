@@ -73,3 +73,24 @@ Print build metadata:
 ```sh
 rticloud --version
 ```
+
+Check for updates:
+
+```sh
+rticloud update --check
+```
+
+Install the latest release (supported on Linux and macOS):
+
+```sh
+rticloud update
+```
+
+Homebrew-managed installs should be updated with:
+
+```sh
+brew upgrade rticloud
+```
+
+On Windows, run the installer again to update the CLI.
+

@@ -36,12 +36,16 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
 const (
-	downloadConnextLicenseLabel = "Yes, download a license from evaluation.rti.com"
-	cancelConnextLicenseLabel   = "No, skip license download"
+	downloadConnextLicenseLabel       = "Yes, download a license from evaluation.rti.com"
+	manualDownloadConnextLicenseLabel = "Manually download a license"
+	cancelConnextLicenseLabel         = "No, skip license download"
+	evaluationLicenseURL              = "https://evaluation.rti.com/workspaces/license"
 )
 
 type Runtime struct {
@@ -57,6 +61,7 @@ type Runtime struct {
 	EdgeProvision *edgeprovision.Runner
 	EdgeStore     *edgestore.Store
 	EdgeSyncAgent *edgesyncagent.Agent
+	Updater       *update.Manager
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -133,6 +138,7 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	}
 	agentApp.GenerateKeyAndCSRFunc = generateAgentKeyAndCSR
 	agentApp.GenerateCSRFromKeyFunc = generateAgentCSRFromKey
+	updater := update.New(configManager, out)
 	return &Runtime{
 		Out:           out,
 		Config:        configManager,
@@ -146,6 +152,7 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		EdgeProvision: edgeProvisionRunner,
 		EdgeStore:     edgeStoreRunner,
 		EdgeSyncAgent: agentApp,
+		Updater:       updater,
 	}
 }
 
@@ -453,9 +460,19 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 		return common.UserError{Message: fmt.Sprintf("Connext Pro at %s is license-managed and no license file was found. Run rticloud in an interactive terminal to download a license from evaluation.rti.com.", install.Path)}
 	}
 	message := fmt.Sprintf("Connext Pro at %s is license-managed, but no license file was found.\n\nDownload a license from evaluation.rti.com now?", install.Path)
-	selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, cancelConnextLicenseLabel})
+	selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
 	if err != nil {
 		return err
+	}
+	if selected == manualDownloadConnextLicenseLabel {
+		licensePath := internalconnext.LicenseFilePath(install)
+		_, _ = fmt.Fprint(runtime.Out, gateway.RenderKeyValuePanel("• Manually download Connext license:", []gateway.KeyValueRow{
+			{Key: "Step 1", Value: "Open the evaluation license page:"},
+			{Value: tui.StyleLink(evaluationLicenseURL)},
+			{Key: "Step 2", Value: "Download the license file."},
+			{Key: "Step 3", Value: fmt.Sprintf("Copy it to %s", licensePath)},
+		}))
+		return common.UserError{Message: fmt.Sprintf("Copy the license file to %s, then rerun this command.", licensePath)}
 	}
 	if selected != downloadConnextLicenseLabel {
 		return common.UserError{Message: "Connext license download cancelled."}

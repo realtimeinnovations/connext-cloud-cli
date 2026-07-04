@@ -43,13 +43,16 @@ type RenderedRoute struct {
 }
 
 type RenderedView struct {
-	Title    string
-	Header   RenderedSummaryLine
-	Resource RenderedSummaryLine
-	Routes   []RenderedRoute
-	LogLines []string
-	LogTimes []time.Time // parallel to LogLines; zero entries suppress the age stamp
-	Border   string
+	Title           string
+	Header          RenderedSummaryLine
+	Resource        RenderedSummaryLine
+	Routes          []RenderedRoute
+	LogLines        []string
+	LogTimes        []time.Time // parallel to LogLines; zero entries suppress the age stamp
+	Border          string
+	HideRoutes      bool
+	LogTitle        string
+	LogEmptyMessage string
 }
 
 type KeyValueRow struct {
@@ -86,6 +89,14 @@ func (view *RoutingLiveView) HandleLine(line string) {
 	view.State.Update(line)
 }
 
+func (view *RoutingLiveView) HandleCollectorLine(line string) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return
+	}
+	view.State.appendLog("collector " + trimmed)
+}
+
 func (view *RoutingLiveView) SeedFromConfig(xmlPath string) {
 	view.State.SeedFromConfig(xmlPath)
 }
@@ -120,7 +131,6 @@ func (view *RoutingLiveView) PrintSnapshot(routingStatus string) RenderedView {
 
 func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 	if !HasDatabus(view.Config) {
-		// Observability-only: data row is not configured; suppress routing panels.
 		collectorStatus := view.collectorLiveStatus()
 		header := GatewayLiveHeader(view.Config, "not configured", 0, pulseFrame)
 		resource := GatewayLiveResources(view.Config, collectorStatus)
@@ -132,10 +142,14 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 			}
 		}
 		return RenderedView{
-			Title:    GatewayPanelTitle(),
-			Header:   header,
-			Resource: resource,
-			Border:   tui.RTIOrange,
+			Title:           GatewayPanelTitle(),
+			Header:          header,
+			Resource:        resource,
+			LogLines:        view.State.RecentLogs(),
+			Border:          tui.RTIOrange,
+			HideRoutes:      true,
+			LogTitle:        "Collector Log",
+			LogEmptyMessage: "Waiting for telemetry from Connext applications and gateways.",
 		}
 	}
 	topicRows := VisibleTopicRows(view.State.TopicRows())
@@ -187,8 +201,8 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		Header:   header,
 		Resource: resource,
 		Routes:   routes,
-		LogLines: append([]string(nil), view.State.RecentLogs()...),
-		LogTimes: append([]time.Time(nil), view.State.RecentLogTimes()...),
+		LogLines: view.State.RecentLogs(),
+		LogTimes: view.State.RecentLogTimes(),
 		Border:   tui.RTIOrange,
 	}
 }
@@ -376,6 +390,14 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	}
 	contentWidth := tui.MaxInt(24, width-4)
 	topicWidth, typeWidth, statusWidth := resolveRouteTableWidths(view.Routes, contentWidth)
+	logTitle := "Routing Log"
+	if strings.TrimSpace(view.LogTitle) != "" {
+		logTitle = view.LogTitle
+	}
+	logEmptyMessage := "Waiting for route activity..."
+	if strings.TrimSpace(view.LogEmptyMessage) != "" {
+		logEmptyMessage = view.LogEmptyMessage
+	}
 	routeLines := []string{
 		formatRouteHeaderLine(topicWidth, typeWidth, statusWidth),
 	}
@@ -389,7 +411,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	logLines := []string{}
 	logEntries := gatewayLogEntries(view.LogLines, view.LogTimes)
 	if len(logEntries) == 0 {
-		logLines = append(logLines, formatLogLine("Waiting for route activity...", contentWidth))
+		logLines = append(logLines, formatLogLine(logEmptyMessage, contentWidth))
 	} else {
 		now := time.Now()
 		for _, entry := range tui.CompactLogEntries(logEntries) {
@@ -400,6 +422,19 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		formatSummaryPanelLine(view.Header, contentWidth),
 		formatSummaryPanelLine(view.Resource, contentWidth),
 	}, width, summaryPanelTheme())
+	if view.HideRoutes {
+		fixedOverhead := 1 + len(summaryPanel) + 1 + 2
+		logBudget := height - fixedOverhead
+		if logBudget <= 0 {
+			logBudget = 1
+		}
+		logsPanel := tui.RenderPanel(logTitle, resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
+		lines := []string{"\x1b[H\x1b[J"}
+		lines = append(lines, summaryPanel...)
+		lines = append(lines, "")
+		lines = append(lines, logsPanel...)
+		return strings.Join(lines, "\n")
+	}
 	fixedOverhead := 1 + len(summaryPanel) + 1 + 2 + 1 + 2
 	available := height - fixedOverhead
 	routeBudget, logBudget := tui.SplitSectionBudget(available, len(routeLines), len(logLines))
@@ -410,7 +445,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		logBudget = 1
 	}
 	routesPanel := tui.RenderPanel("Routes", resizePanelBody(routeLines, routeBudget, contentWidth), width, routesPanelTheme())
-	logsPanel := tui.RenderPanel("Routing Log", resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
+	logsPanel := tui.RenderPanel(logTitle, resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
 	lines := []string{"\x1b[H\x1b[J"}
 	lines = append(lines, summaryPanel...)
 	lines = append(lines, "")
@@ -633,9 +668,13 @@ func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 		if rows[0].Key != "" {
 			content = append(content, tui.Dim(rows[0].Key+":"))
 		}
-		content = append(content, rows[0].Value)
+		content = append(content, tui.StyleLink(rows[0].Value))
 	} else {
 		for _, row := range rows {
+			if row.Key == "" {
+				content = append(content, row.Value)
+				continue
+			}
 			content = append(content, fmt.Sprintf("%s %s", tui.Dim(row.Key+":"), row.Value))
 		}
 	}
@@ -649,7 +688,7 @@ func RenderKeyValuePanel(title string, rows []KeyValueRow) string {
 	bottom := "╰" + strings.Repeat("─", width+2) + "╯"
 	lines := []string{"\x1b[38;5;110m" + top + "\x1b[0m"}
 	for _, row := range content {
-		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", tui.PadDisplay(row, width)))
+		lines = append(lines, fmt.Sprintf("\x1b[38;5;110m│\x1b[0m %s \x1b[38;5;110m│\x1b[0m", tui.PadStyled(row, width)))
 	}
 	lines = append(lines, "\x1b[38;5;110m"+bottom+"\x1b[0m", "")
 	return strings.Join(lines, "\n")

@@ -357,6 +357,12 @@ func TestRoutingStateSeedsListeningRoutesFromGatewayXML(t *testing.T) {
 }
 
 func TestDashboardURLUsesTelemetryServicesForObservability(t *testing.T) {
+	if got := DashboardURL("us-east-2", "inventory", "databus"); got != "https://cloud.rti.com/dashboard/databuses/inventory" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
+	if got := DashboardURL("eu-central-1", "inventory", "databus"); got != "https://eu-central-1.cloud.rti.com/dashboard/databuses/inventory" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
 	if got := DashboardURL("dev-cloud", "luis-secobs-77", "observability"); got != "https://test.cloud.dev-rti.com/dashboard/observability-services/luis-secobs-77" {
 		t.Fatalf("unexpected URL: %s", got)
 	}
@@ -370,7 +376,7 @@ func TestAPIConnectionErrorReportsConfiguredHost(t *testing.T) {
 	checks := []string{
 		"Cannot reach Connext Cloud API.",
 		"Configured API host:\n  http://localhost:8090",
-		"rticloud configure --region us-west-2",
+		"rticloud configure --region us-east-2",
 		"GET /databuses?extra_fields=true failed: connection refused",
 	}
 	for _, check := range checks {
@@ -558,6 +564,61 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 	}
 	if len(layout.Routes) != 1 || layout.Routes[0].IO != "[green]↑·[/green]" || layout.Routes[0].Topic != "docs" || layout.Routes[0].Status != "routing upstream" {
 		t.Fatalf("unexpected routes: %#v", layout.Routes)
+	}
+}
+
+func TestObservabilityOnlyLiveViewShowsCollectorLogOnly(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "running"
+	layout := view.Render(0)
+	if !layout.HideRoutes || layout.LogTitle != "Collector Log" {
+		t.Fatalf("unexpected observability-only section labels: %#v", layout)
+	}
+	if len(layout.Routes) != 0 {
+		t.Fatalf("unexpected collector rows: %#v", layout.Routes)
+	}
+	rendered := tui.StripANSIEscapes(renderANSI(layout))
+	checks := []string{"OBSERVABILITY", "running", "Collector Log", "Waiting for telemetry from Connext applications and gateways"}
+	for _, check := range checks {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in rendered output: %s", check, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Component") || strings.Contains(rendered, "running; waiting for telemetry") {
+		t.Fatalf("unexpected collector table in rendered output: %s", rendered)
+	}
+}
+
+func TestObservabilityOnlyStoppedSnapshotDoesNotSayCollectorIsRunning(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "stopped"
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+	if !strings.Contains(rendered, "stopped") || strings.Contains(rendered, "Collector is running") {
+		t.Fatalf("unexpected stopped collector output: %s", rendered)
+	}
+}
+
+func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.HandleCollectorLine("connected to telemetry service")
+	layout := view.Render(0)
+	if len(layout.LogLines) != 1 || layout.LogLines[0] != "collector connected to telemetry service" {
+		t.Fatalf("unexpected collector log lines: %#v", layout.LogLines)
 	}
 }
 

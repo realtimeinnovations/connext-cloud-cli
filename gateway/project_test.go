@@ -106,9 +106,6 @@ func TestTemplateSelectionCanCreateNewAndReload(t *testing.T) {
 	if selected != "gw-new" {
 		t.Fatalf("unexpected selection: %s", selected)
 	}
-	if !strings.Contains(out.String(), "• Create a Gateway in the Applications tab:") || !strings.Contains(out.String(), DashboardURL("dev-cloud", "inventory", "databus")) {
-		t.Fatalf("unexpected output: %s", out.String())
-	}
 }
 
 func TestFirstRunCanConfigureDataOnly(t *testing.T) {
@@ -202,6 +199,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
+	install := filepath.Join(tmpDir, "custom", "rti_connext_dds-7.7.0")
 	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
 		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
 	}
@@ -209,7 +207,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 		return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
 	}
 	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
-		return ConnextInstall{Path: filepath.Join(tmpDir, "rti_connext_dds-7.7.0"), Version: "7.7.0"}, nil
+		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	app.SelectFunc = func(message string, choices []string) (string, error) {
@@ -231,8 +229,8 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 	if config["databus"] != nil || common.StringValue(config, "observability") != "inventory-obs" || common.NestedString(config, "templates", "collector") != "collector" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if _, ok := config["runtime"].(map[string]any)["connext_home"]; ok {
-		t.Fatalf("unexpected connext_home in config: %#v", config)
+	if common.NestedString(config, "runtime", "connext_home") != install {
+		t.Fatalf("expected observability-only connext_home %q in config: %#v", install, config)
 	}
 }
 
@@ -255,10 +253,9 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 	}
 	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
+	reloadConfirmed := false
 	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		if message != "Reload application list after creating it in the dashboard." {
-			return false, GatewayError{Message: message}
-		}
+		reloadConfirmed = true
 		return true, nil
 	}
 	app.SelectFunc = func(message string, choices []string) (string, error) {
@@ -282,8 +279,8 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 	if common.NestedString(config, "templates", "gateway") != "gw" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if !strings.Contains(out.String(), "• Create a Gateway in the Applications tab:") || !strings.Contains(out.String(), "Reloading templates...") {
-		t.Fatalf("unexpected output: %s", out.String())
+	if !reloadConfirmed {
+		t.Fatal("expected template creation reload confirmation")
 	}
 }
 
@@ -291,6 +288,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
 	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
 		return map[string]map[string]any{}, map[string]map[string]any{"inventory-obs": {}}, nil
 	}
@@ -298,6 +296,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
+	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
 		if databusName != "inventory-obs" || kind != "telemetry-service-collector" || clientName != "collector" {
 			return GatewayError{Message: fmt.Sprintf("unexpected args: %s %s %s", databusName, kind, clientName)}

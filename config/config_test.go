@@ -9,6 +9,8 @@ package config
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,11 +36,41 @@ func TestDefaultPathsUseRticloudDirectory(t *testing.T) {
 	}
 }
 
+func newAuthConfigTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/auth/config" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"auth0_domain":"auth.test","client_id":"test-client","audience":"https://audience.test/api/v1","scope":"ignored:scope"}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func useTestRegionURL(t *testing.T, region string, apiHost string) {
+	t.Helper()
+	previousValue, existed := RegionURLMap[region]
+	RegionURLMap[region] = apiHost
+	t.Cleanup(func() {
+		if existed {
+			RegionURLMap[region] = previousValue
+			return
+		}
+		delete(RegionURLMap, region)
+	})
+}
+
 func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
+	server := newAuthConfigTestServer(t)
+	manager.HTTPClient = server.Client()
+	useTestRegionURL(t, "us-east-2", server.URL+"/api/v1")
 	var out bytes.Buffer
-	ok, err := manager.ConfigureRegion("us-west-2", false, strings.NewReader(""), &out)
+	ok, err := manager.ConfigureRegion("us-east-2", false, strings.NewReader(""), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +81,21 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
+	}
+	checks := map[string]string{
+		"auth0_domain":    "auth.test",
+		"auth0_client_id": "test-client",
+		"audience":        "https://audience.test/api/v1",
+	}
+	for key, want := range checks {
+		if got := config[key]; got != want {
+			t.Fatalf("config[%q] = %q, want %q", key, got, want)
+		}
+	}
+	if got := config["scope"]; got != "" {
+		t.Fatalf("scope = %q, want empty because configure ignores auth config scopes", got)
 	}
 	if !strings.Contains(out.String(), "Configuration updated") {
 		t.Fatalf("unexpected output: %s", out.String())
@@ -60,11 +105,63 @@ func TestConfigureRegionWritesSelectedRegion(t *testing.T) {
 	}
 }
 
+func TestConfigureRegionFallsBackToDefaultsWhenAuthConfigUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	if err := manager.WriteConfig(map[string]string{
+		"api_host":        "https://old.example/api/v1",
+		"auth0_domain":    "old-auth.example",
+		"auth0_client_id": "old-client",
+		"audience":        "https://old.example/api/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "<!doctype html><title>404 Not Found</title>", http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	manager.HTTPClient = server.Client()
+	useTestRegionURL(t, "us-east-2", server.URL+"/api/v1")
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("us-east-2", false, strings.NewReader(""), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config["api_host"], server.URL+"/api/v1"; got != want {
+		t.Fatalf("api_host = %q, want %q", got, want)
+	}
+	for _, key := range []string{"auth0_domain", "auth0_client_id", "audience"} {
+		if got := config[key]; got != "" {
+			t.Fatalf("config[%q] = %q, want empty fallback default", key, got)
+		}
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "Warning: Could not load auth configuration; using built-in defaults.") {
+		t.Fatalf("missing warning: %s", rendered)
+	}
+	if strings.Contains(rendered, "<!doctype") || strings.Contains(rendered, "GET /auth/config failed") {
+		t.Fatalf("warning leaked raw auth config error: %s", rendered)
+	}
+	if !strings.Contains(rendered, "Configuration updated") {
+		t.Fatalf("missing success message: %s", rendered)
+	}
+}
+
 func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
+	server := newAuthConfigTestServer(t)
+	manager.HTTPClient = server.Client()
+	useTestRegionURL(t, "us-east-2", server.URL+"/api/v1")
 	var out bytes.Buffer
-	ok, err := manager.ConfigureRegion("", false, strings.NewReader("2\n"), &out)
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("1\n"), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +173,7 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	checks := []string{
@@ -85,7 +182,11 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 		previewWarning,
 		"rticloud dev",
 		"Select region:",
-		"2. us-west-2",
+		"1. us-east-2",
+		"cloud.rti.com",
+		"2. eu-central-1",
+		"eu-central-1.cloud.rti.com",
+		"3. Custom domain",
 	}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {
@@ -97,9 +198,79 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 	}
 }
 
+func TestConfigureRegionPromptsForCustomCloudDomain(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	server := newAuthConfigTestServer(t)
+	manager.HTTPClient = server.Client()
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("3\n"+strings.TrimPrefix(server.URL, "https://")+"\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config["api_host"], server.URL+"/api/v1"; got != want {
+		t.Fatalf("api_host = %q, want %q", got, want)
+	}
+	rendered := tui.StripANSIEscapes(out.String())
+	for _, check := range []string{"3. Custom domain", "Enter the full domain by hand", "Enter full cloud domain", "Configuration updated"} {
+		if !strings.Contains(rendered, check) {
+			t.Fatalf("missing %q in output: %s", check, rendered)
+		}
+	}
+}
+
+func TestConfigureRegionCustomCloudDomainAcceptsURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	server := newAuthConfigTestServer(t)
+	manager.HTTPClient = server.Client()
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("3\n"+server.URL+"/api/v1\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("expected success")
+	}
+	config, err := manager.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config["api_host"], server.URL+"/api/v1"; got != want {
+		t.Fatalf("api_host = %q, want %q", got, want)
+	}
+}
+
+func TestCustomDomainAPIHostRejectsURLPartsOutsideHostAndPath(t *testing.T) {
+	for _, value := range []string{
+		"example.com?x=y",
+		"example.com#section",
+		"user@example.com",
+		"https://user@example.com",
+		"https://example.com?x=y",
+		"https://example.com#section",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if got, err := customDomainAPIHost(value); err == nil {
+				t.Fatalf("customDomainAPIHost(%q) = %q, want error", value, got)
+			}
+		})
+	}
+}
+
 func TestConfigureRegionUsesDefaultForBlankPromptSelection(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
+	server := newAuthConfigTestServer(t)
+	manager.HTTPClient = server.Client()
+	useTestRegionURL(t, "us-east-2", server.URL+"/api/v1")
 	var out bytes.Buffer
 	ok, err := manager.ConfigureRegion("", false, strings.NewReader("\n"), &out)
 	if err != nil {
@@ -112,7 +283,7 @@ func TestConfigureRegionUsesDefaultForBlankPromptSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config["api_host"] != RegionURLMap["us-west-2"] {
+	if config["api_host"] != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 }
@@ -158,6 +329,9 @@ func TestGetRegionReportsNotConfiguredWhenNoAPIHost(t *testing.T) {
 func TestGetClientIDUsesEnvironmentFirst(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(tmpDir + "/config.json")
+	if err := manager.WriteConfig(map[string]string{"auth0_client_id": "config-client"}); err != nil {
+		t.Fatal(err)
+	}
 	previousDefault := defaultClientID
 	defaultClientID = "build-client"
 	t.Cleanup(func() { defaultClientID = previousDefault })
@@ -169,6 +343,21 @@ func TestGetClientIDUsesEnvironmentFirst(t *testing.T) {
 	}
 	if got := manager.GetClientID(); got != "env-client" {
 		t.Fatalf("GetClientID() = %q, want env-client", got)
+	}
+}
+
+func TestGetClientIDUsesConfigBeforeBuildTimeDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := New(tmpDir + "/config.json")
+	if err := manager.WriteConfig(map[string]string{"auth0_client_id": "config-client"}); err != nil {
+		t.Fatal(err)
+	}
+	previousDefault := defaultClientID
+	defaultClientID = "build-client"
+	t.Cleanup(func() { defaultClientID = previousDefault })
+	manager.Env = func(string) string { return "" }
+	if got := manager.GetClientID(); got != "config-client" {
+		t.Fatalf("GetClientID() = %q, want config-client", got)
 	}
 }
 
@@ -211,14 +400,14 @@ func TestGetWorkspacesClientIDFallsBackToBuildTimeDefault(t *testing.T) {
 func TestWriteConfigCreatesRticloudDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := New(filepath.Join(tmpDir, ".rticloud", "config.json"))
-	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-west-2"]}); err != nil {
+	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-east-2"]}); err != nil {
 		t.Fatal(err)
 	}
 	config, err := manager.GetConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config["api_host"]; got != RegionURLMap["us-west-2"] {
+	if got := config["api_host"]; got != RegionURLMap["us-east-2"] {
 		t.Fatalf("unexpected config value: %q", got)
 	}
 }
@@ -227,7 +416,7 @@ func TestWriteConfigUsesUserOnlyPermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".rticloud", "config.json")
 	manager := New(configPath)
-	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-west-2"]}); err != nil {
+	if err := manager.WriteConfig(map[string]string{"api_host": RegionURLMap["us-east-2"]}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(configPath)
