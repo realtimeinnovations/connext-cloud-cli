@@ -168,7 +168,7 @@ func (p *profile) node() string { return p.serial }
 // ─── Domain-scoped artifact ownership ────────────────────────────────────────
 // PSK and CRL (and the PSK phase events) are shared by every participant in a
 // (service, domain): their on-disk state lives in the shared domain directory
-// (psk_*.txt, psk_lease.json, crl.pem).  To avoid redundant fetches and, more
+// (psk_secret*.key, psk_secret.lease.json, crl.pem).  To avoid redundant fetches and, more
 // importantly, concurrent corruption of the PSK rolling-key files, exactly one
 // profile per (service, domain) — the "domain owner" — fetches, schedules and
 // renews them.  Every profile still manages its own node-scoped artifacts
@@ -308,10 +308,10 @@ type Agent struct {
 	stopFunc     context.CancelFunc // cancels the agent's context (Ctrl+C from TUI)
 	profiles     sync.Map           // profileKey → *profile
 	domainOwners sync.Map           // "service/domain" → *profile that manages the domain-scoped artifacts (PSK, CRL)
-	wg        sync.WaitGroup
-	outMu     sync.Mutex  // serializes writes to Out/LogOut/event sinks across goroutines
-	logs      *logRing    // recent log events surfaced in the TUI "Agent Log" panel
-	tuiActive atomic.Bool // true while the live TUI is painting the terminal
+	wg           sync.WaitGroup
+	outMu        sync.Mutex  // serializes writes to Out/LogOut/event sinks across goroutines
+	logs         *logRing    // recent log events surfaced in the TUI "Agent Log" panel
+	tuiActive    atomic.Bool // true while the live TUI is painting the terminal
 
 	// Raw (unwrapped) sinks for emit, written under outMu. eventStdout reaches
 	// stdout+file; eventFile reaches the file only. They are the pre-syncWriter
@@ -559,9 +559,9 @@ func (a *Agent) Run(ctx context.Context) error {
 //
 // Layout:
 //
-//	<agent>/mtls_artifacts/<service>/<domain>/<participant>/<node>/agent_state.json
+//	<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>/agent_state.json
 func (a *Agent) rehydrate() {
-	for _, statePath := range a.findStateFiles(a.Store.MTLSRoot()) {
+	for _, statePath := range a.findStateFiles(a.Store.AgentDir()) {
 		a.loadProfile(statePath)
 	}
 }
@@ -571,7 +571,7 @@ func (a *Agent) rehydrate() {
 // no such node is found.  Used to resume a 409 (already-enrolled) response,
 // which does not carry the domain template, without guessing the path.
 func (a *Agent) findNodeDomain(service, participant, node string) string {
-	domains, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(), service))
+	domains, err := a.ReadDir(a.Store.MTLSRoot(service))
 	if err != nil {
 		return ""
 	}
@@ -909,13 +909,13 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	p.mu.Lock()
 	if !notAfterIdentity.IsZero() {
 		p.notAfter[ArtifactIdentity] = notAfterIdentity
-		if nb, _ := a.readLease(filepath.Join(nodeDir, "identity_lease.json")); !nb.IsZero() {
+		if nb, _ := a.readLease(filepath.Join(nodeDir, "identity.lease.json")); !nb.IsZero() {
 			p.issuedAt[ArtifactIdentity] = nb
 		} else {
 			p.issuedAt[ArtifactIdentity] = enrolledAt
 		}
 	}
-	if nb, na := a.readLease(filepath.Join(nodeDir, "permissions_lease.json")); !na.IsZero() {
+	if nb, na := a.readLease(filepath.Join(nodeDir, "signed_permissions.lease.json")); !na.IsZero() {
 		p.notAfter[ArtifactPermissions] = na
 		if !nb.IsZero() {
 			p.issuedAt[ArtifactPermissions] = nb
@@ -925,7 +925,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	}
 	// ArtifactPSK notAfter and the PSK phase timer entries (ArtifactPSKRotate,
 	// ArtifactPSKCleanup) are set by initializePSKFiles above (owner only); no
-	// need to re-read psk_lease.json here.
+	// need to re-read psk_secret.lease.json here.
 	// CRL has no server-side lease; refresh periodically (owner only).
 	if owner {
 		p.notAfter[ArtifactCRL] = enrolledAt.Add(a.CRLInterval)

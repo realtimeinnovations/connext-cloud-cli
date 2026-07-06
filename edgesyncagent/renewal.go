@@ -225,11 +225,11 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	case ArtifactIdentity:
 		newNotAfter, err = a.renewIdentity(p, url, cert, key, ca, nodeOut)
 		if err == nil {
-			newNotBefore, _ = a.readLease(filepath.Join(nodeDir, "identity_lease.json"))
+			newNotBefore, _ = a.readLease(filepath.Join(nodeDir, "identity.lease.json"))
 		}
 	case ArtifactPermissions:
 		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err == nil {
-			newNotBefore, newNotAfter = a.readLease(filepath.Join(nodeDir, "permissions_lease.json"))
+			newNotBefore, newNotAfter = a.readLease(filepath.Join(nodeDir, "signed_permissions.lease.json"))
 		}
 	case ArtifactPSK:
 		var pskA, pskB pskSlotLease
@@ -393,7 +393,7 @@ func (a *Agent) renewIdentity(p *profile, url, cert, key, ca, output string) (ti
 		}
 	}
 
-	leasePath := filepath.Join(strings.TrimSuffix(output, string(os.PathSeparator)), "identity_lease.json")
+	leasePath := filepath.Join(strings.TrimSuffix(output, string(os.PathSeparator)), "identity.lease.json")
 	return a.readLeaseNotAfter(leasePath), nil
 }
 

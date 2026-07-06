@@ -41,7 +41,7 @@ func (a *Agent) readLeaseNotAfter(path string) time.Time {
 	return notAfter
 }
 
-// readPSKLeaseNotAfter reads a psk_lease.json file (which has per-slot leases)
+// readPSKLeaseNotAfter reads a psk_secret.lease.json file (which has per-slot leases)
 // and returns the earliest not_after across all slots.
 func (a *Agent) readPSKLeaseNotAfter(path string) time.Time {
 	data, err := a.ReadFile(path)

@@ -21,12 +21,13 @@ import (
 //
 // Since SPARK-5, every POST /psk call always returns both PSKs:
 //
-//	psk_primary.txt  — active seed (seed), used by DDS immediately.
-//	psk_extra.txt    — seed_extra; populated during the 80–100 % overlap window
-//	                   so peers that have the old seed can still communicate.
-//	psk_temp.txt     — staging: holds the next primary (sB) so pskRotate can
-//	                   apply it at 100% without calling the server again.  Never
-//	                   read by DDS.
+//	psk_secret.key        — active seed (seed), used by DDS immediately.
+//	psk_secret_extra.key  — seed_extra; populated during the 80–100 % overlap
+//	                        window so peers that have the old seed can still
+//	                        communicate.
+//	psk_secret_temp.key   — staging: holds the next primary (sB) so pskRotate
+//	                        can apply it at 100% without calling the server
+//	                        again.  Never read by DDS.
 //
 // Timeline (T = sA's TTL):
 //
@@ -42,48 +43,49 @@ import (
 // enrollment; renewPSKAt80 handles the 80% phase; pskRotate handles 100%;
 // pskCleanup handles 120%.
 
-// pskPrimaryPath / pskExtraPath / pskTempPath / pskLeasePath return the
-// canonical file paths for the four PSK files under a profile's output dir.
+// pskSecretPath / pskSecretExtraPath / pskSecretTempPath / pskSecretLeasePath
+// return the canonical file paths for the four PSK files under a profile's
+// output dir.
 func (a *Agent) pskOutDir(p *profile) string {
 	return a.Store.DomainDir(p.service(), p.domain())
 }
 
-func pskPrimaryPath(outDir string) string { return filepath.Join(outDir, "psk_primary.txt") }
-func pskExtraPath(outDir string) string   { return filepath.Join(outDir, "psk_extra.txt") }
-func pskTempPath(outDir string) string    { return filepath.Join(outDir, "psk_temp.txt") }
-func pskLeasePath(outDir string) string   { return filepath.Join(outDir, "psk_lease.json") }
+func pskSecretPath(outDir string) string      { return filepath.Join(outDir, "psk_secret.key") }
+func pskSecretExtraPath(outDir string) string { return filepath.Join(outDir, "psk_secret_extra.key") }
+func pskSecretTempPath(outDir string) string  { return filepath.Join(outDir, "psk_secret_temp.key") }
+func pskSecretLeasePath(outDir string) string { return filepath.Join(outDir, "psk_secret.lease.json") }
 
 // initializePSKFiles sets up the canonical PSK file layout after the first
 // RequestPSKFunc call at enrollment.
 //
 // Since SPARK-5, RequestPSKFunc always writes:
 //
-//	psk_primary.txt = sA  (lower passphrase_id slot)
-//	psk_extra.txt   = sA + "\n" + sB
-//	psk_lease.json  = leases for both slots
+//	psk_secret.key = sA  (lower passphrase_id slot)
+//	psk_secret_extra.key   = sA + "\n" + sB
+//	psk_secret.lease.json  = leases for both slots
 //
 // This function re-arranges those files to match the rolling-key initial state:
 //
-//	psk_primary.txt = sA  (unchanged — active seed)
-//	psk_extra.txt   = ""  (empty — no overlap needed yet)
-//	psk_temp.txt    = sB  (next primary, staged for pskRotate at 100%)
+//	psk_secret.key = sA  (unchanged — active seed)
+//	psk_secret_extra.key   = ""  (empty — no overlap needed yet)
+//	psk_secret_temp.key    = sB  (next primary, staged for pskRotate at 100%)
 //
 // It also populates the PSK phase timer entries in p and sets p.pskBNotAfter
 // and p.pskBaseTTL.  p.mu must NOT be held by the caller.
 func (a *Agent) initializePSKFiles(p *profile, outDir string, enrolledAt time.Time) {
-	extraPath := pskExtraPath(outDir)
-	tempPath := pskTempPath(outDir)
-	leasePath := pskLeasePath(outDir)
+	extraPath := pskSecretExtraPath(outDir)
+	tempPath := pskSecretTempPath(outDir)
+	leasePath := pskSecretLeasePath(outDir)
 
-	// Normalize psk_primary.txt to a single clean line. The server may write it
+	// Normalize psk_secret.key to a single clean line. The server may write it
 	// with a trailing newline, which DDS rejects with
 	// "invalid format for the pre-shared secret passphrases".
-	primaryPath := pskPrimaryPath(outDir)
+	primaryPath := pskSecretPath(outDir)
 	if data, err := a.ReadFile(primaryPath); err == nil {
 		_ = a.WriteFile(primaryPath, []byte(pskFirstLine(data)), 0o644)
 	}
 
-	// Extract sB (second line of psk_extra.txt) and store it as psk_temp.txt
+	// Extract sB (second line of psk_secret_extra.key) and store it as psk_secret_temp.key
 	// so pskRotate can apply it at the 100% phase without contacting the server.
 	if data, err := a.ReadFile(extraPath); err == nil {
 		sB := pskSecondLine(data)
@@ -138,37 +140,37 @@ func (a *Agent) initializePSKFiles(p *profile, outDir string, enrolledAt time.Ti
 // renewPSKAt80 executes the 80% phase of the PSK rolling-key protocol.
 //
 // Since SPARK-5, RequestPSKFunc always returns both PSKs, so the server
-// already writes the correct psk_primary.txt and psk_extra.txt.  This
+// already writes the correct psk_secret.key and psk_secret_extra.key.  This
 // function's responsibility is:
 //
 //  1. Save the current primary (sA) before calling the server.
-//  2. Call RequestPSKFunc → server writes psk_primary.txt = sA,
-//     psk_extra.txt = sA+sB (the overlap pair).
+//  2. Call RequestPSKFunc → server writes psk_secret.key = sA,
+//     psk_secret_extra.key = sA+sB (the overlap pair).
 //  3. Verify the server's psk_a matches our saved primary — if not, the
 //     server has already rotated and we log a warning.
-//  4. Extract sB (second line of psk_extra.txt) → write psk_temp.txt = sB
+//  4. Extract sB (second line of psk_secret_extra.key) → write psk_secret_temp.key = sB
 //     so that pskRotate can promote it at 100% without a server call.
 //
 // Returns psk_a's validity window (for the ArtifactPSK 80%-threshold timer)
 // and psk_b's validity window (for advancing the staged-key state).
 func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (pskA, pskB pskSlotLease, err error) {
 	outDir := strings.TrimSuffix(output, string(os.PathSeparator))
-	primaryPath := pskPrimaryPath(outDir)
-	extraPath := pskExtraPath(outDir)
-	tempPath := pskTempPath(outDir)
-	leasePath := pskLeasePath(outDir)
+	primaryPath := pskSecretPath(outDir)
+	extraPath := pskSecretExtraPath(outDir)
+	tempPath := pskSecretTempPath(outDir)
+	leasePath := pskSecretLeasePath(outDir)
 
 	// 1. Save the current seed before the server call so we can detect
 	//    unexpected rotation and build the extra overlap if needed.
 	savedPrimary, readErr := a.ReadFile(primaryPath)
 	if readErr != nil {
-		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_primary.txt: %w", readErr)
+		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_secret.key: %w", readErr)
 	}
 
 	// 2. Call the server. RequestPSKFunc writes:
-	//      psk_primary.txt = psk_a (active seed)
-	//      psk_extra.txt   = psk_a + "\n" + psk_b (overlap pair)
-	//      psk_lease.json  = leases for both slots
+	//      psk_secret.key = psk_a (active seed)
+	//      psk_secret_extra.key   = psk_a + "\n" + psk_b (overlap pair)
+	//      psk_secret.lease.json  = leases for both slots
 	if callErr := a.RequestPSKFunc(url, cert, key, ca, "", output); callErr != nil {
 		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: fetching next PSK: %w", callErr)
 	}
@@ -195,21 +197,21 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 		}
 		_ = a.WriteFile(extraPath, []byte(strings.Join(augmented, "\n")), 0o644)
 	}
-	// Normalize psk_primary.txt to a single clean line regardless of rotation
+	// Normalize psk_secret.key to a single clean line regardless of rotation
 	// path — DDS rejects any trailing newline or multi-line content.
 	currentPrimary := pskFirstLine(receivedPrimary)
 	_ = a.WriteFile(primaryPath, []byte(currentPrimary), 0o644)
 
-	// 4. Extract sB (second line of psk_extra.txt) and stage it in psk_temp.txt
+	// 4. Extract sB (second line of psk_secret_extra.key) and stage it in psk_secret_temp.key
 	//    so pskRotate can apply it at 100% without a server call.
 	extraData, readExtraErr := a.ReadFile(extraPath)
 	if readExtraErr != nil {
-		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_extra.txt: %w", readExtraErr)
+		return pskSlotLease{}, pskSlotLease{}, fmt.Errorf("psk 80%%: reading psk_secret_extra.key: %w", readExtraErr)
 	}
 	// Stage sB as a single line — pskRotate must never receive multi-line content.
 	nextPrimary := pskFirstLine([]byte(pskSecondLine(extraData)))
 	if err := a.WriteFile(tempPath, []byte(nextPrimary), 0o644); err != nil {
-		a.emitf(catPSK, tui.LogWarn, "psk 80%%: writing psk_temp.txt: %v", err)
+		a.emitf(catPSK, tui.LogWarn, "psk 80%%: writing psk_secret_temp.key: %v", err)
 	}
 
 	// Strip the current primary from extra so primary and extra never share the
@@ -233,28 +235,28 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	return pskA, pskB, nil
 }
 
-// pskRotate executes the 100% phase: rotates psk_primary.txt to sB.
-// psk_temp.txt contains sB (the single next primary staged by renewPSKAt80).
+// pskRotate executes the 100% phase: rotates psk_secret.key to sB.
+// psk_secret_temp.key contains sB (the single next primary staged by renewPSKAt80).
 // After rotation, extra is set to the old primary (sA) to keep the overlap
 // window open for peers that haven't yet received the new primary.
 func (a *Agent) pskRotate(p *profile) {
 	outDir := a.pskOutDir(p)
-	tempData, err := a.ReadFile(pskTempPath(outDir))
+	tempData, err := a.ReadFile(pskSecretTempPath(outDir))
 	if err != nil {
-		a.emitf(catPSK, tui.LogWarn, "psk_rotate: reading psk_temp.txt service=%s participant=%s: %v",
+		a.emitf(catPSK, tui.LogWarn, "psk_rotate: reading psk_secret_temp.key service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
-	// Take only the first line — guard against multi-line psk_temp.txt corruption.
+	// Take only the first line — guard against multi-line psk_secret_temp.key corruption.
 	nextPrimary := pskFirstLine(tempData)
 
 	// Read current primary (sA) before overwriting so we can set it as extra
 	// for the 100%–120% overlap window.
-	oldPrimaryData, _ := a.ReadFile(pskPrimaryPath(outDir))
+	oldPrimaryData, _ := a.ReadFile(pskSecretPath(outDir))
 	oldPrimary := pskFirstLine(oldPrimaryData)
 
-	if err := a.WriteFile(pskPrimaryPath(outDir), []byte(nextPrimary), 0o644); err != nil {
-		a.emitf(catPSK, tui.LogWarn, "psk_rotate: writing psk_primary.txt service=%s participant=%s: %v",
+	if err := a.WriteFile(pskSecretPath(outDir), []byte(nextPrimary), 0o644); err != nil {
+		a.emitf(catPSK, tui.LogWarn, "psk_rotate: writing psk_secret.key service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
@@ -262,7 +264,7 @@ func (a *Agent) pskRotate(p *profile) {
 	// Set extra to sA so peers still using the old primary can decrypt during
 	// the 100%–120% overlap window.  extra ≠ primary by construction.
 	if oldPrimary != "" {
-		_ = a.WriteFile(pskExtraPath(outDir), []byte(oldPrimary), 0o644)
+		_ = a.WriteFile(pskSecretExtraPath(outDir), []byte(oldPrimary), 0o644)
 	}
 
 	a.emitf(catPSK, tui.LogGood, "psk_rotate: seed rotated to sB service=%s participant=%s",
@@ -303,13 +305,13 @@ func (a *Agent) pskRotate(p *profile) {
 	}
 }
 
-// pskCleanup executes the 120% phase: clears psk_extra.txt to close the
+// pskCleanup executes the 120% phase: clears psk_secret_extra.key to close the
 // overlap window.  At this point sA is expired and no peers should still be
 // using it, so the overlap entry (set by pskRotate) is no longer needed.
 func (a *Agent) pskCleanup(p *profile) {
 	outDir := a.pskOutDir(p)
-	if err := a.WriteFile(pskExtraPath(outDir), []byte{}, 0o644); err != nil {
-		a.emitf(catPSK, tui.LogWarn, "psk_cleanup: clearing psk_extra.txt service=%s participant=%s: %v",
+	if err := a.WriteFile(pskSecretExtraPath(outDir), []byte{}, 0o644); err != nil {
+		a.emitf(catPSK, tui.LogWarn, "psk_cleanup: clearing psk_secret_extra.key service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
 	}
@@ -384,7 +386,7 @@ type pskSlotLease struct {
 }
 
 // readPSKABLease reads the psk_a and psk_b validity windows from a
-// psk_lease.json.  Both slots' not_before and not_after are returned so the
+// psk_secret.lease.json.  Both slots' not_before and not_after are returned so the
 // caller can anchor issuedAt to the key's real window (not to "now").
 func (a *Agent) readPSKABLease(path string) (pskA, pskB pskSlotLease) {
 	data, err := a.ReadFile(path)

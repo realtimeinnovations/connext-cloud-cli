@@ -214,7 +214,7 @@ func (runner *Runner) RequestIdentity(url, certFile, keyFile, caFile, serverAddr
 	_, _ = fmt.Fprintf(runner.Out, "Identity certificate saved to %s\n", dest)
 	if leaseData := extractLease(result); leaseData != nil {
 		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-		leaseDest := filepath.Join(filepath.Dir(dest), "identity_lease.json")
+		leaseDest := filepath.Join(filepath.Dir(dest), "identity.lease.json")
 		if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
 			return err
 		}
@@ -251,7 +251,7 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 	_, _ = fmt.Fprintf(runner.Out, "Permissions document saved to %s\n", dest)
 	if leaseData := extractLease(result); leaseData != nil {
 		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-		leaseDest := filepath.Join(filepath.Dir(dest), "permissions_lease.json")
+		leaseDest := filepath.Join(filepath.Dir(dest), "signed_permissions.lease.json")
 		if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
 			return err
 		}
@@ -264,9 +264,9 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 // (mTLS required).  When output is non-empty three files are written to the
 // output directory:
 //
-//	psk_primary.txt  — passphrase of the psk_a slot (active seed)
-//	psk_extra.txt    — psk_a and psk_b passphrases only (max 2 lines; DDS limit)
-//	psk_lease.json   — lease windows for both slots + server_time_utc
+//	psk_secret.key  — passphrase of the psk_a slot (active seed)
+//	psk_secret_extra.key    — psk_a and psk_b passphrases only (max 2 lines; DDS limit)
+//	psk_secret.lease.json   — lease windows for both slots + server_time_utc
 //
 // When output is empty the full JSON response is printed to stdout.
 func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, output string) error {
@@ -321,16 +321,16 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 
 	outDir := pskOutputDir(output)
 
-	// psk_primary.txt — active passphrase (psk_a, or lowest-id fallback).
+	// psk_secret.key — active passphrase (psk_a, or lowest-id fallback).
 	if len(slots) > 0 {
-		primaryDest := filepath.Join(outDir, "psk_primary.txt")
+		primaryDest := filepath.Join(outDir, "psk_secret.key")
 		if err := runner.saveToFile(primaryDest, []byte(primarySlot.passphrase)); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(runner.Out, "PSK primary passphrase saved to %s\n", primaryDest)
 	}
 
-	// psk_extra.txt — at most two passphrases: psk_a and psk_b only.
+	// psk_secret_extra.key — at most two passphrases: psk_a and psk_b only.
 	// DDS supports a maximum of two extra passphrases (one matching the primary
 	// and one different); writing more causes a fatal initialisation error.
 	var passphrases []string
@@ -346,13 +346,13 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 			break
 		}
 	}
-	extraDest := filepath.Join(outDir, "psk_extra.txt")
+	extraDest := filepath.Join(outDir, "psk_secret_extra.key")
 	if err := runner.saveToFile(extraDest, []byte(strings.Join(passphrases, "\n"))); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "PSK extra passphrases saved to %s\n", extraDest)
 
-	// psk_lease.json — lease windows per slot + server_time_utc
+	// psk_secret.lease.json — lease windows per slot + server_time_utc
 	leasePayload := map[string]any{}
 	for _, s := range slots {
 		if s.lease != nil {
@@ -363,7 +363,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 		leasePayload["serverTimeUtc"] = v
 	}
 	leaseJSON, _ := json.MarshalIndent(leasePayload, "", "  ")
-	leaseDest := filepath.Join(outDir, "psk_lease.json")
+	leaseDest := filepath.Join(outDir, "psk_secret.lease.json")
 	if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
 		return err
 	}

@@ -1534,13 +1534,34 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 
 // ── edge-sync ─────────────────────────────────────────────────────────────────
 
+// ensureConnextDir validates and, if needed, creates the directory given to
+// --connext-dir. Failing fast here (instead of deep inside enrollment) avoids
+// surfacing a raw filesystem error such as "mkdir rafa: not a directory" from
+// a path whose parent already exists as a regular file.
+func ensureConnextDir(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("--connext-dir %q exists but is not a directory", path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("--connext-dir %q: %w", path, err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
+	}
+	return nil
+}
+
 func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("edge-sync", "Sync security artifacts from a Provisioning Service to this device")
 
 	// Persistent slot-selection flags shared by all subcommands.
 	var connextDir, service, domainID, participantID, serial string
 	var debug bool
-	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Directory for the Connext artifacts tree (default: <workdir>/.connext/agent/connext_artifacts/<service>); does not affect the agent's inbox, log or mTLS files")
+	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Directory for the Connext artifacts tree (default: <workdir>/.connext/agent/<service>/connext_artifacts); does not affect the agent's inbox, log or mTLS files")
 	cmd.PersistentFlags().StringVar(&service, "service", "", "Provisioning Service ID (selects the store slot)")
 	cmd.PersistentFlags().StringVar(&domainID, "domain-tpl-id", "", "Domain Template ID")
 	cmd.PersistentFlags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID")
@@ -1551,8 +1572,13 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
 		// --connext-dir relocates only the Connext artifacts tree; the agent
 		// base (inbox, log, mTLS, state) stays under BaseDir.
-		if runtime != nil && runtime.EdgeStore != nil && connextDir != "" {
-			runtime.EdgeStore.ConnextDir = connextDir
+		if connextDir != "" {
+			if err := ensureConnextDir(connextDir); err != nil {
+				return err
+			}
+			if runtime != nil && runtime.EdgeStore != nil {
+				runtime.EdgeStore.ConnextDir = connextDir
+			}
 		}
 		if runtime != nil {
 			if runtime.EdgeProvision != nil {

@@ -1096,7 +1096,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		if err := runner.EdgeStore.WriteEnrollArtifacts(service, domain, participantID, node, arts); err != nil {
 			return domainTemplateID, err
 		}
-		// enroll_lease.json — written to the node directory when the response
+		// enroll.lease.json — written to the node directory when the response
 		// contains a top-level "lease" or "server_time_utc" key.
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
@@ -1104,7 +1104,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
 			}
-			leaseDest := filepath.Join(nodeDir, "enroll_lease.json")
+			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
 			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
@@ -1209,7 +1209,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
 			}
-			leaseDest := filepath.Join(nodeDir, "enroll_lease.json")
+			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
 			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}

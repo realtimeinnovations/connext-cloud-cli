@@ -647,10 +647,10 @@ func TestReadLeaseNotAfter_ParsesNotAfter(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	notAfter := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	ffs.WriteFile("/connext/svc/part/connext_artifacts/identity_lease.json",
+	ffs.WriteFile("/connext/svc/part/connext_artifacts/identity.lease.json",
 		leaseJSON(notAfter.Add(-24*time.Hour), notAfter), 0o644)
 
-	got := a.readLeaseNotAfter("/connext/svc/part/connext_artifacts/identity_lease.json")
+	got := a.readLeaseNotAfter("/connext/svc/part/connext_artifacts/identity.lease.json")
 	if !got.Equal(notAfter) {
 		t.Fatalf("got %v want %v", got, notAfter)
 	}
@@ -693,7 +693,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
 		// Write a lease file and a fake identity cert to the output directory.
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
-		leasePath := filepath.Join(dir, "identity_lease.json")
+		leasePath := filepath.Join(dir, "identity.lease.json")
 		ffs.WriteFile(leasePath, leaseJSON(time.Unix(0, 0), notAfter), 0o644)
 		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("FAKE-CERT"), 0o644)
 		return nil
@@ -740,9 +740,9 @@ func TestEnrollProfile_DomainArtifactsDedupedAcrossParticipants(t *testing.T) {
 	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
 		atomic.AddInt32(&pskCalls, 1)
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
-		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"), pskLeaseJSON(pskNotAfter, pskNotAfter.Add(100*time.Second)), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"), pskLeaseJSON(pskNotAfter, pskNotAfter.Add(100*time.Second)), 0o644)
 		return nil
 	}
 	a.GetCRLFunc = func(_, _, _, _, _, _ string) error { atomic.AddInt32(&crlCalls, 1); return nil }
@@ -1097,7 +1097,7 @@ func buildFakeCertPEM(t *testing.T, notAfter time.Time) []byte {
 
 // ─── PSK rolling-key timers ───────────────────────────────────────────────────
 
-// pskLeaseJSON builds a psk_lease.json with separate pskA and pskB slots, as
+// pskLeaseJSON builds a psk_secret.lease.json with separate pskA and pskB slots, as
 // returned by POST /psk and parsed by readPSKABNotAfter.
 func pskLeaseJSON(pskANotAfter, pskBNotAfter time.Time) []byte {
 	slot := func(notAfter time.Time) map[string]any {
@@ -1132,14 +1132,14 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 
 	// PSK is domain-scoped.
 	outDir := a.Store.DomainDir("svc", "dom")
-	// renewPSKAt80 reads psk_primary.txt before the server call.
-	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
+	// renewPSKAt80 reads psk_secret.key before the server call.
+	ffs.WriteFile(filepath.Join(outDir, "psk_secret.key"), []byte("sA"), 0o644)
 
 	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
-		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"), pskLeaseJSON(pskANotAfter, pskBNotAfter), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"), pskLeaseJSON(pskANotAfter, pskBNotAfter), 0o644)
 		return nil
 	}
 
@@ -1170,7 +1170,7 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 	}
 }
 
-// pskLeaseJSONFull builds a psk_lease.json with both not_before and not_after
+// pskLeaseJSONFull builds a psk_secret.lease.json with both not_before and not_after
 // for each slot, so tests can exercise the lease-anchored issuedAt path.
 func pskLeaseJSONFull(aNotBefore, aNotAfter, bNotBefore, bNotAfter time.Time) []byte {
 	slot := func(nb, na time.Time) map[string]any {
@@ -1204,12 +1204,12 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 
 	// PSK is domain-scoped.
 	outDir := a.Store.DomainDir("svc", "dom")
-	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
+	ffs.WriteFile(filepath.Join(outDir, "psk_secret.key"), []byte("sA"), 0o644)
 	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
-		ffs.WriteFile(filepath.Join(dir, "psk_primary.txt"), []byte("sA"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_extra.txt"), []byte("sA\nsB"), 0o644)
-		ffs.WriteFile(filepath.Join(dir, "psk_lease.json"),
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"),
 			pskLeaseJSONFull(pskANotBefore, pskANotAfter, pskBNotBefore, pskBNotAfter), 0o644)
 		return nil
 	}
@@ -1254,8 +1254,8 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 
 	// PSK is domain-scoped.
 	outDir := a.Store.DomainDir("svc", "dom")
-	ffs.WriteFile(filepath.Join(outDir, "psk_primary.txt"), []byte("sA"), 0o644)
-	ffs.WriteFile(filepath.Join(outDir, "psk_temp.txt"), []byte("sB"), 0o644)
+	ffs.WriteFile(filepath.Join(outDir, "psk_secret.key"), []byte("sA"), 0o644)
+	ffs.WriteFile(filepath.Join(outDir, "psk_secret_temp.key"), []byte("sB"), 0o644)
 
 	baseTTL := 100 * time.Second
 	pskBNotBefore := now // sB starts exactly as sA expires

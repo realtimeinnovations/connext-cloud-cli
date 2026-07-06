@@ -35,7 +35,7 @@ type Store struct {
 // EnrollArtifacts holds the security material returned by a successful enrollment.
 type EnrollArtifacts struct {
 	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
-	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/ (0644)
+	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/<domain>/ (0644)
 	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
 	GovernanceP7S []byte // written to connext_artifacts/signed_governance.p7s (0644)
 }
@@ -62,11 +62,14 @@ func (s *Store) fileExists(path string) bool {
 //	<BaseDir>/agent/
 //	  inbox/
 //	  rticloud-edge-agent.log
-//	  connext_artifacts/<service>/                      SERVICE: identity_ca.crt, permissions_ca.crt
-//	    <domain>/                                       DOMAIN:  crl.pem, signed_governance.p7s, psk_*
-//	      <participant>/<node>/                         NODE:    identity.crt, signed_permissions.p7s, leases
-//	  mtls_artifacts/<service>/<domain>/<participant>/<node>/
-//	                                                    NODE:    node.crt, node.key, ca-chain.crt, node_url, agent_state.json
+//	  <service>/
+//	    connext_artifacts/
+//	      <domain>/                                     DOMAIN: identity_ca.crt, permissions_ca.crt,
+//	                                                            crl.pem, signed_governance.p7s, psk_*
+//	        <participant>/<node>/                       NODE:   identity.crt, signed_permissions.p7s, leases
+//	    mtls_artifacts/
+//	      <domain>/<participant>/<node>/                NODE:   node.crt, node.key, ca-chain.crt, node_url,
+//	                                                            agent_state.json
 //
 // When ConnextDir is set, the connext_artifacts <service> root is replaced by
 // ConnextDir (the <service> level collapses into the supplied directory); the
@@ -97,25 +100,26 @@ func (s *Store) LogPath() string {
 	return filepath.Join(s.AgentDir(), "rticloud-edge-agent.log")
 }
 
-// ServiceDir returns the SERVICE-scope root that holds the CA certificates
-// shared by every domain template in the provisioning service. It is the
-// directory relocated by ConnextDir.
+// ServiceDir returns the SERVICE-scope root that holds the connext artifacts
+// tree for the provisioning service. It is the directory relocated by
+// ConnextDir.
 func (s *Store) ServiceDir(service string) string {
 	if s.ConnextDir != "" {
 		return s.ConnextDir
 	}
-	return filepath.Join(s.AgentDir(), "connext_artifacts", service)
+	return filepath.Join(s.AgentDir(), service, "connext_artifacts")
 }
 
-// IdentityCAPath is the DDS identity CA, shared across the whole service.
-func (s *Store) IdentityCAPath(service string) string {
-	return filepath.Join(s.ServiceDir(service), "identity_ca.crt")
+// IdentityCAPath is the DDS identity CA, shared by every participant template
+// in the domain.
+func (s *Store) IdentityCAPath(service, domain string) string {
+	return filepath.Join(s.DomainDir(service, domain), "identity_ca.crt")
 }
 
-// PermissionsCAPath is the DDS permissions/governance CA, shared across the
-// whole service.
-func (s *Store) PermissionsCAPath(service string) string {
-	return filepath.Join(s.ServiceDir(service), "permissions_ca.crt")
+// PermissionsCAPath is the DDS permissions/governance CA, shared by every
+// participant template in the domain.
+func (s *Store) PermissionsCAPath(service, domain string) string {
+	return filepath.Join(s.DomainDir(service, domain), "permissions_ca.crt")
 }
 
 // DomainDir returns the DOMAIN-scope directory that holds artifacts shared by
@@ -148,12 +152,12 @@ func (s *Store) IdentityCertPath(service, domain, participant, node string) stri
 // IdentityKeyPath is the dedicated DDS identity private key for a node (kept
 // separate from the mTLS device key).
 func (s *Store) IdentityKeyPath(service, domain, participant, node string) string {
-	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity_key.pem")
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity.key")
 }
 
 // IdentityLeasePath is the DDS identity lease window for a node.
 func (s *Store) IdentityLeasePath(service, domain, participant, node string) string {
-	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity_lease.json")
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "identity.lease.json")
 }
 
 // PermissionsPath is the signed permissions document for a node.
@@ -163,13 +167,14 @@ func (s *Store) PermissionsPath(service, domain, participant, node string) strin
 
 // PermissionsLeasePath is the permissions lease window for a node.
 func (s *Store) PermissionsLeasePath(service, domain, participant, node string) string {
-	return filepath.Join(s.NodeDir(service, domain, participant, node), "permissions_lease.json")
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "signed_permissions.lease.json")
 }
 
-// MTLSRoot returns the root of the per-node mTLS/agent-state tree. It always
-// lives under BaseDir and is never relocated by ConnextDir.
-func (s *Store) MTLSRoot() string {
-	return filepath.Join(s.AgentDir(), "mtls_artifacts")
+// MTLSRoot returns the root of the per-node mTLS/agent-state tree for the
+// given service. It always lives under BaseDir and is never relocated by
+// ConnextDir.
+func (s *Store) MTLSRoot(service string) string {
+	return filepath.Join(s.AgentDir(), service, "mtls_artifacts")
 }
 
 // NodeAgentDir returns the per-node agent directory under mtls_artifacts that
@@ -177,7 +182,7 @@ func (s *Store) MTLSRoot() string {
 // connext_artifacts node path but always lives under BaseDir (never relocated
 // by ConnextDir).
 func (s *Store) NodeAgentDir(service, domain, participant, node string) string {
-	return filepath.Join(s.MTLSRoot(), service, domain, participant, node)
+	return filepath.Join(s.MTLSRoot(service), domain, participant, node)
 }
 
 // NodeCertPath is the mTLS leaf certificate for a node.
@@ -231,13 +236,13 @@ func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, 
 		if err := s.WriteFile(s.NodeCAChainPath(service, domain, participant, node), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
-		if err := s.MkdirAll(s.ServiceDir(service), 0o755); err != nil {
+		if err := s.MkdirAll(s.DomainDir(service, domain), 0o755); err != nil {
 			return err
 		}
-		if err := s.WriteFile(s.IdentityCAPath(service), a.CAChainPEM, 0o644); err != nil {
+		if err := s.WriteFile(s.IdentityCAPath(service, domain), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
-		if err := s.WriteFile(s.PermissionsCAPath(service), a.CAChainPEM, 0o644); err != nil {
+		if err := s.WriteFile(s.PermissionsCAPath(service, domain), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
 	}
@@ -310,20 +315,22 @@ type NodeInfo struct {
 }
 
 // ListNodesWithURL walks the agent mTLS tree
-// (<service>/<domain>/<participant>/<node>) and returns every node that has a
-// stored node_url. Returns nil when the tree does not exist or cannot be read.
+// (<service>/mtls_artifacts/<domain>/<participant>/<node>) and returns every
+// node that has a stored node_url. Returns nil when the tree does not exist or
+// cannot be read.
 func (s *Store) ListNodesWithURL() []NodeInfo {
-	root := s.MTLSRoot()
+	agentRoot := s.AgentDir()
 	var nodes []NodeInfo
-	services, err := os.ReadDir(root)
+	services, err := os.ReadDir(agentRoot)
 	if err != nil {
 		return nil
 	}
 	for _, svc := range services {
-		if !svc.IsDir() {
+		if !svc.IsDir() || svc.Name() == "inbox" {
 			continue
 		}
-		domains, err := os.ReadDir(filepath.Join(root, svc.Name()))
+		mtlsRoot := s.MTLSRoot(svc.Name())
+		domains, err := os.ReadDir(mtlsRoot)
 		if err != nil {
 			continue
 		}
@@ -331,7 +338,7 @@ func (s *Store) ListNodesWithURL() []NodeInfo {
 			if !dom.IsDir() {
 				continue
 			}
-			parts, err := os.ReadDir(filepath.Join(root, svc.Name(), dom.Name()))
+			parts, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name()))
 			if err != nil {
 				continue
 			}
@@ -339,7 +346,7 @@ func (s *Store) ListNodesWithURL() []NodeInfo {
 				if !part.IsDir() {
 					continue
 				}
-				leaves, err := os.ReadDir(filepath.Join(root, svc.Name(), dom.Name(), part.Name()))
+				leaves, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name(), part.Name()))
 				if err != nil {
 					continue
 				}

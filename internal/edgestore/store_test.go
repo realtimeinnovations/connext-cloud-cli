@@ -26,8 +26,9 @@ func TestLayeredPaths_Default(t *testing.T) {
 		node = "b9a00ae9a51d4086b52dc96015e4c5b0"
 	)
 	// Agent base.
-	connextRoot := filepath.Join("/base", "agent", "connext_artifacts", svc)
-	mtlsNode := filepath.Join("/base", "agent", "mtls_artifacts", svc, dom, part, node)
+	connextRoot := filepath.Join("/base", "agent", svc, "connext_artifacts")
+	domainRoot := filepath.Join(connextRoot, dom)
+	mtlsNode := filepath.Join("/base", "agent", svc, "mtls_artifacts", dom, part, node)
 	cases := []struct {
 		name string
 		got  string
@@ -38,8 +39,8 @@ func TestLayeredPaths_Default(t *testing.T) {
 		{"LogPath", s.LogPath(), filepath.Join("/base", "agent", "rticloud-edge-agent.log")},
 
 		{"ServiceDir", s.ServiceDir(svc), connextRoot},
-		{"IdentityCAPath", s.IdentityCAPath(svc), filepath.Join(connextRoot, "identity_ca.crt")},
-		{"PermissionsCAPath", s.PermissionsCAPath(svc), filepath.Join(connextRoot, "permissions_ca.crt")},
+		{"IdentityCAPath", s.IdentityCAPath(svc, dom), filepath.Join(domainRoot, "identity_ca.crt")},
+		{"PermissionsCAPath", s.PermissionsCAPath(svc, dom), filepath.Join(domainRoot, "permissions_ca.crt")},
 
 		{"DomainDir", s.DomainDir(svc, dom), filepath.Join(connextRoot, dom)},
 		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, dom, "signed_governance.p7s")},
@@ -47,10 +48,10 @@ func TestLayeredPaths_Default(t *testing.T) {
 
 		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node)},
 		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.crt")},
-		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity_key.pem")},
-		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity_lease.json")},
+		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.key")},
+		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.lease.json")},
 		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "signed_permissions.p7s")},
-		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "permissions_lease.json")},
+		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "signed_permissions.lease.json")},
 
 		{"NodeAgentDir", s.NodeAgentDir(svc, dom, part, node), mtlsNode},
 		{"NodeCertPath", s.NodeCertPath(svc, dom, part, node), filepath.Join(mtlsNode, "node.crt")},
@@ -75,18 +76,18 @@ func TestLayeredPaths_ConnextDirOverride(t *testing.T) {
 		part = "participant-sensors-0849"
 		node = "b9a00ae9a51d4086b52dc96015e4c5b0"
 	)
-	// ConnextDir replaces the <service> root: CAs land directly under /rafa.
+	// ConnextDir replaces the <service> root: CAs land under /rafa/<domain>.
 	if got := s.ServiceDir(svc); got != "/rafa" {
 		t.Fatalf("ServiceDir with ConnextDir: got %s, want /rafa", got)
 	}
-	if got := s.IdentityCAPath(svc); got != filepath.Join("/rafa", "identity_ca.crt") {
+	if got := s.IdentityCAPath(svc, dom); got != filepath.Join("/rafa", dom, "identity_ca.crt") {
 		t.Fatalf("IdentityCAPath with ConnextDir: got %s", got)
 	}
 	if got := s.NodeDir(svc, dom, part, node); got != filepath.Join("/rafa", dom, part, node) {
 		t.Fatalf("NodeDir with ConnextDir: got %s", got)
 	}
 	// The agent base (mtls + state) is unaffected by ConnextDir.
-	wantMTLS := filepath.Join("/base", "agent", "mtls_artifacts", svc, dom, part, node)
+	wantMTLS := filepath.Join("/base", "agent", svc, "mtls_artifacts", dom, part, node)
 	if got := s.NodeAgentDir(svc, dom, part, node); got != wantMTLS {
 		t.Fatalf("NodeAgentDir must ignore ConnextDir: got %s, want %s", got, wantMTLS)
 	}
@@ -128,9 +129,9 @@ func TestWriteEnrollArtifacts_Layered(t *testing.T) {
 	check(s.NodeCertPath(svc, dom, part, node), "CERT")
 	check(s.NodeKeyPath(svc, dom, part, node), "KEY")
 	check(s.NodeCAChainPath(svc, dom, part, node), "CHAIN")
-	// CA certs → service root (shared).
-	check(s.IdentityCAPath(svc), "CHAIN")
-	check(s.PermissionsCAPath(svc), "CHAIN")
+	// CA certs → domain dir (shared).
+	check(s.IdentityCAPath(svc, dom), "CHAIN")
+	check(s.PermissionsCAPath(svc, dom), "CHAIN")
 	// governance → domain dir (shared).
 	check(s.GovernancePath(svc, dom), "GOV")
 

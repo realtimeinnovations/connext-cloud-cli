@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -253,6 +254,29 @@ func TestParserEdgeSyncIdentityRequiresParticipantID(t *testing.T) {
 	err := Execute([]string{"edge-sync", "identity"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected --participant-id required error")
+	}
+}
+
+func TestParserEdgeSyncConnextDirRejectsNonDirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "rafa")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	err := Execute([]string{"edge-sync", "identity", "--connext-dir", file}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected not-a-directory error, got %v", err)
+	}
+}
+
+func TestParserEdgeSyncConnextDirCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rafa")
+	err := Execute([]string{"edge-sync", "identity", "--connext-dir", dir}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--participant-id") {
+		t.Fatalf("expected --participant-id required error once connext-dir is valid, got %v", err)
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("expected --connext-dir to be created, stat err=%v", statErr)
 	}
 }
 

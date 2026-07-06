@@ -243,11 +243,11 @@ func TestRequestIdentityToFileWritesLease(t *testing.T) {
 	if written["identity.crt"] == nil {
 		t.Fatal("expected identity.crt to be written")
 	}
-	if !strings.Contains(string(written["identity_lease.json"]), "notAfter") {
-		t.Fatalf("expected identity_lease.json with lease data; got %s", written["identity_lease.json"])
+	if !strings.Contains(string(written["identity.lease.json"]), "notAfter") {
+		t.Fatalf("expected identity.lease.json with lease data; got %s", written["identity.lease.json"])
 	}
-	if !strings.Contains(string(written["identity_lease.json"]), "serverTimeUtc") {
-		t.Fatalf("expected identity_lease.json with server_time_utc; got %s", written["identity_lease.json"])
+	if !strings.Contains(string(written["identity.lease.json"]), "serverTimeUtc") {
+		t.Fatalf("expected identity.lease.json with server_time_utc; got %s", written["identity.lease.json"])
 	}
 	if !strings.Contains(out.String(), "Identity lease saved to") {
 		t.Fatalf("unexpected stdout: %s", out.String())
@@ -312,8 +312,8 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 	if written["permissions.p7s"] == nil {
 		t.Fatal("expected permissions file to be written")
 	}
-	if !strings.Contains(string(written["permissions_lease.json"]), "notAfter") {
-		t.Fatalf("expected permissions_lease.json with lease data; got %s", written["permissions_lease.json"])
+	if !strings.Contains(string(written["signed_permissions.lease.json"]), "notAfter") {
+		t.Fatalf("expected signed_permissions.lease.json with lease data; got %s", written["signed_permissions.lease.json"])
 	}
 	if !strings.Contains(out.String(), "Permissions lease saved to") {
 		t.Fatalf("unexpected stdout: %s", out.String())
@@ -343,14 +343,14 @@ func TestRequestPSKToFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = expectedDir // dir is implied by filepath.Base checks below
-	if string(written["psk_primary.txt"]) != "0:aaaa" {
-		t.Fatalf("unexpected psk_primary.txt: %q", written["psk_primary.txt"])
+	if string(written["psk_secret.key"]) != "0:aaaa" {
+		t.Fatalf("unexpected psk_secret.key: %q", written["psk_secret.key"])
 	}
-	if string(written["psk_extra.txt"]) != "0:aaaa\n1:bbbb" {
-		t.Fatalf("unexpected psk_extra.txt: %q", written["psk_extra.txt"])
+	if string(written["psk_secret_extra.key"]) != "0:aaaa\n1:bbbb" {
+		t.Fatalf("unexpected psk_secret_extra.key: %q", written["psk_secret_extra.key"])
 	}
-	if !strings.Contains(string(written["psk_lease.json"]), "pskA") || !strings.Contains(string(written["psk_lease.json"]), "serverTimeUtc") {
-		t.Fatalf("unexpected psk_lease.json: %s", written["psk_lease.json"])
+	if !strings.Contains(string(written["psk_secret.lease.json"]), "pskA") || !strings.Contains(string(written["psk_secret.lease.json"]), "serverTimeUtc") {
+		t.Fatalf("unexpected psk_secret.lease.json: %s", written["psk_secret.lease.json"])
 	}
 	if !strings.Contains(out.String(), "PSK primary passphrase saved") {
 		t.Fatalf("unexpected stdout: %s", out.String())
@@ -478,7 +478,7 @@ func TestRequestPSKToDirectory(t *testing.T) {
 	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"psk_primary.txt", "psk_extra.txt", "psk_lease.json"} {
+	for _, f := range []string{"psk_secret.key", "psk_secret_extra.key", "psk_secret.lease.json"} {
 		if !written[f] {
 			t.Fatalf("expected %s to be written; got %v", f, written)
 		}
