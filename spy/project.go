@@ -35,7 +35,7 @@ const (
 	CancelSpySetupLabel    = "Cancel spy setup"
 	SpyLogName             = "spy.log"
 	spyRenderPollInterval  = 50 * time.Millisecond
-	spyLiveRefreshInterval = 250 * time.Millisecond
+	spyLiveRefreshInterval = 100 * time.Millisecond
 )
 
 type UserError = common.UserError
@@ -456,6 +456,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	liveView := NewLiveView(config)
 	liveView.DatabusSecure = databusSecure
 	renderer := TerminalRenderer{Out: app.Out}
+	defer func() { _ = renderer.Finish() }()
 	logFile, err := os.OpenFile(app.SpyLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
@@ -639,6 +640,7 @@ done:
 			if !options.TextOutput {
 				_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 			}
+			_ = renderer.Finish()
 			if interrupted {
 				_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
 				app.printRestartHint()
@@ -653,6 +655,7 @@ done:
 	if !options.TextOutput {
 		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 	}
+	_ = renderer.Finish()
 	if interrupted {
 		_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
 	}

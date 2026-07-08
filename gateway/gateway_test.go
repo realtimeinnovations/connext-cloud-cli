@@ -623,11 +623,10 @@ func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "obs / collector"},
 	}
 	rendered := renderANSI(view)
-	if !strings.HasPrefix(rendered, "\x1b[H\x1b[J") {
-		t.Fatalf("expected cursor-home redraw prefix, got %q", rendered[:minInt(len(rendered), 8)])
-	}
-	if strings.HasPrefix(rendered, "\x1b[2J") {
-		t.Fatalf("expected renderer to avoid full-screen clear, got %q", rendered[:minInt(len(rendered), 8)])
+	for _, sequence := range []string{"\x1b[2J", "\x1b[H", "\x1b[J"} {
+		if strings.Contains(rendered, sequence) {
+			t.Fatalf("expected frame content without screen-clear sequences, found %q", sequence)
+		}
 	}
 }
 

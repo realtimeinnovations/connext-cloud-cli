@@ -598,11 +598,11 @@ func TestRenderANSISamplesPanelExpandsToRemainingHeight(t *testing.T) {
 	samplesTop := -1
 	samplesBottom := -1
 	for index, line := range lines {
-		if strings.Contains(line, "┌─ Samples") {
+		if strings.Contains(line, "╭─ Samples") {
 			samplesTop = index
 			continue
 		}
-		if samplesTop >= 0 && strings.HasPrefix(line, "└") {
+		if samplesTop >= 0 && strings.HasPrefix(line, "╰") {
 			samplesBottom = index
 			break
 		}
