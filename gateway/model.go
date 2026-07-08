@@ -126,7 +126,7 @@ func (state *RoutingState) RecentLogs() []string {
 }
 
 // RecentLogTimes returns the arrival time of each line in RecentLogs (parallel
-// slice), so the TUI can show a compact relative age per line.
+// slice), so the TUI can show a leading timestamp per line.
 func (state *RoutingState) RecentLogTimes() []time.Time {
 	return append([]time.Time(nil), state.recentLogTimes...)
 }

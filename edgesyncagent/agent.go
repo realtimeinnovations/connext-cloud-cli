@@ -323,7 +323,7 @@ type Agent struct {
 // logEntry is one buffered Agent Log line. When classified is true, sev is the
 // authoritative severity supplied by the emitting event (see Agent.emit); when
 // false the renderer falls back to keyword classification (agentLogSeverity).
-// t is the arrival time, used to show a compact relative age in the panel.
+// t is the arrival time, used to show a leading timestamp in the panel.
 type logEntry struct {
 	text       string
 	sev        tui.LogSeverity
@@ -974,10 +974,41 @@ func (a *Agent) removeInboxFile(path string) {
 	}
 }
 
-// Clean removes all agent state from the store directory, resetting the agent
-// for a fresh first-run experience.
-func (a *Agent) Clean() error {
-	return os.RemoveAll(a.Store.BaseDir)
+// Reset removes all enrolled agent state (the inbox and each provisioning
+// service's connext/mTLS artifacts) so the agent starts fresh on its next
+// run. It only ever touches .connext/agent — the agent log file and the
+// parent .connext directory (which may be shared with the gateway or spy)
+// are left in place.
+func (a *Agent) Reset() error {
+	agentDir := a.Store.AgentDir()
+	entries, err := os.ReadDir(agentDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			_, _ = fmt.Fprintln(a.Out, "No agent state found.")
+			return nil
+		}
+		return err
+	}
+	logName := filepath.Base(a.Store.LogPath())
+	removed := false
+	for _, entry := range entries {
+		if entry.Name() == logName {
+			continue
+		}
+		path := filepath.Join(agentDir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(a.Out, "Removed %s\n", path)
+		removed = true
+	}
+	if !removed {
+		_, _ = fmt.Fprintln(a.Out, "No agent state found.")
+		return nil
+	}
+	_, _ = fmt.Fprintln(a.Out)
+	_, _ = fmt.Fprintf(a.Out, "Logs were left in\nPath: %s\n", a.Store.LogPath())
+	return nil
 }
 
 // timestampWriter prepends a timestamp to each line written to the underlying writer.

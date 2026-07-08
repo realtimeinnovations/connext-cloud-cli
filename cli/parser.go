@@ -2014,25 +2014,22 @@ extract the service ID and participant ID automatically.`,
 			c.AddCommand(enroll)
 		}
 
-		{ // agent clean
-			clean := &cobra.Command{
-				Use:   "clean",
+		{ // agent reset
+			reset := &cobra.Command{
+				Use:   "reset",
 				Short: "Remove all agent state and start fresh",
-				Long: `Delete the entire .connext directory, removing all enrolled profiles,
-certificates, keys, and cached artifacts.  The next run of the agent will
-trigger the first-run enrollment wizard.`,
+				Long: `Remove all enrolled profiles, certificates, keys, and cached artifacts from
+.connext/agent. The agent log and the parent .connext directory are left in
+place. The next run of the agent will trigger the first-run enrollment wizard.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
-					baseDir := runtime.EdgeSyncAgent.Store.BaseDir
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removing %s ...\n", baseDir)
-					if err := runtime.EdgeSyncAgent.Clean(); err != nil {
-						return fmt.Errorf("clean failed: %w", err)
+					if err := runtime.EdgeSyncAgent.Reset(); err != nil {
+						return fmt.Errorf("reset failed: %w", err)
 					}
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Done. Run 'rticloud edge-sync agent' to re-enroll.")
 					return nil
 				},
 			}
-			c.AddCommand(clean)
+			c.AddCommand(reset)
 		}
 
 		cmd.AddCommand(c)

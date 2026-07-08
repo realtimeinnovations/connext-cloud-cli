@@ -48,7 +48,7 @@ type RenderedView struct {
 	Resource        RenderedSummaryLine
 	Routes          []RenderedRoute
 	LogLines        []string
-	LogTimes        []time.Time // parallel to LogLines; zero entries suppress the age stamp
+	LogTimes        []time.Time // parallel to LogLines; zero entries suppress the timestamp
 	Border          string
 	HideRoutes      bool
 	LogTitle        string
@@ -413,9 +413,8 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	if len(logEntries) == 0 {
 		logLines = append(logLines, formatLogLine(logEmptyMessage, contentWidth))
 	} else {
-		now := time.Now()
 		for _, entry := range tui.CompactLogEntries(logEntries) {
-			logLines = append(logLines, tui.FormatLogEntry(entry, contentWidth, now))
+			logLines = append(logLines, tui.FormatLogEntry(entry, contentWidth))
 		}
 	}
 	summaryPanel := tui.RenderPanel(tui.StripMarkup(view.Title), []string{

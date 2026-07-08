@@ -1296,3 +1296,67 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 		t.Error("expected a fresh ArtifactPSK 80% renewal timer armed for sB after rotation")
 	}
 }
+
+func TestResetRemovesAgentStateButKeepsConnextAndLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := edgestore.New(filepath.Join(tmpDir, ".connext"))
+	agentDir := store.AgentDir()
+
+	// Other-tool state directly under .connext must survive (not under agent/).
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".connext"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".connext", "gateway.yaml"), []byte("databus: db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Agent log, which must be preserved by Reset.
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.LogPath(), []byte("log line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Enrollment state that must be removed.
+	if err := os.MkdirAll(store.InboxDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.InboxDir(), "enroll-req.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nodeDir := store.NodeAgentDir("svc", "dom", "part", "node")
+	if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, "node.crt"), []byte("CERT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	a := NewAgent(store, io.Discard)
+	a.Out = &out
+
+	if err := a.Reset(); err != nil {
+		t.Fatalf("Reset() error = %v", err)
+	}
+
+	if !fileExistsForTest(filepath.Join(tmpDir, ".connext", "gateway.yaml")) {
+		t.Error(".connext/gateway.yaml (another tool's state) was removed but should have survived")
+	}
+	if !fileExistsForTest(store.LogPath()) {
+		t.Error("agent log was removed but should have been preserved")
+	}
+	if fileExistsForTest(filepath.Join(store.InboxDir(), "enroll-req.json")) {
+		t.Error("inbox request was not removed by Reset")
+	}
+	if fileExistsForTest(filepath.Join(nodeDir, "node.crt")) {
+		t.Error("enrolled node credentials were not removed by Reset")
+	}
+	if !strings.Contains(out.String(), "Logs were left in") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func fileExistsForTest(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

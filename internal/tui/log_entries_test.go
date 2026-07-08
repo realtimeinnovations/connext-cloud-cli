@@ -12,36 +12,17 @@ import (
 	"time"
 )
 
-func TestRelativeAge(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{-time.Second, "0s"},
-		{5 * time.Second, "5s"},
-		{90 * time.Second, "1m"},
-		{45 * time.Minute, "45m"},
-		{3 * time.Hour, "3h"},
-		{50 * time.Hour, "2d"},
-	}
-	for _, c := range cases {
-		if got := RelativeAge(c.d); got != c.want {
-			t.Errorf("RelativeAge(%s) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}
-
-func TestFormatLogEntry_RightAlignedAge(t *testing.T) {
-	now := time.Date(2026, 6, 26, 12, 0, 30, 0, time.UTC)
-	e := LogEntry{Text: "did a thing", Severity: LogGood, Time: now.Add(-12 * time.Second)}
-	got := FormatLogEntry(e, 40, now)
+func TestFormatLogEntry_LeadingTimestamp(t *testing.T) {
+	at := time.Date(2026, 6, 26, 12, 0, 18, 0, time.UTC)
+	e := LogEntry{Text: "did a thing", Severity: LogGood, Time: at}
+	got := FormatLogEntry(e, 40)
 
 	if !strings.HasPrefix(got, "• ") {
 		t.Fatalf("prefix = %q, want green bullet", got[:4])
 	}
 	plain := StripANSIEscapes(got)
-	if !strings.HasSuffix(plain, "12s") {
-		t.Fatalf("plain = %q, want trailing age 12s", plain)
+	if !strings.Contains(plain, "12:00:18") {
+		t.Fatalf("plain = %q, want leading timestamp 12:00:18", plain)
 	}
 	if DisplayWidth(got) > 40 {
 		t.Fatalf("width = %d, want <= 40", DisplayWidth(got))
@@ -49,9 +30,9 @@ func TestFormatLogEntry_RightAlignedAge(t *testing.T) {
 }
 
 func TestFormatLogEntry_NoTimeNoStamp(t *testing.T) {
-	got := FormatLogEntry(LogEntry{Text: "x", Severity: LogInfo}, 40, time.Now())
+	got := FormatLogEntry(LogEntry{Text: "x", Severity: LogInfo}, 40)
 	if strings.ContainsAny(StripANSIEscapes(got), "0123456789") {
-		t.Fatalf("zero-time entry should have no age stamp, got %q", StripANSIEscapes(got))
+		t.Fatalf("zero-time entry should have no timestamp, got %q", StripANSIEscapes(got))
 	}
 }
 
@@ -79,12 +60,12 @@ func TestClampLogBudget(t *testing.T) {
 	cases := []struct {
 		available, total, max, want int
 	}{
-		{0, 5, 12, 0},   // no room
-		{3, 0, 12, 0},   // nothing to show
-		{20, 5, 12, 5},  // limited by total
+		{0, 5, 12, 0},    // no room
+		{3, 0, 12, 0},    // nothing to show
+		{20, 5, 12, 5},   // limited by total
 		{20, 30, 12, 12}, // limited by cap
-		{8, 30, 12, 8},  // limited by available
-		{5, 30, 0, 5},   // no cap
+		{8, 30, 12, 8},   // limited by available
+		{5, 30, 0, 5},    // no cap
 	}
 	for _, c := range cases {
 		if got := ClampLogBudget(c.available, c.total, c.max); got != c.want {

@@ -147,8 +147,8 @@ func TestSweep_SurfacesOnStateChangeOnly(t *testing.T) {
 }
 
 // TestRenderAgentView_ShowsSummaryAndAge verifies the panel renders the short
-// summary (Step 2) with a right-aligned relative age computed against the render
-// clock.
+// summary (Step 2) with a leading absolute timestamp of the event's arrival
+// time.
 func TestRenderAgentView_ShowsSummaryAndAge(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
@@ -163,14 +163,15 @@ func TestRenderAgentView_ShowsSummaryAndAge(t *testing.T) {
 		detail: "artifact renewal complete service=svc participant=part artifact=device-cert old_not_after=x new_not_after=y",
 	})
 
-	// Advance the render clock 30s past the event's arrival time.
+	// Advance the render clock past the event's arrival time; the timestamp
+	// shown is the event's own arrival time, not the render clock.
 	a.Now = func() time.Time { return base.Add(30 * time.Second) }
 	plain := tui.StripANSIEscapes(a.renderAgentView(agentViewState{}))
 
 	if !strings.Contains(plain, "renewed device-cert (mTLS) for part") {
 		t.Fatalf("panel missing summary; frame:\n%s", plain)
 	}
-	if !strings.Contains(plain, "30s") {
-		t.Fatalf("panel missing relative age 30s; frame:\n%s", plain)
+	if !strings.Contains(plain, base.Format("15:04:05")) {
+		t.Fatalf("panel missing leading timestamp %s; frame:\n%s", base.Format("15:04:05"), plain)
 	}
 }

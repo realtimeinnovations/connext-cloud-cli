@@ -100,54 +100,28 @@ func logSeverityStyle(sev LogSeverity) (string, func(string) string) {
 	}
 }
 
-// FormatLogEntry trims and truncates the entry to fit contentWidth, prepends the
-// severity glyph + color, and — when the entry carries a Time and now is set —
-// right-aligns a compact relative age (e.g. "12s", "3m") on the far edge so
-// operators can correlate events without opening the log file.
-func FormatLogEntry(e LogEntry, contentWidth int, now time.Time) string {
+// FormatLogEntry trims and truncates the entry to fit contentWidth and prepends
+// the severity glyph + color. When the entry carries a Time, a short "HH:MM:SS"
+// stamp is prepended before the text so operators can see when the line
+// arrived without it competing for space at the far edge of the panel.
+func FormatLogEntry(e LogEntry, contentWidth int) string {
 	prefix, colorize := logSeverityStyle(e.Severity)
 	trimmed := strings.TrimSpace(e.Text)
 	inner := MaxInt(8, contentWidth-2) // width available after the 2-col glyph
 
-	ts := ""
-	if !e.Time.IsZero() && !now.IsZero() {
-		ts = RelativeAge(now.Sub(e.Time))
-	}
-	if ts == "" {
+	if e.Time.IsZero() {
 		return prefix + colorize(TruncateDisplay(trimmed, inner))
 	}
-	tsWidth := len([]rune(ts))
-	textWidth := MaxInt(4, inner-tsWidth-1) // keep at least a 1-space gap
+	ts := e.Time.Format("15:04:05")
+	textWidth := MaxInt(4, inner-len(ts)-1) // keep a 1-space gap after the stamp
 	text := TruncateDisplay(trimmed, textWidth)
-	gap := inner - DisplayWidth(text) - tsWidth
-	if gap < 1 {
-		gap = 1
-	}
-	return prefix + colorize(text) + strings.Repeat(" ", gap) + Dim(ts)
+	return prefix + Dim(ts) + " " + colorize(text)
 }
 
 // FormatLogLine renders a line with a known severity and no timestamp. Retained
 // for callers that hold plain strings (the keyword-classified panels).
 func FormatLogLine(line string, contentWidth int, sev LogSeverity) string {
-	return FormatLogEntry(LogEntry{Text: line, Severity: sev}, contentWidth, time.Time{})
-}
-
-// RelativeAge formats a duration as a compact, single-unit age: seconds under a
-// minute, then minutes, hours, days.
-func RelativeAge(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
+	return FormatLogEntry(LogEntry{Text: line, Severity: sev}, contentWidth)
 }
 
 // ClampLogBudget returns how many log lines a single log panel should render

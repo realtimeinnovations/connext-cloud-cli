@@ -291,16 +291,15 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	panelLines := tui.RenderPanel("Edge-Sync Agent", body, panelWidth, theme)
 
 	// Agent Log panel — same muted gray style as the gateway "Routing Log".
-	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines), now)...)
+	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines))...)
 	return framePaint(panelLines)
 }
 
 // renderAgentLogPanel renders the "Agent Log" panel that sits beneath the main
 // panel, mirroring the gateway "Routing Log" panel's style and colors.  It shows
-// the most recent log lines that fit within remainingHeight (relative to now,
-// for the per-line age stamp) and returns nil (no separator, no panel) when
-// there is no vertical room.
-func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight int, now time.Time) []string {
+// the most recent log lines that fit within remainingHeight and returns nil (no
+// separator, no panel) when there is no vertical room.
+func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight int) []string {
 	entries := tui.CompactLogEntries(a.agentLogEntries())
 	total := len(entries)
 	if total == 0 {
@@ -319,7 +318,7 @@ func (a *Agent) renderAgentLogPanel(panelWidth, contentWidth, remainingHeight in
 
 	body := make([]string, 0, len(entries))
 	for _, e := range entries {
-		body = append(body, tui.FormatLogEntry(e, contentWidth, now))
+		body = append(body, tui.FormatLogEntry(e, contentWidth))
 	}
 
 	panel := tui.RenderPanel("Agent Log", body, panelWidth, agentLogPanelTheme())
