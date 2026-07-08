@@ -39,6 +39,18 @@ func (screen *Screen) Paint(lines []string, width int, height int) error {
 	}
 	fullRepaint := !screen.active || width != screen.width || height != screen.height
 	previous := screen.prev
+	if !fullRepaint && len(previous) == len(lines) {
+		unchanged := true
+		for index, line := range lines {
+			if previous[index] != line {
+				unchanged = false
+				break
+			}
+		}
+		if unchanged {
+			return nil
+		}
+	}
 	if fullRepaint {
 		previous = nil
 	}
@@ -81,6 +93,9 @@ func (screen *Screen) Finish() error {
 		return nil
 	}
 	row := len(screen.prev)
+	if row < 1 {
+		row = 1
+	}
 	screen.prev = nil
 	screen.active = false
 	_, err := fmt.Fprintf(screen.out, "\x1b[%d;1H\n%s", row, showCursorSequence)
