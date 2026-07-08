@@ -581,3 +581,124 @@ func TestEnrollDevice(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
+
+// ─── Catalogue fetchers ───────────────────────────────────────────────────────
+
+func TestFetchEdgeSystems(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /edge-systems": newJSONResponse(http.StatusOK, map[string]any{
+			"edgeSystems": map[string]any{
+				"beta":  map[string]any{"status": "active"},
+				"alpha": map[string]any{"status": "active"},
+			},
+		}),
+	}}
+	runner := New(api, &bytes.Buffer{})
+	systems, err := runner.FetchEdgeSystems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(systems) != 2 || systems[0] != "alpha" || systems[1] != "beta" {
+		t.Fatalf("unexpected systems: %v", systems)
+	}
+}
+
+func TestFetchEdgeSystems_ErrorStatus(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /edge-systems": newTextResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`),
+	}}
+	runner := New(api, &bytes.Buffer{})
+	if _, err := runner.FetchEdgeSystems(); err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+}
+
+func TestFetchDomainTemplates(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /edge-systems/alpha/domain-templates": newJSONResponse(http.StatusOK, map[string]any{
+			"domain_templates": []any{
+				map[string]any{"templateId": "1:dom-a"},
+				map[string]any{"templateId": "2:dom-b"},
+			},
+		}),
+	}}
+	runner := New(api, &bytes.Buffer{})
+	templates, err := runner.FetchDomainTemplates("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(templates) != 2 || templates[0] != "1:dom-a" || templates[1] != "2:dom-b" {
+		t.Fatalf("unexpected templates: %v", templates)
+	}
+}
+
+func TestFetchParticipantTemplates(t *testing.T) {
+	// Real response shape: the list lives under "participants".
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /edge-systems/alpha/participant-templates": newJSONResponse(http.StatusOK, map[string]any{
+			"participants": []any{
+				map[string]any{"participant_id": "sensor-net", "name": "ignored-when-id-present"},
+				map[string]any{"name": "fallback-name"},
+			},
+		}),
+	}}
+	runner := New(api, &bytes.Buffer{})
+	templates, err := runner.FetchParticipantTemplates("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(templates) != 2 || templates[0] != "sensor-net" || templates[1] != "fallback-name" {
+		t.Fatalf("unexpected templates: %v", templates)
+	}
+}
+
+func TestFetchParticipantTemplates_UnknownEnvelopeKey(t *testing.T) {
+	// A renamed envelope key must degrade to the first array-of-objects value
+	// instead of reporting an empty catalogue.
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /edge-systems/alpha/participant-templates": newJSONResponse(http.StatusOK, map[string]any{
+			"count": 1.0,
+			"items": []any{
+				map[string]any{"participant_id": "sensor-net"},
+			},
+		}),
+	}}
+	runner := New(api, &bytes.Buffer{})
+	templates, err := runner.FetchParticipantTemplates("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(templates) != 1 || templates[0] != "sensor-net" {
+		t.Fatalf("unexpected templates: %v", templates)
+	}
+}
+
+func TestEnrollDeviceDirect_ReturnsNodeURL(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/ces-alpha-123/enroll-node": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate":        "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"caChain":            "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"domain_template_id": "1:dom-a",
+			"nodeUrl":            "https://svc.devices.cloud.rti.com",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(path string) ([]byte, error) {
+		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
+	}
+	domain, nodeURL, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "device.csr", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domain != "1:dom-a" {
+		t.Fatalf("unexpected domain: %s", domain)
+	}
+	if nodeURL != "https://svc.devices.cloud.rti.com" {
+		t.Fatalf("unexpected nodeURL: %s", nodeURL)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["serial"] != "SN001" || payload["domainTemplateId"] != "1:dom-a" || payload["participantTemplateId"] != "sensor-net" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}

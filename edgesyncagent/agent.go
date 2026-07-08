@@ -70,13 +70,23 @@ var displayArtifacts = []ArtifactID{ArtifactIdentity, ArtifactPermissions, Artif
 
 // EnrollRequest is the JSON payload placed in the inbox directory to request
 // enrollment of a new Participant Profile.
+//
+// Two enrollment modes are supported: campaign enrollment (CampaignToken set,
+// authenticated by the campaign JWT) and operator-initiated direct enrollment
+// (DomainTemplateID set, authenticated with the operator's management token).
 type EnrollRequest struct {
 	ServiceID     string   `json:"service_id"`
 	ParticipantID string   `json:"participant_id"`
-	CampaignToken string   `json:"campaign_token"`
+	CampaignToken string   `json:"campaign_token,omitempty"`
 	Serial        string   `json:"serial"`
 	MACs          []string `json:"macs"`
 	DeviceName    string   `json:"device_name"`
+
+	// DomainTemplateID selects the domain template for direct enrollment.
+	// When set (and CampaignToken is empty) the request is processed via
+	// EnrollDirectFunc; the server may still override the value in its
+	// response.
+	DomainTemplateID string `json:"domain_template_id,omitempty"`
 }
 
 // AgentState is the on-disk representation of a profile's artifact state.
@@ -253,7 +263,19 @@ type Agent struct {
 	// Provisioning Service operations — wired by NewRuntime, overridable in tests.
 	// EnrollFunc calls the enrollment API and returns the domain_template_id
 	// from the server response (empty string if not present in the response).
-	EnrollFunc             func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error)
+	EnrollFunc func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error)
+	// EnrollDirectFunc calls the operator-initiated direct enrollment API
+	// (management token, no campaign JWT).  It returns the domain_template_id
+	// confirmed by the server and the device endpoint URL (nodeUrl) from the
+	// enrollment response.
+	EnrollDirectFunc func(serviceID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error)
+	// Catalogue lookups for the operator enrollment wizard (require a
+	// logged-in management token; the first call triggers the login flow when
+	// no session exists).  Wired by NewRuntime.
+	ListServicesFunc             func() ([]string, error)
+	ListDomainTemplatesFunc      func(service string) ([]string, error)
+	ListParticipantTemplatesFunc func(service string) ([]string, error)
+
 	RequestIdentityFunc    func(url, cert, key, ca, serverAddr, csrFile, output string) error
 	RequestPermissionsFunc func(url, cert, key, ca, serverAddr, output string) error
 	RequestPSKFunc         func(url, cert, key, ca, serverAddr, output string) error
@@ -302,6 +324,18 @@ type Agent struct {
 	// MACs, when non-empty, is used as the MAC address list without
 	// prompting or auto-detecting.
 	MACs []string
+
+	// CampaignToken, when non-empty, enrolls the first profile with this
+	// campaign token without prompting (headless campaign enrollment).
+	CampaignToken string
+
+	// Service, DomainTemplateID and ParticipantTemplateID pre-answer the
+	// operator wizard questions (each set value skips its pick-list).  When
+	// all three are set, first-run enrollment proceeds without any prompting
+	// (headless direct enrollment).
+	Service               string
+	DomainTemplateID      string
+	ParticipantTemplateID string
 
 	// Internal state.
 	termOut      io.Writer          // original terminal writer for TUI rendering
@@ -756,7 +790,10 @@ func (a *Agent) processInboxFile(path string) {
 		a.removeInboxFile(path)
 		return
 	}
-	if req.ServiceID == "" || req.ParticipantID == "" || req.Serial == "" || len(req.MACs) == 0 {
+	// MACs are required by the campaign enrollment endpoint; direct
+	// (domain_template_id) requests may omit them.
+	if req.ServiceID == "" || req.ParticipantID == "" || req.Serial == "" ||
+		(req.DomainTemplateID == "" && len(req.MACs) == 0) {
 		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields (service_id, participant_id, serial, macs) path=%s", path)
 		a.removeInboxFile(path)
 		return
@@ -800,8 +837,23 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	}
 
 	// The participant template and serial (node) are passed separately so
-	// EnrollDevice writes directly into the layered node slot.
-	domainTemplateID, enrollErr := a.EnrollFunc(req.ServiceID, req.ParticipantID, req.Serial, req.MACs, csrPath, keyPath, req.CampaignToken)
+	// EnrollDevice writes directly into the layered node slot.  Direct
+	// (operator-initiated) requests carry a domain template instead of a
+	// campaign token and go through the enroll-node endpoint, which also
+	// returns the device endpoint URL.
+	var domainTemplateID, directNodeURL string
+	var enrollErr error
+	if req.DomainTemplateID != "" && req.CampaignToken == "" {
+		if a.EnrollDirectFunc == nil {
+			p.mu.Lock()
+			p.setState(StateUnregistered)
+			p.mu.Unlock()
+			return fmt.Errorf("direct enrollment is not configured")
+		}
+		domainTemplateID, directNodeURL, enrollErr = a.EnrollDirectFunc(req.ServiceID, req.DomainTemplateID, req.ParticipantID, req.Serial, req.MACs, req.DeviceName, csrPath, keyPath)
+	} else {
+		domainTemplateID, enrollErr = a.EnrollFunc(req.ServiceID, req.ParticipantID, req.Serial, req.MACs, csrPath, keyPath, req.CampaignToken)
+	}
 	if enrollErr != nil {
 		// HTTP 409 means the device is already enrolled in this campaign (e.g. a
 		// previous attempt succeeded but a later step failed).  The 409 response
@@ -857,8 +909,13 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 
 	// Derive and persist the device endpoint URL so that subsequent mTLS
 	// calls (identity, permissions, etc.) can resolve it from the store.
-	// Priority: (1) already stored, (2) device_domain from campaign token.
+	// Priority: (1) already stored, (2) nodeUrl from the direct enrollment
+	// response, (3) device_domain from campaign token.
 	url := a.Store.ResolveNodeURL(service, domain, participant, node)
+	if url == "" && directNodeURL != "" {
+		url = directNodeURL
+		_ = a.Store.WriteNodeURL(service, domain, participant, node, url)
+	}
 	if url == "" {
 		if deviceDomain := CampaignTokenDeviceDomain(req.CampaignToken); deviceDomain != "" {
 			url = "https://" + deviceDomain
@@ -869,6 +926,9 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		p.mu.Lock()
 		p.setState(StateUnregistered)
 		p.mu.Unlock()
+		if req.CampaignToken == "" {
+			return fmt.Errorf("cannot determine device endpoint URL; the enrollment response did not include nodeUrl")
+		}
 		return fmt.Errorf("cannot determine device endpoint URL; configure a region with 'rticloud configure --region <region>'")
 	}
 	cert, key, ca := a.Store.ResolveNodeMTLS(service, domain, participant, node, "", "", "")

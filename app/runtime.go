@@ -113,6 +113,12 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 	agentApp.EnrollFunc = func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error) {
 		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken)
 	}
+	agentApp.EnrollDirectFunc = func(serviceID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error) {
+		return commandRunner.EnrollDeviceDirect(serviceID, domainTemplateID, participantTemplateID, serial, macs, deviceName, csrFile, keyFile)
+	}
+	agentApp.ListServicesFunc = commandRunner.FetchEdgeSystems
+	agentApp.ListDomainTemplatesFunc = commandRunner.FetchDomainTemplates
+	agentApp.ListParticipantTemplatesFunc = commandRunner.FetchParticipantTemplates
 	// newAgentEdgeRunner builds an edgeprovision.Runner configured for the agent
 	// (log-file output + current debug flag).  Each artifact closure below builds
 	// one on demand because cert/key/ca/URL come from the per-call store slot.

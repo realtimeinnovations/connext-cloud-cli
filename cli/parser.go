@@ -1698,7 +1698,7 @@ Example:
 				if csrFile == "" {
 					return fmt.Errorf("--csr-file is required")
 				}
-				_, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile)
+				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile)
 				return err
 			},
 		}
@@ -1909,6 +1909,7 @@ mtls_artifacts/ directory.`,
 		var manualMode bool
 		var deviceID string
 		var agentMACs []string
+		var campaignToken string
 		c := &cobra.Command{
 			Use:   "agent",
 			Short: "Run the artifact lifecycle agent (foreground process)",
@@ -1917,9 +1918,15 @@ mtls_artifacts/ directory.`,
 The agent autonomously manages enrollment, identity certificates, permissions,
 PSK, and CRL for one or more Participant Profiles.
 
-On first run an interactive wizard prompts for a campaign token and immediately
-enrolls the device using the auto-detected serial number and MAC addresses.
-Use --manual to be prompted to confirm or override the detected values.
+On first run an interactive wizard enrolls the device, either directly with
+your Connext Cloud account (pick the Provisioning Service, Domain Template and
+Participant Template from lists; requires 'rticloud login') or with a campaign
+token issued by an operator.  The serial number and MAC addresses are
+auto-detected; use --manual to confirm or override them.
+
+For unattended provisioning skip the wizard entirely by passing either
+--campaign-token, or --service, --domain-tpl-id and --participant-tpl-id
+(direct enrollment with your management login).
 
 Once the agent is running, additional profiles can be enrolled with the
 'enroll' sub-command or by dropping an enroll-*.json file into the inbox
@@ -1934,8 +1941,17 @@ your container runtime for supervision.`,
 				}
 				runtime.EdgeSyncAgent.LogFile = logFile
 				runtime.EdgeSyncAgent.ManualMode = manualMode
+				// The edge-sync --serial persistent flag doubles as the agent
+				// device id so slot flags and first-run enrollment agree.
+				if deviceID == "" {
+					deviceID = serial
+				}
 				runtime.EdgeSyncAgent.DeviceID = deviceID
 				runtime.EdgeSyncAgent.MACs = agentMACs
+				runtime.EdgeSyncAgent.CampaignToken = campaignToken
+				runtime.EdgeSyncAgent.Service = service
+				runtime.EdgeSyncAgent.DomainTemplateID = domainID
+				runtime.EdgeSyncAgent.ParticipantTemplateID = participantID
 				err := runtime.EdgeSyncAgent.Run(cmd.Context())
 				if err == nil {
 					return nil
@@ -1954,6 +1970,7 @@ your container runtime for supervision.`,
 		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override auto-detected serial number and MAC addresses during first-run enrollment")
 		c.Flags().StringVar(&deviceID, "device-id", "", "Device identifier (serial number) to use instead of auto-detecting")
 		c.Flags().StringSliceVar(&agentMACs, "macs", nil, "Comma-separated MAC addresses to use instead of auto-detecting")
+		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT for headless first-run enrollment (skips the wizard)")
 
 		{ // agent enroll
 			var campaignToken, serial, deviceName string
@@ -1964,23 +1981,20 @@ your container runtime for supervision.`,
 				Long: `Write an enrollment request to the agent inbox.
 
 The agent picks up the request within its poll interval (default 10 s) and
-runs the full enrollment flow autonomously.  The campaign token is decoded to
-extract the service ID and participant ID automatically.`,
+runs the full enrollment flow autonomously.
+
+With --campaign-token, the token is decoded to extract the service ID and
+participant ID automatically.  Without it, pass --service, --domain-tpl-id and
+--participant-tpl-id for a direct (operator-initiated) enrollment using the
+agent's management login.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
-					if campaignToken == "" {
-						return fmt.Errorf("--campaign-token is required")
-					}
-					if deviceName == "" {
-						return fmt.Errorf("--device-name is required (the name registered in the inventory)")
+					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
+						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
 					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
 						return err
-					}
-					serviceID, participantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
-					if err != nil {
-						return fmt.Errorf("invalid campaign token: %w", err)
 					}
 					if serial == "" {
 						serial = edgesyncagent.DetectSerial()
@@ -1988,16 +2002,35 @@ extract the service ID and participant ID automatically.`,
 					if len(macs) == 0 {
 						macs = edgesyncagent.DetectMACs()
 					}
-					req := edgesyncagent.EnrollRequest{
-						ServiceID:     serviceID,
-						ParticipantID: participantID,
-						CampaignToken: campaignToken,
-						Serial:        serial,
-						MACs:          macs,
-						DeviceName:    deviceName,
+					var req edgesyncagent.EnrollRequest
+					if campaignToken != "" {
+						if deviceName == "" {
+							return fmt.Errorf("--device-name is required (the name registered in the inventory)")
+						}
+						serviceID, tokenParticipantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
+						if err != nil {
+							return fmt.Errorf("invalid campaign token: %w", err)
+						}
+						req = edgesyncagent.EnrollRequest{
+							ServiceID:     serviceID,
+							ParticipantID: tokenParticipantID,
+							CampaignToken: campaignToken,
+							Serial:        serial,
+							MACs:          macs,
+							DeviceName:    deviceName,
+						}
+					} else {
+						req = edgesyncagent.EnrollRequest{
+							ServiceID:        service,
+							DomainTemplateID: domainID,
+							ParticipantID:    participantID,
+							Serial:           serial,
+							MACs:             macs,
+							DeviceName:       deviceName,
+						}
 					}
 					data, _ := json.MarshalIndent(req, "", "  ")
-					fname := strings.ReplaceAll(serviceID+"-"+participantID, "/", "_") + ".json"
+					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
 					dest := filepath.Join(inboxDir, "enroll-"+fname)
 					if err := os.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
 						return err
@@ -2007,7 +2040,7 @@ extract the service ID and participant ID automatically.`,
 					return nil
 				},
 			}
-			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required)")
+			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (omit for direct enrollment via --service/--domain-tpl-id/--participant-tpl-id)")
 			enroll.Flags().StringVar(&deviceName, "device-name", "", "Device name as registered in the inventory (used as CSR Common Name prefix)")
 			enroll.Flags().StringVar(&serial, "serial", "", "Device serial number (auto-detected if omitted)")
 			enroll.Flags().StringArrayVar(&macs, "mac", nil, "MAC address (auto-detected if omitted; repeatable)")

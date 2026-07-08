@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -948,6 +949,110 @@ func (runner *Runner) DeleteParticipantTemplate(edgeSystem string, templateName 
 		fmt.Sprintf("Participant template '%s' deleted from Provisioning Service '%s'.", templateName, edgeSystem))
 }
 
+// ── Catalogue fetchers ────────────────────────────────────────────────────────
+// Data-returning variants of the List* commands above.  The List* commands
+// pretty-print the raw response to Out; these decode it so interactive flows
+// (e.g. the edge-sync agent first-run wizard) can present pick-lists.  Non-200
+// responses become errors instead of printed diagnostics.
+
+// fetchJSONMap performs a GET and decodes the JSON object response.
+func (runner *Runner) fetchJSONMap(path string) (map[string]any, error) {
+	response, err := runner.API.Get(path)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s", httputil.FormatError(response.StatusCode, body))
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// itemIDs extracts an identifier from each element of the first list found
+// under one of listKeys, trying idKeys in order per item.  When none of the
+// expected envelope keys match, it falls back to the first array-of-objects
+// value in the payload so a renamed envelope key degrades gracefully instead
+// of reporting an empty catalogue.
+func itemIDs(payload map[string]any, listKeys []string, idKeys ...string) []string {
+	for _, listKey := range listKeys {
+		if items, ok := payload[listKey].([]any); ok {
+			return idsFromItems(items, idKeys)
+		}
+	}
+	for _, value := range payload {
+		items, ok := value.([]any)
+		if !ok || len(items) == 0 {
+			continue
+		}
+		if _, isObject := items[0].(map[string]any); isObject {
+			return idsFromItems(items, idKeys)
+		}
+	}
+	return nil
+}
+
+func idsFromItems(items []any, idKeys []string) []string {
+	ids := make([]string, 0, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, idKey := range idKeys {
+			if v, _ := item[idKey].(string); v != "" {
+				ids = append(ids, v)
+				break
+			}
+		}
+	}
+	return ids
+}
+
+// FetchEdgeSystems returns the identifiers of all Provisioning Services on the
+// account, sorted.
+func (runner *Runner) FetchEdgeSystems() ([]string, error) {
+	payload, err := runner.fetchJSONMap(edgePath("edge-systems"))
+	if err != nil {
+		return nil, err
+	}
+	if systems, ok := payload["edgeSystems"].(map[string]any); ok {
+		names := make([]string, 0, len(systems))
+		for name := range systems {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+	return itemIDs(payload, []string{"edgeSystems", "edge_systems"}, "edge_system_id", "id", "name"), nil
+}
+
+// FetchDomainTemplates returns the Domain Template IDs of a Provisioning
+// Service (the templateId field, e.g. "1:my-domain").
+func (runner *Runner) FetchDomainTemplates(edgeSystem string) ([]string, error) {
+	payload, err := runner.fetchJSONMap(edgePath("edge-systems", edgeSystem, "domain-templates"))
+	if err != nil {
+		return nil, err
+	}
+	return itemIDs(payload, []string{"domain_templates", "domainTemplates", "templates"},
+		"templateId", "template_id", "id"), nil
+}
+
+// FetchParticipantTemplates returns the Participant Template IDs of a
+// Provisioning Service (the participant_id field).
+func (runner *Runner) FetchParticipantTemplates(edgeSystem string) ([]string, error) {
+	payload, err := runner.fetchJSONMap(edgePath("edge-systems", edgeSystem, "participant-templates"))
+	if err != nil {
+		return nil, err
+	}
+	return itemIDs(payload, []string{"participants", "participant_templates", "participantTemplates", "templates"},
+		"participant_id", "participantId", "name"), nil
+}
+
 // ── Campaigns ───────────────────────────────────────────────────────────
 
 func parseDevicesFromCSV(data []byte) ([]any, error) {
@@ -1133,11 +1238,15 @@ func stringField(m map[string]any, key string) string {
 // Provisioning Service identified by edgeSystemID.  serial is the unique
 // identifier chosen by the operator for this participant.  macs and deviceName
 // are optional.
-func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, error) {
+//
+// Returns the domain_template_id confirmed by the server and the device
+// endpoint URL (nodeUrl) from the enrollment response, so callers such as the
+// edge-sync agent can route subsequent mTLS calls without a campaign token.
+func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error) {
 	data, err := runner.ReadFile(csrFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-		return "", fmt.Errorf("reading CSR file: %w", err)
+		return "", "", fmt.Errorf("reading CSR file: %w", err)
 	}
 	payload := map[string]any{
 		"serial":                serial,
@@ -1154,17 +1263,17 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	path := edgePath("edge-systems", edgeSystemID, "enroll-node")
 	response, err := runner.API.Post(path, payload)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK {
 		runner.printResponseError("Error: ", response.StatusCode, body)
-		return "", fmt.Errorf("HTTP %d: direct enrollment rejected", response.StatusCode)
+		return "", "", fmt.Errorf("HTTP %d: direct enrollment rejected", response.StatusCode)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// The server confirms (or overrides) the domain_template_id; fall back to
@@ -1194,7 +1303,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 			}
 		}
 		if err := runner.EdgeStore.WriteEnrollArtifacts(service, domain, participantTemplateID, node, arts); err != nil {
-			return retDomainTemplateID, err
+			return retDomainTemplateID, nodeURL, err
 		}
 		// Persist the device endpoint URL into the node slot so subsequent
 		// commands (e.g. edge-sync identity) resolve it from the correct
@@ -1216,13 +1325,13 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		}
 		_, _ = fmt.Fprintf(runner.Out, "\nEnrolled successfully.\n  Service:          %s\n  Domain Template:  %s\n  Participant:      %s\n  Store:            %s\n",
 			edgeSystemID, domain, participantTemplateID, runner.EdgeStore.NodeAgentDir(service, domain, participantTemplateID, node))
-		return retDomainTemplateID, nil
+		return retDomainTemplateID, nodeURL, nil
 	}
 
 	// No local store configured (unit tests / dry run): print the raw response.
 	formatted, _ := json.MarshalIndent(result, "", "  ")
 	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return retDomainTemplateID, nil
+	return retDomainTemplateID, nodeURL, nil
 }
 
 // enrollExtractLease picks "lease" and "server_time_utc" from an enrollment
