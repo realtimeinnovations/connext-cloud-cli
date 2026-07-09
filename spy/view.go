@@ -66,7 +66,8 @@ type LiveView struct {
 }
 
 type TerminalRenderer struct {
-	Out io.Writer
+	Out    io.Writer
+	screen *tui.Screen
 }
 
 func NewLiveView(config map[string]any) *LiveView {
@@ -208,13 +209,24 @@ func spySummaryChip(status string, activeTopicCount int, connectedHostCount int,
 	return fmt.Sprintf("[yellow]◌ %s[/yellow]", short)
 }
 
-func (renderer TerminalRenderer) Render(view RenderedView) error {
-	if renderer.Out == nil {
+func (renderer *TerminalRenderer) Render(view RenderedView) error {
+	if renderer == nil || renderer.Out == nil {
 		return nil
 	}
+	if renderer.screen == nil {
+		renderer.screen = tui.NewScreen(renderer.Out)
+	}
 	width, height := tui.TerminalSize(renderer.Out, spyDefaultWidth, spyDefaultHeight)
-	_, err := io.WriteString(renderer.Out, renderANSIForSize(view, width, height))
-	return err
+	return renderer.screen.Paint(renderFrameLines(view, width, height), width, height)
+}
+
+// Finish restores the cursor once the live view is done so follow-up messages
+// print below the last frame.
+func (renderer *TerminalRenderer) Finish() error {
+	if renderer == nil || renderer.screen == nil {
+		return nil
+	}
+	return renderer.screen.Finish()
 }
 
 func renderANSI(view RenderedView) string {
@@ -222,6 +234,10 @@ func renderANSI(view RenderedView) string {
 }
 
 func renderANSIForSize(view RenderedView, width int, height int) string {
+	return strings.Join(renderFrameLines(view, width, height), "\n")
+}
+
+func renderFrameLines(view RenderedView, width int, height int) []string {
 	if width <= 0 {
 		width = spyDefaultWidth
 	}
@@ -251,7 +267,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	available := tui.MaxInt(2, height-fixed)
 	topicBudget := tui.MinInt(len(topicLines), tui.MaxInt(1, available/2))
 	sampleBudget := tui.MaxInt(1, available-topicBudget)
-	lines := []string{"\x1b[H\x1b[J"}
+	lines := []string{""}
 	lines = append(lines, summary...)
 	lines = append(lines, "")
 	lines = append(lines, tui.RenderPanel("Topics", resizeLines(topicLines, topicBudget), width, topicsPanelTheme())...)
@@ -261,7 +277,7 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		lines = append(lines, "")
 		lines = append(lines, tui.RenderPanel("Statistics", resizeLines(statsLines, tui.MinInt(len(statsLines), 4)), width, topicsPanelTheme())...)
 	}
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 func formatSummaryLines(line SummaryLine, contentWidth int) []string {
@@ -296,7 +312,7 @@ func formatHostsLine(hosts []string, contentWidth int) string {
 }
 
 func formatTopicHeader(contentWidth int) string {
-	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", tui.Dim(tui.PadDisplay("IO", 4)), tui.Dim(tui.PadDisplay("Topic", 24)), tui.Dim(tui.PadDisplay("Type", 18)), tui.Dim(tui.PadDisplay("W/R", 5)), tui.Dim(tui.PadDisplay("Samples", 7)), tui.Dim(tui.PadDisplay("Last sample", tui.MaxInt(12, contentWidth-70))))
+	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", tui.StyleColumnHeader("IO", 4), tui.StyleColumnHeader("Topic", 24), tui.StyleColumnHeader("Type", 18), tui.StyleColumnHeader("W/R", 5), tui.StyleColumnHeader("Samples", 7), tui.StyleColumnHeader("Last sample", tui.MaxInt(12, contentWidth-70)))
 }
 
 func formatTopicLine(topic RenderedTopic, contentWidth int) string {

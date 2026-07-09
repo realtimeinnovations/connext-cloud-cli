@@ -29,7 +29,7 @@ const (
 	CancelGatewaySetupLabel    = "Cancel gateway setup"
 	RoutingLogName             = "routing.log"
 	routingRenderPollInterval  = 50 * time.Millisecond
-	routingLiveRefreshInterval = 250 * time.Millisecond
+	routingLiveRefreshInterval = 100 * time.Millisecond
 )
 
 type TemplateItem = common.TemplateItem
@@ -433,6 +433,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	liveView.CollectorStatus = "running"
 	liveView.CollectorSecure = collectorSecure
 	renderer := TerminalRenderer{Out: app.Out}
+	defer func() { _ = renderer.Finish() }()
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.CollectorDir()
@@ -563,6 +564,7 @@ done:
 	if !options.TextOutput {
 		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 	}
+	_ = renderer.Finish()
 	if exitErr != nil {
 		if exitErr, ok := exitErr.(*exec.ExitError); ok {
 			if interrupted {
@@ -620,6 +622,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		}
 	}
 	renderer := TerminalRenderer{Out: app.Out}
+	defer func() { _ = renderer.Finish() }()
 	logFile, err := os.OpenFile(app.RoutingLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
@@ -804,6 +807,7 @@ done:
 			if !options.TextOutput {
 				_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 			}
+			_ = renderer.Finish()
 			if interrupted {
 				_, _ = fmt.Fprintf(app.Out, "Gateway interrupted.\n")
 			} else {
@@ -820,6 +824,7 @@ done:
 	if !options.TextOutput {
 		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 	}
+	_ = renderer.Finish()
 	if interrupted {
 		_, _ = fmt.Fprintf(app.Out, "Gateway interrupted.\n")
 	}
