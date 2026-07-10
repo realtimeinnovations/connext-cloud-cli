@@ -654,6 +654,36 @@ func TestLoginWithDeviceFlowRejectsMissingInitiationFields(t *testing.T) {
 	}
 }
 
+func TestLoginWithDeviceFlowReportsInitiationNotFoundAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/auth/device":
+			writer.WriteHeader(http.StatusNotFound)
+			_, _ = writer.Write([]byte("<!doctype html><title>404 Not Found</title>"))
+		case "/api/v1/auth/device/token":
+			t.Fatal("token polling should not start when device authorization is unavailable")
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	manager, out, _, _ := newDeviceFlowTestManager(t, server.URL+"/api/v1")
+	token, err := manager.LoginWithDeviceFlow()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if token != "" {
+		t.Fatalf("LoginWithDeviceFlow() token = %q, want empty", token)
+	}
+	if got, want := err.Error(), "Error: Device authorization not available on this Connext Cloud server"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("unexpected device instructions for unavailable server: %s", out.String())
+	}
+}
+
 func TestLoginWithDeviceFlowFormatsNonDeviceTokenErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

@@ -536,6 +536,9 @@ func (manager *Manager) startDeviceAuthorization(apiHost string, payload deviceA
 		return deviceAuthorizationResponse{}, err
 	}
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusNotFound {
+			return deviceAuthorizationResponse{}, fmt.Errorf("Error: Device authorization not available on this Connext Cloud server")
+		}
 		return deviceAuthorizationResponse{}, fmt.Errorf("Error: Device authorization failed: %s", httputil.FormatError(response.StatusCode, responseBody))
 	}
 	var authorization deviceAuthorizationResponse
