@@ -389,12 +389,12 @@ func TestSecureSpyCredentialsSavedNextToAppXML(t *testing.T) {
 			return nil, UserError{Message: path}
 		}
 		return map[string]any{"secure_files": map[string]any{
-			"client.crt":             base64.StdEncoding.EncodeToString([]byte("cert")),
-			"identity_ca.crt":        base64.StdEncoding.EncodeToString([]byte("identity")),
-			"permissions_ca.crt":     base64.StdEncoding.EncodeToString([]byte("permissions")),
-			"signed_governance.p7s":  base64.StdEncoding.EncodeToString([]byte("governance")),
-			"signed_permissions.p7s": base64.StdEncoding.EncodeToString([]byte("signed")),
-			"psk.key":                base64.StdEncoding.EncodeToString([]byte("psk")),
+			"client.crt":         base64.StdEncoding.EncodeToString([]byte("cert")),
+			"identity_ca.crt":    base64.StdEncoding.EncodeToString([]byte("identity")),
+			"permissions_ca.crt": base64.StdEncoding.EncodeToString([]byte("permissions")),
+			"governance.p7s":     base64.StdEncoding.EncodeToString([]byte("governance")),
+			"permissions.p7s":    base64.StdEncoding.EncodeToString([]byte("signed")),
+			"psk.key":            base64.StdEncoding.EncodeToString([]byte("psk")),
 		}}, nil
 	}
 	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}, "clients": map[string]any{"app_client_id": "app_1-1"}}

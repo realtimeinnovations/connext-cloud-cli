@@ -43,15 +43,15 @@ func TestLayeredPaths_Default(t *testing.T) {
 		{"PermissionsCAPath", s.PermissionsCAPath(svc, dom), filepath.Join(domainRoot, "permissions_ca.crt")},
 
 		{"DomainDir", s.DomainDir(svc, dom), filepath.Join(connextRoot, dom)},
-		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, dom, "signed_governance.p7s")},
+		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, dom, "governance.p7s")},
 		{"CRLPath", s.CRLPath(svc, dom), filepath.Join(connextRoot, dom, "crl.pem")},
 
 		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node)},
 		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.crt")},
 		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.key")},
 		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.lease.json")},
-		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "signed_permissions.p7s")},
-		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "signed_permissions.lease.json")},
+		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "permissions.p7s")},
+		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "permissions.lease.json")},
 
 		{"NodeAgentDir", s.NodeAgentDir(svc, dom, part, node), mtlsNode},
 		{"NodeCertPath", s.NodeCertPath(svc, dom, part, node), filepath.Join(mtlsNode, "node.crt")},

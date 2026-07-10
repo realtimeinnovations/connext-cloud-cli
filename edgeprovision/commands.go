@@ -244,14 +244,14 @@ func (runner *Runner) RequestPermissions(url, certFile, keyFile, caFile, serverA
 		return err
 	}
 	docSMIME, _ := result["permissionsDocSmime"].(string)
-	dest := resolveOutputPath(output, "signed_permissions.p7s")
+	dest := resolveOutputPath(output, "permissions.p7s")
 	if err := runner.saveToFile(dest, []byte(docSMIME)); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Permissions document saved to %s\n", dest)
 	if leaseData := extractLease(result); leaseData != nil {
 		leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
-		leaseDest := filepath.Join(filepath.Dir(dest), "signed_permissions.lease.json")
+		leaseDest := filepath.Join(filepath.Dir(dest), "permissions.lease.json")
 		if err := runner.saveToFile(leaseDest, append(leaseJSON, '\n')); err != nil {
 			return err
 		}

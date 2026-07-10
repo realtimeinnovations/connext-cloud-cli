@@ -312,8 +312,8 @@ func TestRequestPermissionsToFileWritesLease(t *testing.T) {
 	if written["permissions.p7s"] == nil {
 		t.Fatal("expected permissions file to be written")
 	}
-	if !strings.Contains(string(written["signed_permissions.lease.json"]), "notAfter") {
-		t.Fatalf("expected signed_permissions.lease.json with lease data; got %s", written["signed_permissions.lease.json"])
+	if !strings.Contains(string(written["permissions.lease.json"]), "notAfter") {
+		t.Fatalf("expected permissions.lease.json with lease data; got %s", written["permissions.lease.json"])
 	}
 	if !strings.Contains(out.String(), "Permissions lease saved to") {
 		t.Fatalf("unexpected stdout: %s", out.String())
@@ -454,8 +454,8 @@ func TestRequestPermissionsToDirectory(t *testing.T) {
 	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
 		t.Fatal(err)
 	}
-	if wrotePath != filepath.Join(dir, "signed_permissions.p7s") {
-		t.Fatalf("expected signed_permissions.p7s in dir, got %q", wrotePath)
+	if wrotePath != filepath.Join(dir, "permissions.p7s") {
+		t.Fatalf("expected permissions.p7s in dir, got %q", wrotePath)
 	}
 }
 

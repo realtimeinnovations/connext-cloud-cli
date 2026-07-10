@@ -975,7 +975,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 			p.issuedAt[ArtifactIdentity] = enrolledAt
 		}
 	}
-	if nb, na := a.readLease(filepath.Join(nodeDir, "signed_permissions.lease.json")); !na.IsZero() {
+	if nb, na := a.readLease(filepath.Join(nodeDir, "permissions.lease.json")); !na.IsZero() {
 		p.notAfter[ArtifactPermissions] = na
 		if !nb.IsZero() {
 			p.issuedAt[ArtifactPermissions] = nb

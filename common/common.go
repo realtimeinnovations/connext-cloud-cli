@@ -120,8 +120,8 @@ var SecureFiles = []string{
 	"client.crt",
 	"identity_ca.crt",
 	"permissions_ca.crt",
-	"signed_governance.p7s",
-	"signed_permissions.p7s",
+	"governance.p7s",
+	"permissions.p7s",
 	"psk.key",
 }
 

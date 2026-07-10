@@ -37,7 +37,7 @@ type EnrollArtifacts struct {
 	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
 	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/<domain>/ (0644)
 	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
-	GovernanceP7S []byte // written to connext_artifacts/signed_governance.p7s (0644)
+	GovernanceP7S []byte // written to connext_artifacts/governance.p7s (0644)
 }
 
 // New creates a Store rooted at baseDir with real OS file operations.
@@ -65,8 +65,8 @@ func (s *Store) fileExists(path string) bool {
 //	  <service>/
 //	    connext_artifacts/
 //	      <domain>/                                     DOMAIN: identity_ca.crt, permissions_ca.crt,
-//	                                                            crl.pem, signed_governance.p7s, psk_*
-//	        <participant>/<node>/                       NODE:   identity.crt, signed_permissions.p7s, leases
+//	                                                            crl.pem, governance.p7s, psk_*
+//	        <participant>/<node>/                       NODE:   identity.crt, permissions.p7s, leases
 //	    mtls_artifacts/
 //	      <domain>/<participant>/<node>/                NODE:   node.crt, node.key, ca-chain.crt, node_url,
 //	                                                            agent_state.json
@@ -130,7 +130,7 @@ func (s *Store) DomainDir(service, domain string) string {
 
 // GovernancePath is the signed governance document, shared across the domain.
 func (s *Store) GovernancePath(service, domain string) string {
-	return filepath.Join(s.DomainDir(service, domain), "signed_governance.p7s")
+	return filepath.Join(s.DomainDir(service, domain), "governance.p7s")
 }
 
 // CRLPath is the certificate revocation list, shared across the domain.
@@ -162,12 +162,12 @@ func (s *Store) IdentityLeasePath(service, domain, participant, node string) str
 
 // PermissionsPath is the signed permissions document for a node.
 func (s *Store) PermissionsPath(service, domain, participant, node string) string {
-	return filepath.Join(s.NodeDir(service, domain, participant, node), "signed_permissions.p7s")
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "permissions.p7s")
 }
 
 // PermissionsLeasePath is the permissions lease window for a node.
 func (s *Store) PermissionsLeasePath(service, domain, participant, node string) string {
-	return filepath.Join(s.NodeDir(service, domain, participant, node), "signed_permissions.lease.json")
+	return filepath.Join(s.NodeDir(service, domain, participant, node), "permissions.lease.json")
 }
 
 // MTLSRoot returns the root of the per-node mTLS/agent-state tree for the
@@ -215,7 +215,7 @@ func (s *Store) NodeStatePath(service, domain, participant, node string) string 
 //
 //	node.crt / node.key / ca-chain.crt   → NodeAgentDir (mTLS, per node)
 //	identity_ca.crt + permissions_ca.crt → ServiceDir   (shared by the service)
-//	signed_governance.p7s                → DomainDir     (shared by the domain)
+//	governance.p7s                → DomainDir     (shared by the domain)
 //
 // Fields with nil or empty bytes are silently skipped.
 func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, a EnrollArtifacts) error {

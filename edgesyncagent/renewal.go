@@ -229,7 +229,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 		}
 	case ArtifactPermissions:
 		if err = a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err == nil {
-			newNotBefore, newNotAfter = a.readLease(filepath.Join(nodeDir, "signed_permissions.lease.json"))
+			newNotBefore, newNotAfter = a.readLease(filepath.Join(nodeDir, "permissions.lease.json"))
 		}
 	case ArtifactPSK:
 		var pskA, pskB pskSlotLease
