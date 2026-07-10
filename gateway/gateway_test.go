@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -613,6 +614,42 @@ func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
 	layout := view.Render(0)
 	if len(layout.LogLines) != 1 || layout.LogLines[0] != "collector connected to telemetry service" {
 		t.Fatalf("unexpected collector log lines: %#v", layout.LogLines)
+	}
+}
+
+func TestDiagnosticsPanelAppearsImmediatelyAboveGatewayLog(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"databus": "db",
+		"templates": map[string]any{
+			"gateway": "gw",
+		},
+	})
+	view.HandleLine("ERROR " + diagnostics.UDPUnicastSocketCreateFailure + " (errno = 48)")
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+
+	routes := strings.Index(rendered, "╭─ Routes")
+	attention := strings.Index(rendered, "╭─ ⚠ Needs attention")
+	logs := strings.Index(rendered, "╭─ Routing Log")
+	if routes < 0 || attention < routes || logs < attention {
+		t.Fatalf("expected Routes, Needs attention, Routing Log order:\n%s", rendered)
+	}
+}
+
+func TestDiagnosticsPanelAppearsBetweenSummaryAndCollectorLog(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.HandleCollectorLine("ERROR " + diagnostics.UDPUnicastSocketCreateFailure + " (errno = 48)")
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+
+	summary := strings.Index(rendered, "Connext Cloud Gateway")
+	attention := strings.Index(rendered, "╭─ ⚠ Needs attention")
+	logs := strings.Index(rendered, "╭─ Collector Log")
+	if summary < 0 || attention < summary || logs < attention || strings.Contains(rendered, "╭─ Routes") {
+		t.Fatalf("expected Summary, Needs attention, Collector Log order without routes:\n%s", rendered)
 	}
 }
 
