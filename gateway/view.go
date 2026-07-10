@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -46,6 +47,7 @@ type RenderedView struct {
 	HideRoutes      bool
 	LogTitle        string
 	LogEmptyMessage string
+	Findings        []diagnostics.Finding
 }
 
 type KeyValueRow struct {
@@ -63,6 +65,7 @@ type RoutingLiveView struct {
 	CollectorStatusFunc func(config map[string]any, collectorName string) string
 	LastSnapshot        RenderedView
 	Enabled             bool
+	Detector            *diagnostics.Detector
 }
 
 type TerminalRenderer struct {
@@ -76,19 +79,22 @@ func NewRoutingLiveView(config map[string]any) *RoutingLiveView {
 		State:           NewRoutingState(RoutingLiveLogLines),
 		CollectorStatus: "not configured",
 		Enabled:         true,
+		Detector:        diagnostics.NewDetector(),
 	}
 }
 
-func (view *RoutingLiveView) HandleLine(line string) {
+func (view *RoutingLiveView) HandleLine(line string) (diagnostics.Finding, bool) {
 	view.State.Update(line)
+	return view.Detector.Observe("routing", line)
 }
 
-func (view *RoutingLiveView) HandleCollectorLine(line string) {
+func (view *RoutingLiveView) HandleCollectorLine(line string) (diagnostics.Finding, bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
-		return
+		return diagnostics.Finding{}, false
 	}
 	view.State.appendLog("collector " + trimmed)
+	return view.Detector.Observe("collector", line)
 }
 
 func (view *RoutingLiveView) SeedFromConfig(xmlPath string) {
@@ -144,6 +150,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 			HideRoutes:      true,
 			LogTitle:        "Collector Log",
 			LogEmptyMessage: "Waiting for telemetry from Connext applications and gateways.",
+			Findings:        view.Detector.Findings(),
 		}
 	}
 	topicRows := VisibleTopicRows(view.State.TopicRows())
@@ -197,6 +204,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		Routes:   routes,
 		LogLines: view.State.RecentLogs(),
 		Border:   tui.RTIOrange,
+		Findings: view.Detector.Findings(),
 	}
 }
 
@@ -428,8 +436,12 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 		formatSummaryPanelLine(view.Header, contentWidth),
 		formatSummaryPanelLine(view.Resource, contentWidth),
 	}, width, summaryPanelTheme())
+	diagnosticsPanel := tui.RenderDiagnosticsPanel(view.Findings, width)
 	if view.HideRoutes {
 		fixedOverhead := 1 + len(summaryPanel) + 1 + 2
+		if len(diagnosticsPanel) > 0 {
+			fixedOverhead += len(diagnosticsPanel) + 1
+		}
 		logBudget := height - fixedOverhead
 		if logBudget <= 0 {
 			logBudget = 1
@@ -438,10 +450,17 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 		lines := []string{""}
 		lines = append(lines, summaryPanel...)
 		lines = append(lines, "")
+		if len(diagnosticsPanel) > 0 {
+			lines = append(lines, diagnosticsPanel...)
+			lines = append(lines, "")
+		}
 		lines = append(lines, logsPanel...)
 		return lines
 	}
 	fixedOverhead := 1 + len(summaryPanel) + 1 + 2 + 1 + 2
+	if len(diagnosticsPanel) > 0 {
+		fixedOverhead += len(diagnosticsPanel) + 1
+	}
 	available := height - fixedOverhead
 	routeBudget, logBudget := splitSectionBudget(available, len(routeLines), len(logLines))
 	if routeBudget <= 0 {
@@ -457,6 +476,10 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 	lines = append(lines, "")
 	lines = append(lines, routesPanel...)
 	lines = append(lines, "")
+	if len(diagnosticsPanel) > 0 {
+		lines = append(lines, diagnosticsPanel...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, logsPanel...)
 	return lines
 }

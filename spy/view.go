@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -50,12 +51,13 @@ type RenderedStats struct {
 }
 
 type RenderedView struct {
-	Title   string
-	Header  SummaryLine
-	Topics  []RenderedTopic
-	Samples []RenderedSample
-	Stats   RenderedStats
-	Border  string
+	Title    string
+	Header   SummaryLine
+	Topics   []RenderedTopic
+	Samples  []RenderedSample
+	Stats    RenderedStats
+	Border   string
+	Findings []diagnostics.Finding
 }
 
 type LiveView struct {
@@ -63,6 +65,7 @@ type LiveView struct {
 	State         *SpyState
 	DatabusSecure bool
 	LastSnapshot  RenderedView
+	Detector      *diagnostics.Detector
 }
 
 type TerminalRenderer struct {
@@ -71,11 +74,12 @@ type TerminalRenderer struct {
 }
 
 func NewLiveView(config map[string]any) *LiveView {
-	return &LiveView{Config: config, State: NewSpyState(SpyLiveLogLines)}
+	return &LiveView{Config: config, State: NewSpyState(SpyLiveLogLines), Detector: diagnostics.NewDetector()}
 }
 
-func (view *LiveView) HandleLine(line string) {
+func (view *LiveView) HandleLine(line string) (diagnostics.Finding, bool) {
 	view.State.Update(line)
+	return view.Detector.Observe("spy", line)
 }
 
 func (view *LiveView) PulseFrame(now ...float64) int {
@@ -152,12 +156,13 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 	}
 	writers, readers := view.State.EndpointTotals()
 	return RenderedView{
-		Title:   SpyPanelTitle(),
-		Header:  header,
-		Topics:  topics,
-		Samples: samples,
-		Stats:   RenderedStats{DataWriters: writers, DataReaders: readers, Rows: view.State.StatisticsRows()},
-		Border:  SpyOrange,
+		Title:    SpyPanelTitle(),
+		Header:   header,
+		Topics:   topics,
+		Samples:  samples,
+		Stats:    RenderedStats{DataWriters: writers, DataReaders: readers, Rows: view.State.StatisticsRows()},
+		Border:   SpyOrange,
+		Findings: view.Detector.Findings(),
 	}
 }
 
@@ -263,7 +268,11 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 		}
 	}
 	statsLines := formatStatisticsLines(view.Stats, contentWidth)
+	diagnosticsPanel := tui.RenderDiagnosticsPanel(view.Findings, width)
 	fixed := 1 + len(summary) + 1 + 2 + 1 + 2 + 1 + tui.MinInt(len(statsLines)+2, 6)
+	if len(diagnosticsPanel) > 0 {
+		fixed += len(diagnosticsPanel) + 1
+	}
 	available := tui.MaxInt(2, height-fixed)
 	topicBudget := tui.MinInt(len(topicLines), tui.MaxInt(1, available/2))
 	sampleBudget := tui.MaxInt(1, available-topicBudget)
@@ -272,6 +281,10 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 	lines = append(lines, "")
 	lines = append(lines, tui.RenderPanel("Topics", resizeLines(topicLines, topicBudget), width, topicsPanelTheme())...)
 	lines = append(lines, "")
+	if len(diagnosticsPanel) > 0 {
+		lines = append(lines, diagnosticsPanel...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, tui.RenderPanel("Samples", resizeLines(sampleLines, sampleBudget), width, samplesPanelTheme())...)
 	if len(statsLines) > 0 {
 		lines = append(lines, "")
