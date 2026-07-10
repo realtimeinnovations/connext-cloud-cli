@@ -240,8 +240,12 @@ func TestLoginIncludesStateAndExchangesCode(t *testing.T) {
 	if !strings.HasPrefix(gotRedirectURI, "http://localhost:") || !strings.HasSuffix(gotRedirectURI, "/callback") {
 		t.Fatalf("redirect_uri = %q, want http://localhost:{port}/callback", gotRedirectURI)
 	}
-	if !strings.Contains(out.String(), "If you are logging in remotely on another machine, run: rticloud login --device") {
+	loginOutput := out.String()
+	if !strings.Contains(loginOutput, "If the browser does not open, or you're logging in on a remote machine, run: rticloud login --device") {
 		t.Fatalf("login output missing device hint: %s", out.String())
+	}
+	if strings.Contains(loginOutput, openedURL) {
+		t.Fatalf("login output leaked authorization URL: %s", loginOutput)
 	}
 }
 
