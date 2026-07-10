@@ -374,8 +374,7 @@ func (manager *Manager) Login() (string, error) {
 	}()
 	defer server.Close()
 	_, _ = fmt.Fprintln(manager.Stdout, "Opening browser for login...")
-	_, _ = fmt.Fprintf(manager.Stdout, "If the browser does not open, visit this URL manually:\n  %s\n", authorizationURL)
-	_, _ = fmt.Fprintln(manager.Stdout, "If you are logging in remotely on another machine, run: rticloud login --device")
+	_, _ = fmt.Fprintln(manager.Stdout, "If the browser does not open, or you're logging in on a remote machine, run: rticloud login --device")
 	_ = manager.OpenBrowser(authorizationURL)
 	select {
 	case result := <-resultCh:
