@@ -216,15 +216,22 @@ func newConfigureCommand(runtime *app.Runtime) *cobra.Command {
 }
 
 func newLoginCommand(runtime *app.Runtime) *cobra.Command {
-	return &cobra.Command{
+	var device bool
+	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Login to Connext Cloud",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if device {
+				_, err := runtime.Auth.LoginWithDeviceFlow()
+				return err
+			}
 			_, err := runtime.Auth.Login()
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&device, "device", false, "Login using device authorization flow")
+	return cmd
 }
 
 func newLogoutCommand(runtime *app.Runtime) *cobra.Command {
