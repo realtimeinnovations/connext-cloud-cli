@@ -560,13 +560,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.rehydrate()
 	a.drainInbox()
 
-	// First-run wizard: if no profiles were found, enroll one interactively.
-	profileCount := 0
-	a.profiles.Range(func(_, _ any) bool { profileCount++; return true })
-	if profileCount == 0 {
+	// Reuse enrollments performed out-of-band (`rticloud edge-provisioning
+	// enroll`/`enroll-direct`), which leave mTLS credentials on disk with no
+	// agent_state.json. When the agent already manages a profile, silently
+	// adopt any such nodes (Option A). When it manages none, the first-run
+	// wizard offers to reuse them interactively before enrolling afresh
+	// (Option B, see ConfigureFirstRun).
+	if a.countProfiles() == 0 {
 		if err := a.ConfigureFirstRun(ctx); err != nil {
 			return err
 		}
+	} else {
+		a.adoptExistingEnrollments()
 	}
 
 	a.wg.Add(2)
@@ -675,6 +680,158 @@ func (a *Agent) loadProfile(statePath string) {
 	a.scheduleAll(p)
 	a.emitf(catState, tui.LogInfo, "profile rehydrated serial=%s service=%s domain=%s participant=%s device=%s state=%s",
 		p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state)
+}
+
+// ─── Adoption of out-of-band enrollments ─────────────────────────────────────
+
+// adoptableNode describes a node whose mTLS credentials are already on disk
+// (from a standalone `rticloud edge-provisioning enroll`/`enroll-direct`) but
+// which the agent has never managed itself, i.e. it has a node.key and a
+// node_url but no agent_state.json. Such a node can be adopted: the agent skips
+// enrollment and runs the artifact-fetch sequence against the existing
+// credentials.
+type adoptableNode struct {
+	service     string
+	domain      string
+	participant string
+	node        string
+	url         string
+}
+
+// countProfiles returns the number of in-memory profiles.
+func (a *Agent) countProfiles() int {
+	n := 0
+	a.profiles.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// findAdoptableNodes walks the per-node mTLS tree
+// (<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>) and returns
+// every node that carries mTLS credentials (node.key) and a stored device
+// endpoint URL (node_url) but has neither an agent_state.json nor an already
+// loaded in-memory profile. These are enrollments performed out-of-band that
+// the agent can reuse instead of enrolling afresh.
+//
+// The walk uses the agent's injectable file operations (like findStateFiles)
+// so it stays consistent with rehydrate and remains testable with an in-memory
+// filesystem.
+func (a *Agent) findAdoptableNodes() []adoptableNode {
+	var found []adoptableNode
+	services, err := a.ReadDir(a.Store.AgentDir())
+	if err != nil {
+		return nil
+	}
+	for _, svc := range services {
+		if !svc.IsDir() || svc.Name() == "inbox" {
+			continue
+		}
+		service := svc.Name()
+		domains, err := a.ReadDir(a.Store.MTLSRoot(service))
+		if err != nil {
+			continue
+		}
+		for _, dom := range domains {
+			if !dom.IsDir() {
+				continue
+			}
+			domain := dom.Name()
+			parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain))
+			if err != nil {
+				continue
+			}
+			for _, part := range parts {
+				if !part.IsDir() {
+					continue
+				}
+				participant := part.Name()
+				nodes, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain, participant))
+				if err != nil {
+					continue
+				}
+				for _, nd := range nodes {
+					if !nd.IsDir() {
+						continue
+					}
+					node := nd.Name()
+					if n, ok := a.adoptableNode(service, domain, participant, node); ok {
+						found = append(found, n)
+					}
+				}
+			}
+		}
+	}
+	return found
+}
+
+// adoptableNode reports whether the given node slot is eligible for adoption
+// and, if so, returns its descriptor. A slot is adoptable when it holds mTLS
+// credentials (node.key) and a non-empty node_url, but no agent_state.json and
+// no in-memory profile keyed to the same (domain, participant) slot.
+func (a *Agent) adoptableNode(service, domain, participant, node string) (adoptableNode, bool) {
+	// An existing agent_state.json means the node was (or will be) rehydrated;
+	// never adopt over managed state.
+	if _, err := a.ReadFile(a.Store.NodeStatePath(service, domain, participant, node)); err == nil {
+		return adoptableNode{}, false
+	}
+	if _, err := a.ReadFile(a.Store.NodeKeyPath(service, domain, participant, node)); err != nil {
+		return adoptableNode{}, false
+	}
+	data, err := a.ReadFile(a.Store.NodeURLPath(service, domain, participant, node))
+	if err != nil {
+		return adoptableNode{}, false
+	}
+	url := strings.TrimSpace(string(data))
+	if url == "" {
+		return adoptableNode{}, false
+	}
+	if _, ok := a.profiles.Load(profileKey(domain, participant, "")); ok {
+		return adoptableNode{}, false
+	}
+	return adoptableNode{service: service, domain: domain, participant: participant, node: node, url: url}, true
+}
+
+// adoptProfile builds a profile from an adoptable node's on-disk credentials
+// and runs the artifact-fetch sequence against them, reusing the existing
+// enrollment instead of enrolling a new device. On failure the half-built
+// profile is removed so a later run can retry (or fall back to enrollment).
+func (a *Agent) adoptProfile(n adoptableNode) error {
+	key := profileKey(n.domain, n.participant, "")
+	if _, ok := a.profiles.Load(key); ok {
+		return nil // already managed
+	}
+	p := &profile{
+		serviceID:        n.service,
+		domainTemplateID: n.domain,
+		serial:           n.node,
+		participantID:    n.participant,
+		state:            StateEnrolled,
+		notAfter:         make(map[ArtifactID]time.Time),
+		issuedAt:         make(map[ArtifactID]time.Time),
+		timers:           make(map[ArtifactID]*time.Timer),
+	}
+	a.profiles.Store(key, p)
+	a.emitf(catEnroll, tui.LogInfo, "adopting existing enrollment service=%s domain=%s participant=%s serial=%s",
+		n.service, n.domain, n.participant, n.node)
+	if err := a.fetchAndActivate(p, "", n.url); err != nil {
+		a.profiles.Delete(key)
+		return err
+	}
+	return nil
+}
+
+// adoptExistingEnrollments adopts every out-of-band enrollment found on disk
+// (Option A: silent auto-adoption). It is best-effort: a failure to adopt one
+// node is logged and does not abort the others or agent startup. Used when the
+// agent already manages at least one profile, where discovering additional
+// pre-enrolled nodes should simply pull them in without prompting.
+func (a *Agent) adoptExistingEnrollments() {
+	for _, n := range a.findAdoptableNodes() {
+		if err := a.adoptProfile(n); err != nil {
+			a.emitf(catWarning, tui.LogWarn,
+				"Warning: could not adopt existing enrollment service=%s domain=%s participant=%s serial=%s: %v",
+				n.service, n.domain, n.participant, n.node, err)
+		}
+	}
 }
 
 // ─── Background loops ────────────────────────────────────────────────────────
@@ -899,6 +1056,21 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	p.deviceName = req.DeviceName
 	p.mu.Unlock()
 
+	return a.fetchAndActivate(p, req.CampaignToken, directNodeURL)
+}
+
+// fetchAndActivate runs the post-enrollment artifact-fetch sequence (identity,
+// permissions and, for the domain owner, PSK and CRL) for a profile whose mTLS
+// credentials are already present in the store, then records the artifact
+// leases, persists agent_state.json and schedules the renewal timers.
+//
+// It is shared by two callers: enrollProfile (immediately after a successful
+// enrollment) and adoptProfile (reusing an enrollment performed out-of-band by
+// `rticloud edge-provisioning enroll`/`enroll-direct`). campaignToken and
+// directNodeURL only influence how the device endpoint URL is resolved when the
+// store has none yet; both are empty when adopting, where the node_url file is
+// already on disk.
+func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string) error {
 	// Compute the scoped output paths now that domainTemplateID is known.
 	// Identity and permissions are node-scoped; PSK and CRL are domain-scoped.
 	service, domain, participant, node := p.service(), p.domain(), p.participant(), p.node()
@@ -917,7 +1089,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		_ = a.Store.WriteNodeURL(service, domain, participant, node, url)
 	}
 	if url == "" {
-		if deviceDomain := CampaignTokenDeviceDomain(req.CampaignToken); deviceDomain != "" {
+		if deviceDomain := CampaignTokenDeviceDomain(campaignToken); deviceDomain != "" {
 			url = "https://" + deviceDomain
 			_ = a.Store.WriteNodeURL(service, domain, participant, node, url)
 		}
@@ -926,7 +1098,7 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 		p.mu.Lock()
 		p.setState(StateUnregistered)
 		p.mu.Unlock()
-		if req.CampaignToken == "" {
+		if campaignToken == "" {
 			return fmt.Errorf("cannot determine device endpoint URL; the enrollment response did not include nodeUrl")
 		}
 		return fmt.Errorf("cannot determine device endpoint URL; configure a region with 'rticloud configure --region <region>'")

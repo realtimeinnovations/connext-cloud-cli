@@ -125,6 +125,7 @@ func DetectMACs() []string {
 
 // Choice labels for the first-run enrollment mode question.
 const (
+	enrollChoiceReuse    = "Reuse an enrollment already on this device"
 	enrollChoiceOperator = "My Connext Cloud account (operator login)"
 	enrollChoiceCampaign = "A campaign token (issued by an operator)"
 )
@@ -145,17 +146,96 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		return a.enrollHeadlessDirect()
 	}
 
+	// Offer to reuse an enrollment already present on disk (performed
+	// out-of-band by `rticloud edge-provisioning enroll`/`enroll-direct`)
+	// before falling back to a fresh enrollment.
+	adoptable := a.findAdoptableNodes()
+
 	_, _ = fmt.Fprint(a.promptOut(), renderWizardIntro())
 
-	mode, err := a.SelectFunc("How do you want to enroll this device?",
-		[]string{enrollChoiceOperator, enrollChoiceCampaign})
+	choices := []string{enrollChoiceOperator, enrollChoiceCampaign}
+	if len(adoptable) > 0 {
+		choices = append([]string{enrollChoiceReuse}, choices...)
+	}
+
+	mode, err := a.SelectFunc("How do you want to enroll this device?", choices)
 	if err != nil {
 		return err
 	}
-	if mode == enrollChoiceCampaign {
+	switch mode {
+	case enrollChoiceReuse:
+		return a.reuseWizard(ctx, adoptable)
+	case enrollChoiceCampaign:
 		return a.campaignWizard(ctx)
+	default:
+		return a.operatorWizard(ctx)
 	}
-	return a.operatorWizard(ctx)
+}
+
+// reuseWizard adopts an enrollment already present on disk instead of enrolling
+// a new device.  The user picks among the discovered enrollments (auto-selected
+// when only one exists); adoption runs the artifact-fetch sequence against the
+// stored mTLS credentials.  On failure the user may retry or exit.
+func (a *Agent) reuseWizard(ctx context.Context, adoptable []adoptableNode) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		chosen, err := a.chooseAdoptable(adoptable)
+		if err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintln(a.Out)
+		_, _ = fmt.Fprintln(a.Out, "Reusing existing enrollment:")
+		_, _ = fmt.Fprintf(a.Out, "  Service:     %s\n", chosen.service)
+		_, _ = fmt.Fprintf(a.Out, "  Domain:      %s\n", chosen.domain)
+		_, _ = fmt.Fprintf(a.Out, "  Participant: %s\n", chosen.participant)
+		_, _ = fmt.Fprintf(a.Out, "  Serial:      %s\n", chosen.node)
+		_, _ = fmt.Fprintln(a.Out)
+
+		if err := a.adoptProfile(chosen); err != nil {
+			retry, err2 := a.retryOrExit(fmt.Errorf("reuse failed: %w", err))
+			if !retry {
+				return err2
+			}
+			continue
+		}
+		_, _ = fmt.Fprintln(a.Out, "Enrollment reused successfully.  Starting agent...")
+		_, _ = fmt.Fprintln(a.Out)
+		return nil
+	}
+}
+
+// chooseAdoptable returns the enrollment to reuse: a single candidate is
+// announced and returned directly; multiple candidates are offered as a
+// pick-list keyed by a human-readable label.
+func (a *Agent) chooseAdoptable(adoptable []adoptableNode) (adoptableNode, error) {
+	if len(adoptable) == 1 {
+		n := adoptable[0]
+		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Enrollment: %s\n", adoptableLabel(n))
+		return n, nil
+	}
+	labels := make([]string, len(adoptable))
+	byLabel := make(map[string]adoptableNode, len(adoptable))
+	for i, n := range adoptable {
+		l := adoptableLabel(n)
+		labels[i] = l
+		byLabel[l] = n
+	}
+	choice, err := a.SelectFunc("Select the enrollment to reuse:", labels)
+	if err != nil {
+		return adoptableNode{}, err
+	}
+	return byLabel[choice], nil
+}
+
+// adoptableLabel renders a discovered enrollment for the reuse pick-list.
+func adoptableLabel(n adoptableNode) string {
+	return fmt.Sprintf("%s / %s / %s (serial %s)", n.service, n.domain, n.participant, n.node)
 }
 
 // campaignWizard drives campaign enrollment: the user pastes a campaign token
