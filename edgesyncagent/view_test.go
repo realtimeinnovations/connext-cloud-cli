@@ -103,7 +103,7 @@ func TestRenderAgentView_AgentLogPanel(t *testing.T) {
 	a.Out = &bytes.Buffer{} // not an *os.File → TerminalSize falls back to 100x40
 
 	// A profile so the main panel has content.
-	a.getOrCreateProfile("svc", "part", "dev")
+	a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 
 	a.logs.append("artifact renewal complete service=svc participant=part")
 	a.logs.append("psk_rotate: seed rotated to sB service=svc participant=part")
@@ -132,11 +132,148 @@ func TestRenderAgentView_AgentLogEmptyPlaceholder(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 	a.Out = &bytes.Buffer{}
-	a.getOrCreateProfile("svc", "part", "dev")
+	a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 
 	frame := a.renderAgentView(agentViewState{})
 	if !strings.Contains(frame, "Waiting for agent activity") {
 		t.Fatal("empty Agent Log panel should show the waiting placeholder")
+	}
+}
+
+func TestAgentSummaryChip(t *testing.T) {
+	cases := []struct {
+		profiles     int
+		needsRenewal int
+		wantText     string
+		wantColor    string // markup tag resolved by tui.StyleChipWidth
+	}{
+		{0, 0, "waiting for enrollment", "[dim]"},
+		{1, 0, "1 participant artifact monitored", "[green]"},
+		{3, 0, "3 participant artifacts monitored", "[green]"},
+		{3, 2, "3 participant artifacts monitored", "[yellow]"},
+	}
+	for _, c := range cases {
+		got := agentSummaryChip(c.profiles, c.needsRenewal)
+		if !strings.Contains(got, c.wantText) {
+			t.Errorf("agentSummaryChip(%d,%d) = %q, want it to contain %q", c.profiles, c.needsRenewal, got, c.wantText)
+		}
+		if !strings.Contains(got, c.wantColor) {
+			t.Errorf("agentSummaryChip(%d,%d) = %q, want color %q", c.profiles, c.needsRenewal, got, c.wantColor)
+		}
+	}
+}
+
+func TestCountArtifactsNeedingRenewal(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	profiles := []profileSnapshot{
+		{ // healthy: only 10% of lifetime elapsed
+			notAfter: map[ArtifactID]time.Time{ArtifactIdentity: now.Add(90 * time.Hour)},
+			issuedAt: map[ArtifactID]time.Time{ArtifactIdentity: now.Add(-10 * time.Hour)},
+		},
+		{ // past the 80% threshold → needs renewal
+			notAfter: map[ArtifactID]time.Time{ArtifactPermissions: now.Add(1 * time.Hour)},
+			issuedAt: map[ArtifactID]time.Time{ArtifactPermissions: now.Add(-99 * time.Hour)},
+		},
+		{ // no expiry recorded → ignored
+			notAfter: map[ArtifactID]time.Time{},
+			issuedAt: map[ArtifactID]time.Time{},
+		},
+	}
+	if got := countArtifactsNeedingRenewal(now, profiles); got != 1 {
+		t.Fatalf("countArtifactsNeedingRenewal = %d, want 1", got)
+	}
+}
+
+// TestSnapshotProfiles_MirrorsDomainArtifactsToNonOwner verifies that the
+// domain owner's PSK/CRL renewal and expiry times are mirrored onto the other
+// participants in the same domain, so every participant shows the shared
+// artifact rather than "–".
+func TestSnapshotProfiles_MirrorsDomainArtifactsToNonOwner(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	now := time.Unix(1_000_000, 0)
+	a.Now = func() time.Time { return now }
+
+	// Owner: tracks the domain-scoped PSK and CRL.
+	owner := a.getOrCreateProfile("svc", "tractor", "SN-owner", "")
+	owner.domainTemplateID = "29:south-field"
+	owner.notAfter[ArtifactPSK] = now.Add(48 * time.Hour)
+	owner.issuedAt[ArtifactPSK] = now.Add(-2 * time.Hour)
+	owner.notAfter[ArtifactPSKRotate] = now.Add(50 * time.Hour)
+	owner.notAfter[ArtifactCRL] = now.Add(5 * time.Minute)
+	owner.issuedAt[ArtifactCRL] = now
+
+	// Non-owner: same domain + participant template, no PSK/CRL of its own.
+	other := a.getOrCreateProfile("svc", "tractor", "SN-other", "")
+	other.domainTemplateID = "29:south-field"
+	other.notAfter[ArtifactIdentity] = now.Add(24 * time.Hour)
+
+	a.claimDomainOwner(owner)
+
+	var got profileSnapshot
+	found := false
+	for _, s := range a.snapshotProfiles() {
+		if s.serial == "SN-other" {
+			got = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("non-owner snapshot not found")
+	}
+	for _, art := range []ArtifactID{ArtifactPSK, ArtifactPSKRotate, ArtifactCRL} {
+		na, ok := got.notAfter[art]
+		if !ok || !na.Equal(owner.notAfter[art]) {
+			t.Fatalf("artifact %s not mirrored onto non-owner: got %v, want %v", art, na, owner.notAfter[art])
+		}
+	}
+	if is := got.issuedAt[ArtifactPSK]; !is.Equal(owner.issuedAt[ArtifactPSK]) {
+		t.Fatalf("PSK issuedAt not mirrored: got %v, want %v", is, owner.issuedAt[ArtifactPSK])
+	}
+}
+
+// TestRenderAgentView_SummaryAndDetailsSections verifies the two-section layout:
+// an orange summary panel carrying the status chip, followed by a separate blue
+// "Participants" details panel (mirroring the gateway/spy TUIs).
+func TestRenderAgentView_SummaryAndDetailsSections(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.Out = &bytes.Buffer{} // → 100x40
+	a.getOrCreateProfile("svc", "part", "SN-001", "dev")
+
+	frame := a.renderAgentView(agentViewState{})
+	lines := visibleFrameLines(frame)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "Edge-Sync Agent") {
+		t.Error("missing summary panel title \"Edge-Sync Agent\"")
+	}
+	if !strings.Contains(joined, "Participants") {
+		t.Error("missing details panel title \"Participants\"")
+	}
+	if !strings.Contains(joined, "participant artifact monitored") {
+		t.Error("missing status chip text in summary section")
+	}
+	// The summary panel must come before the details panel.
+	summaryIdx, detailsIdx := -1, -1
+	for i, ln := range lines {
+		if summaryIdx == -1 && strings.Contains(ln, "Edge-Sync Agent") {
+			summaryIdx = i
+		}
+		if detailsIdx == -1 && strings.Contains(ln, "Participants") {
+			detailsIdx = i
+		}
+	}
+	if summaryIdx == -1 || detailsIdx == -1 || summaryIdx >= detailsIdx {
+		t.Fatalf("expected summary section above details section, got summary=%d details=%d", summaryIdx, detailsIdx)
+	}
+	// Blue details border and orange summary border must both be present.
+	if !strings.Contains(frame, "\x1b[38;5;110m") {
+		t.Error("missing blue border (details panel)")
+	}
+	if !strings.Contains(frame, "\x1b[38;5;208m") {
+		t.Error("missing orange border (summary panel)")
 	}
 }
 
@@ -147,7 +284,7 @@ func TestRenderAgentView_ReservesLastColumn(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 	a.Out = &bytes.Buffer{} // → 100x40
-	a.getOrCreateProfile("svc", "part", "dev")
+	a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	a.logs.append("artifact renewal complete service=svc")
 
 	frame := a.renderAgentView(agentViewState{})

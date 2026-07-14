@@ -337,7 +337,7 @@ func TestRehydrate_LoadsProfileAndSchedulesTimers(t *testing.T) {
 
 	a.rehydrate()
 
-	val, ok := a.profiles.Load(profileKey("dom1", "part1", "dev1"))
+	val, ok := a.profiles.Load(profileKey("dom1", "part1", "SN-001"))
 	if !ok {
 		t.Fatal("profile not loaded")
 	}
@@ -361,7 +361,7 @@ func TestRehydrate_SkipsCorruptStateFile(t *testing.T) {
 
 	a.rehydrate() // must not panic
 
-	_, ok := a.profiles.Load(profileKey("svc1", "part1", "dev1"))
+	_, ok := a.profiles.Load(profileKey("svc1", "part1", "SN-001"))
 	if ok {
 		t.Fatal("corrupt profile should not be loaded")
 	}
@@ -383,7 +383,7 @@ func TestOnTimerFire_PrematurityReschedules(t *testing.T) {
 	notAfter := now.Add(100 * time.Second)
 	a.Now = func() time.Time { return now } // clock hasn't advanced — timer fired prematurely
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.notAfter[ArtifactIdentity] = notAfter
 	p.mu.Unlock()
@@ -411,7 +411,7 @@ func TestOnTimerFire_IgnoresStaleTimer(t *testing.T) {
 	newNotAfter := now.Add(200 * time.Second)
 	a.Now = func() time.Time { return now.Add(90 * time.Second) } // past threshold
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	// Profile has a newer notAfter than what the timer was scheduled for.
 	p.notAfter[ArtifactIdentity] = newNotAfter
@@ -443,7 +443,7 @@ func TestSweep_TriggersRenewalForExpiredArtifact(t *testing.T) {
 		return time.AfterFunc(10*time.Hour, f)
 	}
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.domainTemplateID = "dom"
 	p.serial = "SN-001"
@@ -607,7 +607,7 @@ func TestPersistState_WritesAgentStateJSON(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	now := time.Now().Truncate(time.Second)
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.serial = "SN-001"
 	p.domainTemplateID = "dom"
@@ -712,7 +712,7 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	}
 
 	// After a successful enroll the profile is re-keyed under its domain.
-	val, ok := a.profiles.Load(profileKey("dom", "part", "dev"))
+	val, ok := a.profiles.Load(profileKey("dom", "part", "SN-001"))
 	if !ok {
 		t.Fatal("profile not stored")
 	}
@@ -771,8 +771,8 @@ func TestEnrollProfile_DomainArtifactsDedupedAcrossParticipants(t *testing.T) {
 		t.Fatalf("CRL fetched %d times, want 1 (domain-scoped dedup)", got)
 	}
 
-	v1, _ := a.profiles.Load(profileKey("dom", "part1", ""))
-	v2, _ := a.profiles.Load(profileKey("dom", "part2", ""))
+	v1, _ := a.profiles.Load(profileKey("dom", "part1", "SN-001"))
+	v2, _ := a.profiles.Load(profileKey("dom", "part2", "SN-001"))
 	if v1 == nil || v2 == nil {
 		t.Fatal("both participant profiles should be stored")
 	}
@@ -855,7 +855,7 @@ func TestEnrollProfile_EnrollErrorLeavesUnregistered(t *testing.T) {
 		t.Fatal("expected error from failed enroll")
 	}
 
-	val, ok := a.profiles.Load(profileKey("svc", "part", "dev"))
+	val, ok := a.profiles.Load(profileKey("svc", "part", "SN-001"))
 	if !ok {
 		t.Fatal("profile not stored after failed enroll")
 	}
@@ -952,8 +952,8 @@ func TestGetOrCreateProfile_ReturnsSameInstance(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	p1 := a.getOrCreateProfile("svc", "part", "dev")
-	p2 := a.getOrCreateProfile("svc", "part", "dev")
+	p1 := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
+	p2 := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	if p1 != p2 {
 		t.Fatal("expected the same profile instance")
 	}
@@ -963,21 +963,23 @@ func TestGetOrCreateProfile_DifferentKeysDistinct(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	p1 := a.getOrCreateProfile("svc", "part1", "dev")
-	p2 := a.getOrCreateProfile("svc", "part2", "dev")
+	p1 := a.getOrCreateProfile("svc", "part1", "SN-001", "dev")
+	p2 := a.getOrCreateProfile("svc", "part2", "SN-001", "dev")
 	if p1 == p2 {
 		t.Fatal("distinct participant IDs must produce distinct profiles")
 	}
 }
 
-func TestGetOrCreateProfile_DifferentDeviceNamesDistinct(t *testing.T) {
+func TestGetOrCreateProfile_DifferentSerialsDistinct(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
-	p1 := a.getOrCreateProfile("svc", "part", "dev1")
-	p2 := a.getOrCreateProfile("svc", "part", "dev2")
+	// Two nodes enrolled from the same participant template differ only by
+	// serial; each must be its own profile.
+	p1 := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
+	p2 := a.getOrCreateProfile("svc", "part", "SN-002", "dev")
 	if p1 == p2 {
-		t.Fatal("distinct device names must produce distinct profiles")
+		t.Fatal("distinct serials must produce distinct profiles")
 	}
 }
 
@@ -1030,7 +1032,7 @@ func TestRenewArtifact_DeviceCert_Success(t *testing.T) {
 	now := time.Unix(1000, 0)
 	a.Now = func() time.Time { return now }
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.serial = "SN-001"
 	p.domainTemplateID = "dom"
@@ -1143,7 +1145,7 @@ func TestRenewPSKAt80_RotateFiresAtPrimaryExpiry(t *testing.T) {
 		return nil
 	}
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // old expiry, so newNotAfter advances
@@ -1214,7 +1216,7 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 		return nil
 	}
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // stale, so newNotAfter advances
@@ -1261,7 +1263,7 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 	pskBNotBefore := now // sB starts exactly as sA expires
 	pskBNotAfter := now.Add(baseTTL)
 
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.mu.Lock()
 	p.domainTemplateID = "dom"
 	p.notAfter[ArtifactPSK] = now // stale sA expiry (== now → would render "needs renewal")

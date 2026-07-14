@@ -171,9 +171,10 @@ func (a *Agent) onTimerFire(p *profile, artifact ArtifactID, scheduledNotAfter t
 // RenewArtifact requests an out-of-cycle renewal of one artifact for the
 // identified profile. It stops the existing scheduled timer and immediately
 // dispatches a renewal goroutine with reason "manual".
-// domainTemplateID is the profile's domain template id (p.domain()).
-func (a *Agent) RenewArtifact(domainTemplateID, participantID, deviceName string, art ArtifactID) error {
-	key := profileKey(domainTemplateID, participantID, deviceName)
+// domainTemplateID is the profile's domain template id (p.domain()); serial is
+// the node id that distinguishes profiles sharing a participant template.
+func (a *Agent) RenewArtifact(domainTemplateID, participantID, serial string, art ArtifactID) error {
+	key := profileKey(domainTemplateID, participantID, serial)
 	val, ok := a.profiles.Load(key)
 	if !ok {
 		return fmt.Errorf("profile not found: %s", key)

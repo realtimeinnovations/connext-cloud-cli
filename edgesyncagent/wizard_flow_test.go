@@ -255,7 +255,7 @@ func TestConfigureFirstRun_CampaignModeViaWizard(t *testing.T) {
 	if err := a.ConfigureFirstRun(context.Background()); err != nil {
 		t.Fatalf("ConfigureFirstRun: %v", err)
 	}
-	if _, ok := a.profiles.Load(profileKey("dom", "part", "")); !ok {
+	if _, ok := a.profiles.Load(profileKey("dom", "part", "SN-006")); !ok {
 		t.Fatal("campaign profile not stored after wizard enrollment")
 	}
 }

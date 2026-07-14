@@ -128,7 +128,7 @@ func TestSweep_SurfacesOnStateChangeOnly(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 	a.Out = &bytes.Buffer{}
-	p := a.getOrCreateProfile("svc", "part", "dev")
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 	p.state = StateActive
 
 	a.sweep()
@@ -153,7 +153,7 @@ func TestRenderAgentView_ShowsSummaryAndAge(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 	a.Out = &bytes.Buffer{}
-	a.getOrCreateProfile("svc", "part", "dev")
+	a.getOrCreateProfile("svc", "part", "SN-001", "dev")
 
 	base := time.Now()
 	a.Now = func() time.Time { return base }

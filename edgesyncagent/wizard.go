@@ -172,10 +172,13 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 	}
 }
 
-// reuseWizard adopts an enrollment already present on disk instead of enrolling
-// a new device.  The user picks among the discovered enrollments (auto-selected
-// when only one exists); adoption runs the artifact-fetch sequence against the
-// stored mTLS credentials.  On failure the user may retry or exit.
+// reuseWizard adopts one or more enrollments already present on disk instead of
+// enrolling a new device.  The user picks a single discovered enrollment, or
+// "all detected enrollments" to adopt every one at once (auto-selected when only
+// one exists); adoption runs the artifact-fetch sequence against the stored
+// mTLS credentials.  Adoption is best-effort across the selection: the agent
+// proceeds as long as at least one succeeds, and only offers retry/exit when
+// none could be reused.
 func (a *Agent) reuseWizard(ctx context.Context, adoptable []adoptableNode) error {
 	for {
 		select {
@@ -189,48 +192,87 @@ func (a *Agent) reuseWizard(ctx context.Context, adoptable []adoptableNode) erro
 			return err
 		}
 
-		_, _ = fmt.Fprintln(a.Out)
-		_, _ = fmt.Fprintln(a.Out, "Reusing existing enrollment:")
-		_, _ = fmt.Fprintf(a.Out, "  Service:     %s\n", chosen.service)
-		_, _ = fmt.Fprintf(a.Out, "  Domain:      %s\n", chosen.domain)
-		_, _ = fmt.Fprintf(a.Out, "  Participant: %s\n", chosen.participant)
-		_, _ = fmt.Fprintf(a.Out, "  Serial:      %s\n", chosen.node)
-		_, _ = fmt.Fprintln(a.Out)
+		a.printReuseSummary(chosen)
 
-		if err := a.adoptProfile(chosen); err != nil {
-			retry, err2 := a.retryOrExit(fmt.Errorf("reuse failed: %w", err))
+		adopted := 0
+		var lastErr error
+		for _, n := range chosen {
+			if err := a.adoptProfile(n); err != nil {
+				_, _ = fmt.Fprintf(a.Out, "  \x1b[31m✗\x1b[0m %s: %v\n", adoptableLabel(n), err)
+				lastErr = err
+				continue
+			}
+			adopted++
+		}
+
+		// Nothing adopted — treat like a failed enrollment: retry or exit.
+		if adopted == 0 {
+			retry, err2 := a.retryOrExit(fmt.Errorf("reuse failed: %w", lastErr))
 			if !retry {
 				return err2
 			}
 			continue
 		}
-		_, _ = fmt.Fprintln(a.Out, "Enrollment reused successfully.  Starting agent...")
+
+		if lastErr != nil {
+			_, _ = fmt.Fprintf(a.Out, "Reused %d of %d enrollments; the rest were skipped.\n", adopted, len(chosen))
+		} else if adopted == 1 {
+			_, _ = fmt.Fprintln(a.Out, "Enrollment reused successfully.  Starting agent...")
+		} else {
+			_, _ = fmt.Fprintf(a.Out, "%d enrollments reused successfully.  Starting agent...\n", adopted)
+		}
 		_, _ = fmt.Fprintln(a.Out)
 		return nil
 	}
 }
 
-// chooseAdoptable returns the enrollment to reuse: a single candidate is
-// announced and returned directly; multiple candidates are offered as a
-// pick-list keyed by a human-readable label.
-func (a *Agent) chooseAdoptable(adoptable []adoptableNode) (adoptableNode, error) {
+// printReuseSummary lists the enrollment(s) about to be reused.
+func (a *Agent) printReuseSummary(chosen []adoptableNode) {
+	_, _ = fmt.Fprintln(a.Out)
+	if len(chosen) == 1 {
+		n := chosen[0]
+		_, _ = fmt.Fprintln(a.Out, "Reusing existing enrollment:")
+		_, _ = fmt.Fprintf(a.Out, "  Service:     %s\n", n.service)
+		_, _ = fmt.Fprintf(a.Out, "  Domain:      %s\n", n.domain)
+		_, _ = fmt.Fprintf(a.Out, "  Participant: %s\n", n.participant)
+		_, _ = fmt.Fprintf(a.Out, "  Serial:      %s\n", n.node)
+		_, _ = fmt.Fprintln(a.Out)
+		return
+	}
+	_, _ = fmt.Fprintf(a.Out, "Reusing %d existing enrollments:\n", len(chosen))
+	for _, n := range chosen {
+		_, _ = fmt.Fprintf(a.Out, "  • %s\n", adoptableLabel(n))
+	}
+	_, _ = fmt.Fprintln(a.Out)
+}
+
+// chooseAdoptable returns the enrollment(s) to reuse.  A single candidate is
+// announced and returned directly.  With multiple candidates the user is
+// offered a pick-list whose first entry adopts every detected enrollment at
+// once, followed by each individual enrollment.
+func (a *Agent) chooseAdoptable(adoptable []adoptableNode) ([]adoptableNode, error) {
 	if len(adoptable) == 1 {
 		n := adoptable[0]
 		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Enrollment: %s\n", adoptableLabel(n))
-		return n, nil
+		return adoptable, nil
 	}
-	labels := make([]string, len(adoptable))
+	allLabel := fmt.Sprintf("Use all %d detected enrollments", len(adoptable))
+	labels := make([]string, 0, len(adoptable)+1)
+	labels = append(labels, allLabel)
 	byLabel := make(map[string]adoptableNode, len(adoptable))
-	for i, n := range adoptable {
+	for _, n := range adoptable {
 		l := adoptableLabel(n)
-		labels[i] = l
+		labels = append(labels, l)
 		byLabel[l] = n
 	}
-	choice, err := a.SelectFunc("Select the enrollment to reuse:", labels)
+	choice, err := a.SelectFunc("Select the enrollment(s) to reuse:", labels)
 	if err != nil {
-		return adoptableNode{}, err
+		return nil, err
 	}
-	return byLabel[choice], nil
+	if choice == allLabel {
+		return adoptable, nil
+	}
+	return []adoptableNode{byLabel[choice]}, nil
 }
 
 // adoptableLabel renders a discovered enrollment for the reuse pick-list.

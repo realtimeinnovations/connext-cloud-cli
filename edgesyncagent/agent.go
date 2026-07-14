@@ -233,16 +233,19 @@ func (a *Agent) hasDomainState(p *profile) bool {
 	return !p.notAfter[ArtifactPSK].IsZero()
 }
 
-func profileKey(domainOrService, participantID, deviceName string) string {
-	// The first segment is the profile's domain template id (p.domain()) once
-	// enrolled; getOrCreateProfile keys the transient pre-enrollment profile by
-	// serviceID until the domain is known, after which enrollProfile re-keys it.
-	// Including it ensures that two enrollments with the same participantID but
-	// different domainTemplateIDs produce distinct in-memory entries.
-	if deviceName == "" {
-		return domainOrService + "/" + participantID
-	}
-	return domainOrService + "/" + participantID + "/" + deviceName
+// profileKey uniquely identifies a profile in the in-memory map. The first
+// segment is the profile's domain template id (p.domain()) once enrolled;
+// getOrCreateProfile keys the transient pre-enrollment profile by serviceID
+// until the domain is known, after which enrollProfile re-keys it, so two
+// enrollments with the same participant but different domain templates stay
+// distinct.
+//
+// The serial (node id) is the terminal segment: multiple nodes can share the
+// same domain and participant template (a fleet enrolled from one template),
+// and each is a distinct profile. deviceName is a display-only label and is
+// deliberately NOT part of the key.
+func profileKey(domainOrService, participantID, serial string) string {
+	return domainOrService + "/" + participantID + "/" + serial
 }
 
 // Agent is the long-lived process managing the security artifact lifecycle for
@@ -676,7 +679,7 @@ func (a *Agent) loadProfile(statePath string) {
 	if p.issuedAt == nil {
 		p.issuedAt = make(map[ArtifactID]time.Time)
 	}
-	a.profiles.Store(profileKey(p.domain(), p.participantID, p.deviceName), p)
+	a.profiles.Store(profileKey(p.domain(), p.participantID, p.serial), p)
 	a.scheduleAll(p)
 	a.emitf(catState, tui.LogInfo, "profile rehydrated serial=%s service=%s domain=%s participant=%s device=%s state=%s",
 		p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state)
@@ -784,7 +787,7 @@ func (a *Agent) adoptableNode(service, domain, participant, node string) (adopta
 	if url == "" {
 		return adoptableNode{}, false
 	}
-	if _, ok := a.profiles.Load(profileKey(domain, participant, "")); ok {
+	if _, ok := a.profiles.Load(profileKey(domain, participant, node)); ok {
 		return adoptableNode{}, false
 	}
 	return adoptableNode{service: service, domain: domain, participant: participant, node: node, url: url}, true
@@ -795,7 +798,7 @@ func (a *Agent) adoptableNode(service, domain, participant, node string) (adopta
 // enrollment instead of enrolling a new device. On failure the half-built
 // profile is removed so a later run can retry (or fall back to enrollment).
 func (a *Agent) adoptProfile(n adoptableNode) error {
-	key := profileKey(n.domain, n.participant, "")
+	key := profileKey(n.domain, n.participant, n.node)
 	if _, ok := a.profiles.Load(key); ok {
 		return nil // already managed
 	}
@@ -972,7 +975,7 @@ func (a *Agent) processInboxFile(path string) {
 
 // enrollProfile runs the full enrollment + artifact-fetch sequence for a new profile.
 func (a *Agent) enrollProfile(req EnrollRequest) error {
-	p := a.getOrCreateProfile(req.ServiceID, req.ParticipantID, req.DeviceName)
+	p := a.getOrCreateProfile(req.ServiceID, req.ParticipantID, req.Serial, req.DeviceName)
 
 	p.mu.Lock()
 	p.serial = req.Serial // set serial upfront so store paths include it from the start
@@ -1040,11 +1043,11 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	// was known.  After this point two separate enrollments with the same
 	// participantID but different domainTemplateIDs will have distinct keys.
 	if domainTemplateID != "" {
-		oldKey := profileKey(req.ServiceID, req.ParticipantID, req.DeviceName)
+		oldKey := profileKey(req.ServiceID, req.ParticipantID, req.Serial)
 		p.mu.Lock()
 		p.domainTemplateID = domainTemplateID
 		p.mu.Unlock()
-		newKey := profileKey(p.domain(), req.ParticipantID, req.DeviceName)
+		newKey := profileKey(p.domain(), req.ParticipantID, req.Serial)
 		if oldKey != newKey {
 			a.profiles.Delete(oldKey)
 			a.profiles.Store(newKey, p)
@@ -1178,15 +1181,19 @@ func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string
 	return nil
 }
 
-// getOrCreateProfile returns the existing in-memory profile or creates a new empty one.
-func (a *Agent) getOrCreateProfile(serviceID, participantID, deviceName string) *profile {
-	key := profileKey(serviceID, participantID, deviceName)
+// getOrCreateProfile returns the existing in-memory profile or creates a new
+// empty one. The profile is keyed by (serviceID, participantID, serial); serial
+// is what distinguishes two nodes enrolled from the same participant template.
+// deviceName is retained on the profile as a display-only label.
+func (a *Agent) getOrCreateProfile(serviceID, participantID, serial, deviceName string) *profile {
+	key := profileKey(serviceID, participantID, serial)
 	if val, ok := a.profiles.Load(key); ok {
 		return val.(*profile)
 	}
 	p := &profile{
 		serviceID:     serviceID,
 		participantID: participantID,
+		serial:        serial,
 		deviceName:    deviceName,
 		state:         StateUnregistered,
 		notAfter:      make(map[ArtifactID]time.Time),

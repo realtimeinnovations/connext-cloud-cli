@@ -28,6 +28,11 @@ const (
 	colRenewalW        = 22
 	colExpirationW     = 22
 
+	// Summary panel column widths (label + status chip), matching the layout
+	// of the gateway/spy summary panels.
+	agentSummaryLabelWidth  = 12
+	agentSummaryStatusWidth = 40
+
 	// rowHighlightBg is the background applied to the focused artifact row.
 	rowHighlightBg = "\x1b[48;5;238m"
 
@@ -76,13 +81,18 @@ type profileSnapshot struct {
 }
 
 func (p profileSnapshot) key() string {
-	return p.serviceID + "/" + p.participantID + "/" + p.deviceName
+	return p.serviceID + "/" + p.participantID + "/" + p.serial
 }
 
 func (a *Agent) snapshotProfiles() []profileSnapshot {
 	var out []profileSnapshot
+	// domainShared holds each domain owner's domain-scoped artifact times
+	// (PSK, CRL, PSK phases) keyed by (service, domain), so that non-owner
+	// participants sharing that domain can mirror them for display.
+	domainShared := map[string]profileSnapshot{}
 	a.profiles.Range(func(_, val any) bool {
 		p := val.(*profile)
+		owner := a.isDomainOwner(p)
 		p.mu.Lock()
 		na := make(map[ArtifactID]time.Time, len(p.notAfter))
 		for k, v := range p.notAfter {
@@ -92,12 +102,45 @@ func (a *Agent) snapshotProfiles() []profileSnapshot {
 		for k, v := range p.issuedAt {
 			is[k] = v
 		}
-		out = append(out, profileSnapshot{p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state, na, is})
+		snap := profileSnapshot{p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state, na, is}
 		p.mu.Unlock()
+		if owner {
+			domainShared[domainOwnerKey(snap.serviceID, snap.domainTemplateID)] = snap
+		}
+		out = append(out, snap)
 		return true
 	})
+	mirrorDomainArtifacts(out, domainShared)
 	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out
+}
+
+// mirrorDomainArtifacts copies each domain owner's domain-scoped artifact times
+// (PSK, CRL and the PSK phase markers) onto the other participants in the same
+// domain that lack them. PSK and CRL are managed once per domain by the owner,
+// but every participant shares the resulting files, so the renewal/expiry is
+// shown on all of them — and a manual renew from any participant is redirected
+// to the owner (see RenewArtifact). Entries a participant already has (i.e. the
+// owner itself) are left untouched.
+func mirrorDomainArtifacts(snaps []profileSnapshot, domainShared map[string]profileSnapshot) {
+	for i := range snaps {
+		owner, ok := domainShared[domainOwnerKey(snaps[i].serviceID, snaps[i].domainTemplateID)]
+		if !ok {
+			continue
+		}
+		for art, na := range owner.notAfter {
+			if !isDomainArtifact(art) {
+				continue
+			}
+			if _, has := snaps[i].notAfter[art]; has {
+				continue
+			}
+			snaps[i].notAfter[art] = na
+			if is, ok := owner.issuedAt[art]; ok {
+				snaps[i].issuedAt[art] = is
+			}
+		}
+	}
 }
 
 // agentViewState holds the mutable TUI navigation state for runDisplay.
@@ -148,7 +191,13 @@ func renderTabBar(profiles []profileSnapshot, active int) string {
 	for i := start; i < end; i++ {
 		num := fmt.Sprintf("%d", i+1)
 		if i == active {
+			// Prefer the device name, then the serial (unique per node), then
+			// the participant template. The serial fallback keeps nodes enrolled
+			// from the same participant template visually distinct.
 			label := profiles[i].deviceName
+			if label == "" {
+				label = profiles[i].serial
+			}
 			if label == "" {
 				label = profiles[i].participantID
 			}
@@ -216,17 +265,19 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	panelWidth := tui.MaxInt(12, width-1)
 	contentWidth := tui.MaxInt(60, panelWidth-4)
 
-	countLine := fmt.Sprintf("%d participant artifacts monitored  •  Logs: %s", len(profiles), a.LogFile)
-	body := []string{tui.PadStyled(countLine, contentWidth)}
+	// ── Summary section: a short status chip, mirroring the gateway/spy TUIs.
+	// Lifecycle events and manual-renew outcomes are surfaced in the Agent Log
+	// panel below (via emit), so they are intentionally not duplicated here.
+	needsRenewal := countArtifactsNeedingRenewal(now, profiles)
+	summaryBody := []string{
+		formatAgentSummaryLine("agent", agentSummaryChip(len(profiles), needsRenewal), "Logs: "+a.LogFile, contentWidth),
+	}
 
-	// Manual-renew outcomes are surfaced in the Agent Log panel (via emit), not
-	// as a transient line in the header.
-
+	// ── Details section: the participant list and their renewal artifacts. ──
+	var body []string
 	if len(profiles) == 0 {
-		body = append(body, "")
 		body = append(body, tui.Dim("  (waiting for enrollment — see hint below)"))
 	} else {
-		body = append(body, "")
 		body = append(body, renderTabBar(profiles, vs.activeTab))
 		body = append(body, "")
 
@@ -283,16 +334,82 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 
 	body = append(body, tui.Dim("  ↑↓ artifact  ·  Tab participant  ·  ←→ buttons  ·  Enter confirm  ·  ^C stop  ·  ^A add"))
 
-	theme := tui.PanelTheme{
-		TitleStyle:  tui.StyleTitle,
-		BorderStyle: tui.StyleOrangeBorder,
-		PaddedBody:  true,
-	}
-	panelLines := tui.RenderPanel("Edge-Sync Agent", body, panelWidth, theme)
+	// Stack the sections like the gateway/spy TUIs: a short orange summary panel
+	// with the status chip, a blank separator, then the blue details panel and
+	// the gray Agent Log panel below.
+	summaryPanel := tui.RenderPanel("Edge-Sync Agent", summaryBody, panelWidth, agentSummaryPanelTheme())
+	detailsPanel := tui.RenderPanel("Participants", body, panelWidth, agentDetailsPanelTheme())
 
-	// Agent Log panel — same muted gray style as the gateway "Routing Log".
+	panelLines := append([]string{""}, summaryPanel...)
+	panelLines = append(panelLines, "")
+	panelLines = append(panelLines, detailsPanel...)
 	panelLines = append(panelLines, a.renderAgentLogPanel(panelWidth, contentWidth, height-len(panelLines))...)
 	return framePaint(panelLines)
+}
+
+// countArtifactsNeedingRenewal counts, across all profiles, the artifacts whose
+// 80% renewal threshold has already passed (RenewalDelay == 0 for a known
+// expiry). This is the same condition that colors a row red in the details
+// table, so the summary chip and the table agree.
+func countArtifactsNeedingRenewal(now time.Time, profiles []profileSnapshot) int {
+	count := 0
+	for _, p := range profiles {
+		for _, art := range displayArtifacts {
+			na, ok := p.notAfter[art]
+			if !ok || na.IsZero() {
+				continue
+			}
+			if RenewalDelay(now, p.issuedAt[art], na) <= 0 {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// agentSummaryChip renders the status chip shown in the summary panel, using
+// the same [color] markup convention as the gateway/spy chips (resolved by
+// tui.StyleChipWidth): dim when idle, green when everything is healthy, yellow
+// when one or more artifacts are due for renewal.
+func agentSummaryChip(profileCount, needsRenewal int) string {
+	if profileCount == 0 {
+		return "[dim]○ waiting for enrollment[/dim]"
+	}
+	phrase := fmt.Sprintf("%d %s monitored", profileCount, agentPluralize(profileCount, "participant artifact"))
+	if needsRenewal > 0 {
+		return fmt.Sprintf("[yellow]● %s[/yellow]", phrase)
+	}
+	return fmt.Sprintf("[green]● %s[/green]", phrase)
+}
+
+// formatAgentSummaryLine lays out one summary line as LABEL + status chip +
+// target, matching the gateway/spy summary panels.
+func formatAgentSummaryLine(label, chip, target string, contentWidth int) string {
+	l := tui.StyleLabel(strings.ToUpper(label), agentSummaryLabelWidth)
+	targetWidth := tui.MaxInt(8, contentWidth-agentSummaryLabelWidth-agentSummaryStatusWidth-4)
+	status := tui.StyleChipWidth(chip, agentSummaryStatusWidth)
+	tgt := tui.StyleTarget(tui.TruncateDisplay(target, targetWidth), targetWidth)
+	return fmt.Sprintf("%s  %s  %s", l, status, tgt)
+}
+
+// agentPluralize appends an "s" to noun unless n == 1.
+func agentPluralize(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
+}
+
+// agentSummaryPanelTheme is the orange, padded summary panel (matches the
+// gateway/spy summary panels).
+func agentSummaryPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleTitle, BorderStyle: tui.StyleOrangeBorder, PaddedBody: true}
+}
+
+// agentDetailsPanelTheme is the blue-bordered details panel that holds the
+// participant list and renewal table (matches the gateway "Routes" panel).
+func agentDetailsPanelTheme() tui.PanelTheme {
+	return tui.PanelTheme{TitleStyle: tui.StyleSection, BorderStyle: tui.StyleBlueBorder, PaddedBody: true}
 }
 
 // renderAgentLogPanel renders the "Agent Log" panel that sits beneath the main
@@ -721,7 +838,7 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			}
 			p := profs[vs.activeTab]
 			art := displayArtifacts[vs.rowSel]
-			if err := a.RenewArtifact(p.domainTemplateID, p.participantID, p.deviceName, art); err != nil {
+			if err := a.RenewArtifact(p.domainTemplateID, p.participantID, p.serial, art); err != nil {
 				a.emitf(catRenewal, tui.LogWarn, "manual renew %s failed: %v", artifactLabel[art], err)
 			} else {
 				a.emitf(catRenewal, tui.LogGood, "manual renew %s requested", artifactLabel[art])

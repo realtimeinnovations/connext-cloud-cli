@@ -59,9 +59,9 @@ func TestFindAdoptableNodes_ExcludesInMemoryProfile(t *testing.T) {
 	a := buildTestAgent(t, ffs)
 
 	seedOrphanEnrollment(a, ffs, "svc", "0:dom", "part", "SN-orphan", "https://device.example")
-	// A profile already keyed to the same (domain, participant) slot means the
-	// node is being managed; it must not be reported as adoptable.
-	a.profiles.Store(profileKey("0:dom", "part", ""), &profile{
+	// A profile already keyed to the same node slot means it is being managed;
+	// it must not be reported as adoptable.
+	a.profiles.Store(profileKey("0:dom", "part", "SN-orphan"), &profile{
 		serviceID:        "svc",
 		domainTemplateID: "0:dom",
 		participantID:    "part",
@@ -112,7 +112,7 @@ func TestAdoptProfile_ActivatesFromExistingCredentials(t *testing.T) {
 		t.Fatalf("identity fetched from %q, want the stored node_url", identityURL)
 	}
 
-	val, ok := a.profiles.Load(profileKey("0:dom", "part", ""))
+	val, ok := a.profiles.Load(profileKey("0:dom", "part", "SN-orphan"))
 	if !ok {
 		t.Fatal("adopted profile not stored")
 	}
@@ -152,7 +152,7 @@ func TestAdoptProfile_FailureDropsProfile(t *testing.T) {
 	if err := a.adoptProfile(n); err == nil {
 		t.Fatal("expected adoptProfile to fail")
 	}
-	if _, ok := a.profiles.Load(profileKey("0:dom", "part", "")); ok {
+	if _, ok := a.profiles.Load(profileKey("0:dom", "part", "SN-orphan")); ok {
 		t.Fatal("failed adoption left a profile behind")
 	}
 }
@@ -168,10 +168,42 @@ func TestAdoptExistingEnrollments_SilentlyAdoptsAll(t *testing.T) {
 
 	a.adoptExistingEnrollments()
 
-	for _, part := range []string{"part-a", "part-b"} {
-		if _, ok := a.profiles.Load(profileKey("0:dom", part, "")); !ok {
+	for part, serial := range map[string]string{"part-a": "SN-a", "part-b": "SN-b"} {
+		if _, ok := a.profiles.Load(profileKey("0:dom", part, serial)); !ok {
 			t.Fatalf("orphan %s not adopted", part)
 		}
+	}
+}
+
+// TestAdopt_SameParticipantDifferentSerials reproduces the s-tractor fleet case:
+// two nodes enrolled from the SAME participant template ("tractor") in the same
+// domain, differing only by serial. Both must be detected and adopted into
+// distinct profiles — the earlier bug keyed them identically, so only one
+// survived.
+func TestAdopt_SameParticipantDifferentSerials(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	nonFiringTimers(a)
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	const domain, participant = "29:south-field", "tractor"
+	seedOrphanEnrollment(a, ffs, "svc", domain, participant, "Fendt-724-010", "https://a.example")
+	seedOrphanEnrollment(a, ffs, "svc", domain, participant, "Fendt-728-011", "https://b.example")
+
+	adoptable := a.findAdoptableNodes()
+	if len(adoptable) != 2 {
+		t.Fatalf("expected 2 adoptable nodes sharing a participant, got %d", len(adoptable))
+	}
+
+	a.adoptExistingEnrollments()
+
+	for _, serial := range []string{"Fendt-724-010", "Fendt-728-011"} {
+		if _, ok := a.profiles.Load(profileKey(domain, participant, serial)); !ok {
+			t.Fatalf("node %s (same participant) not adopted into its own profile", serial)
+		}
+	}
+	if n := a.countProfiles(); n != 2 {
+		t.Fatalf("expected 2 distinct profiles, got %d", n)
 	}
 }
 
@@ -211,7 +243,7 @@ func TestConfigureFirstRun_ReuseChoiceAdoptsExisting(t *testing.T) {
 	if offered[0] != enrollChoiceReuse {
 		t.Fatalf("reuse choice not offered first: %v", offered)
 	}
-	if _, ok := a.profiles.Load(profileKey("0:dom", "part", "")); !ok {
+	if _, ok := a.profiles.Load(profileKey("0:dom", "part", "SN-orphan")); !ok {
 		t.Fatal("reused enrollment not adopted into a profile")
 	}
 }
@@ -250,7 +282,7 @@ func TestConfigureFirstRun_NoReuseChoiceWithoutOrphans(t *testing.T) {
 	}
 }
 
-func TestChooseAdoptable_MultiplePresentsPickList(t *testing.T) {
+func TestChooseAdoptable_MultipleOffersAllThenIndividuals(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 
@@ -259,21 +291,83 @@ func TestChooseAdoptable_MultiplePresentsPickList(t *testing.T) {
 		{service: "svc", domain: "0:dom", participant: "part-b", node: "SN-b", url: "https://b"},
 	}
 
+	var offered []string
 	a.SelectFunc = func(message string, choices []string) (string, error) {
-		if !strings.Contains(message, "Select the enrollment to reuse") {
+		if !strings.Contains(message, "Select the enrollment(s) to reuse") {
 			t.Fatalf("unexpected select prompt: %q", message)
 		}
-		if len(choices) != 2 {
-			t.Fatalf("expected 2 choices, got %d", len(choices))
-		}
-		return choices[1], nil
+		offered = choices
+		// Pick an individual enrollment (the last one).
+		return choices[len(choices)-1], nil
 	}
 
 	chosen, err := a.chooseAdoptable(nodes)
 	if err != nil {
 		t.Fatalf("chooseAdoptable: %v", err)
 	}
-	if chosen.node != "SN-b" {
-		t.Fatalf("chose %q, want SN-b", chosen.node)
+	// The pick-list must offer an "all" entry first, then each enrollment.
+	if len(offered) != 3 {
+		t.Fatalf("expected 3 choices (all + 2), got %d: %v", len(offered), offered)
+	}
+	if !strings.Contains(offered[0], "Use all 2 detected enrollments") {
+		t.Fatalf("first choice should adopt all, got %q", offered[0])
+	}
+	if len(chosen) != 1 || chosen[0].node != "SN-b" {
+		t.Fatalf("chose %+v, want single SN-b", chosen)
+	}
+}
+
+func TestChooseAdoptable_AllSelectsEveryNode(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+
+	nodes := []adoptableNode{
+		{service: "svc", domain: "0:dom", participant: "part-a", node: "SN-a", url: "https://a"},
+		{service: "svc", domain: "0:dom", participant: "part-b", node: "SN-b", url: "https://b"},
+	}
+
+	a.SelectFunc = func(_ string, choices []string) (string, error) {
+		return choices[0], nil // "Use all ..."
+	}
+
+	chosen, err := a.chooseAdoptable(nodes)
+	if err != nil {
+		t.Fatalf("chooseAdoptable: %v", err)
+	}
+	if len(chosen) != 2 {
+		t.Fatalf("expected all 2 nodes, got %d", len(chosen))
+	}
+}
+
+func TestReuseWizard_AdoptsAllSelectedEnrollments(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	nonFiringTimers(a)
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	seedOrphanEnrollment(a, ffs, "svc", "0:dom", "part-a", "SN-a", "https://a.example")
+	seedOrphanEnrollment(a, ffs, "svc", "0:dom", "part-b", "SN-b", "https://b.example")
+
+	a.EnrollFunc = func(string, string, string, []string, string, string, string) (string, error) {
+		t.Fatal("EnrollFunc called when reusing enrollments")
+		return "", nil
+	}
+
+	adoptable := a.findAdoptableNodes()
+	if len(adoptable) != 2 {
+		t.Fatalf("expected 2 adoptable nodes, got %d", len(adoptable))
+	}
+
+	a.SelectFunc = func(_ string, choices []string) (string, error) {
+		return choices[0], nil // "Use all 2 detected enrollments"
+	}
+
+	if err := a.reuseWizard(context.Background(), adoptable); err != nil {
+		t.Fatalf("reuseWizard: %v", err)
+	}
+	for part, serial := range map[string]string{"part-a": "SN-a", "part-b": "SN-b"} {
+		if _, ok := a.profiles.Load(profileKey("0:dom", part, serial)); !ok {
+			t.Fatalf("enrollment %s not adopted", part)
+		}
 	}
 }
