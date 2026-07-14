@@ -733,6 +733,10 @@ func TestRunRoutingServiceWithTextOutputPrintsPlainEvents(t *testing.T) {
 echo "RTI Routing Service 7.7.0 executing (with configuration=gw)"
 echo "LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED] name=Square, type_name=ShapeType, connection=edge_participant_domain_0"
 echo "LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_session/routes/route_0_all_edge_to_cloud@Square|RUN]"
+echo "WARNING NDDS_Transport_UDPv4_Socket_bind_with_ip:FAILED TO BIND | Port 7780 in use"
+echo "WARNING NDDS_Transport_UDPv4_SocketFactory_create_send_socket:FAILED TO BIND | Invalid port 7780"
+echo "ERROR NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicast socket (errno = 48)"
+echo "ERROR NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicast socket (errno = 48)"
 `
 	if err := os.WriteFile(filepath.Join(binDir, "rtiroutingservice"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -749,6 +753,9 @@ echo "LOCAL [/routing_services/gateway/domain_routes/etc/sessions/default_sessio
 	output := out.String()
 	if !strings.Contains(output, "[status] running") || !strings.Contains(output, "[route] Square edge_to_cloud run") {
 		t.Fatalf("unexpected output: %s", output)
+	}
+	if strings.Count(output, "[error] A required UDP socket could not be created.") != 1 || !strings.Contains(output, "(seen 2 times)") || !strings.Contains(output, "You may be running another gateway on this machine.") {
+		t.Fatalf("missing deduplicated diagnostic output: %s", output)
 	}
 	if strings.Contains(output, "\x1b[") {
 		t.Fatalf("text output contains ANSI escapes: %q", output)

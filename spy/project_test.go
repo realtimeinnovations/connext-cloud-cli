@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -516,6 +517,8 @@ func TestRunSpyWithTextOutputPrintsPlainEvents(t *testing.T) {
 	script := `#!/bin/sh
 echo "2026-05-05 14:55:51.771722 New writer        from 10.0.0.114     : topic=\"Square\" type=\"ShapeType\""
 echo "2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic=\"Square\" type=\"ShapeType\" sample={\"color\":\"BLUE\"}"
+echo "WARNING NDDS_Transport_UDPv4_SocketFactory_create_send_socket:FAILED TO BIND | Invalid port 7780"
+echo "ERROR NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicast socket (errno = 48)"
 `
 	if err := os.WriteFile(filepath.Join(binDir, "rtiddsspy"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -532,6 +535,9 @@ echo "2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic=\
 	output := out.String()
 	if !strings.Contains(output, "[writer] Square ShapeType from 10.0.0.114") || !strings.Contains(output, `[data] Square ShapeType {"color":"BLUE"}`) {
 		t.Fatalf("unexpected output: %s", output)
+	}
+	if strings.Count(output, "[error] A required UDP socket could not be created.") != 1 || !strings.Contains(output, "⚠ Needs attention") || !strings.Contains(output, "You may be running another gateway on this machine.") {
+		t.Fatalf("missing diagnostic output: %s", output)
 	}
 	if strings.Contains(output, "\x1b[") {
 		t.Fatalf("text output contains ANSI escapes: %q", output)
@@ -604,11 +610,11 @@ func TestRenderANSISamplesPanelExpandsToRemainingHeight(t *testing.T) {
 	samplesTop := -1
 	samplesBottom := -1
 	for index, line := range lines {
-		if strings.Contains(line, "┌─ Samples") {
+		if strings.Contains(line, "╭─ Samples") {
 			samplesTop = index
 			continue
 		}
-		if samplesTop >= 0 && strings.HasPrefix(line, "└") {
+		if samplesTop >= 0 && strings.HasPrefix(line, "╰") {
 			samplesBottom = index
 			break
 		}
@@ -623,6 +629,19 @@ func TestRenderANSISamplesPanelExpandsToRemainingHeight(t *testing.T) {
 	}
 	if !strings.Contains(rendered, `{"x":0}`) {
 		t.Fatalf("expected expanded samples panel to include data beyond old row cap:\n%s", rendered)
+	}
+}
+
+func TestDiagnosticsPanelAppearsImmediatelyAboveSpySamples(t *testing.T) {
+	view := NewLiveView(map[string]any{"databus": "db", "templates": map[string]any{"app": "app"}})
+	view.HandleLine("ERROR " + diagnostics.UDPUnicastSocketCreateFailure + " (errno = 48)")
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+
+	topics := strings.Index(rendered, "╭─ Topics")
+	attention := strings.Index(rendered, "╭─ ⚠ Needs attention")
+	samples := strings.Index(rendered, "╭─ Samples")
+	if topics < 0 || attention < topics || samples < attention {
+		t.Fatalf("expected Topics, Needs attention, Samples order:\n%s", rendered)
 	}
 }
 

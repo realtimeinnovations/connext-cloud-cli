@@ -177,7 +177,7 @@ func TestConfigureRegionPromptsWithSharedSelector(t *testing.T) {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	checks := []string{
-		"┌─ RTI Connext Cloud",
+		"╭─ RTI Connext Cloud",
 		"Welcome!",
 		previewWarning,
 		"rticloud dev",

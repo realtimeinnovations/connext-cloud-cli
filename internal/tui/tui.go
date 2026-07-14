@@ -31,6 +31,7 @@ var (
 		"[/dim]", "",
 		"[bold]", "",
 		"[/bold]", "",
+		"[blue]", "",
 		"[/]", "",
 		"["+RTIBlue+"]", "",
 	)
@@ -57,11 +58,18 @@ func MinInt(left int, right int) int {
 }
 
 func StripMarkup(value string) string {
+	if !strings.Contains(value, "[") {
+		return value
+	}
 	return markupReplacer.Replace(value)
 }
 
 func StripANSIEscapes(value string) string {
-	return ansiEscapePattern.ReplaceAllString(StripMarkup(value), "")
+	stripped := StripMarkup(value)
+	if !strings.Contains(stripped, "\x1b") {
+		return stripped
+	}
+	return ansiEscapePattern.ReplaceAllString(stripped, "")
 }
 
 func DisplayWidth(value string) int {
@@ -122,11 +130,11 @@ func panelTopBorder(title string, width int, theme PanelTheme) string {
 	innerWidth := MaxInt(1, width-2)
 	label := TruncateDisplay(title, MaxInt(1, innerWidth-3))
 	filler := MaxInt(0, innerWidth-DisplayWidth(label)-3)
-	return theme.BorderStyle("┌─ ") + theme.TitleStyle(label) + theme.BorderStyle(" "+strings.Repeat("─", filler)+"┐")
+	return theme.BorderStyle("╭─ ") + theme.TitleStyle(label) + theme.BorderStyle(" "+strings.Repeat("─", filler)+"╮")
 }
 
 func panelBottomBorder(width int, theme PanelTheme) string {
-	return theme.BorderStyle("└" + strings.Repeat("─", MaxInt(1, width-2)) + "┘")
+	return theme.BorderStyle("╰" + strings.Repeat("─", MaxInt(1, width-2)) + "╯")
 }
 
 func panelBodyLine(content string, width int, theme PanelTheme) string {
@@ -183,6 +191,12 @@ func StyleGrayBorder(value string) string {
 
 func Dim(value string) string {
 	return "\x1b[2m" + value + "\x1b[0m"
+}
+
+func StyleColumnHeader(value string, width int) string {
+	label := TruncateDisplay(value, width)
+	padding := MaxInt(0, width-DisplayWidth(label))
+	return "\x1b[2;4m" + label + "\x1b[0m" + strings.Repeat(" ", padding)
 }
 
 func StyleLabel(value string, width int) string {

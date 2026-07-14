@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"golang.org/x/oauth2"
 )
 
@@ -39,6 +41,7 @@ type Manager struct {
 	HTTPClient  *http.Client
 	Env         func(string) string
 	Now         func() time.Time
+	Sleep       func(time.Duration)
 	OpenBrowser BrowserOpener
 	Stdout      io.Writer
 }
@@ -71,6 +74,7 @@ func (fixedConfigProvider) RequireConfiguration(io.Writer) bool {
 
 const (
 	EvaluationBaseURL         = "https://evaluation.rti.com"
+	devLocalDeviceAuthBaseURL = "http://localhost:8080/api/v1"
 	workspacesAuth0Domain     = "auth.rti.com"
 	workspacesAuth0Audience   = "https://workspaces.cloud.rti.com/api/v1"
 	workspacesAuth0Scope      = "openid profile email read:workspace create:workspace basic_access"
@@ -118,6 +122,7 @@ func New(configProvider ConfigProvider, tokenPath string) *Manager {
 		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
 		Env:         os.Getenv,
 		Now:         time.Now,
+		Sleep:       time.Sleep,
 		OpenBrowser: defaultOpenBrowser,
 		Stdout:      os.Stdout,
 	}
@@ -301,11 +306,11 @@ func (manager *Manager) Login() (string, error) {
 	}
 	audience := configValues["audience"]
 	if audience == "" {
-		audience = "https://cloud.rti.com/api/v1"
+		audience = defaultAuth0Audience()
 	}
 	scope := configValues["scope"]
 	if scope == "" {
-		scope = "openid profile email list:databus query:databus create:databus delete:databus create:databus_client create:workspace"
+		scope = defaultAuth0Scope()
 	}
 	listener, redirectURI, err := listenForCallback()
 	if err != nil {
@@ -375,7 +380,7 @@ func (manager *Manager) Login() (string, error) {
 	}()
 	defer server.Close()
 	_, _ = fmt.Fprintln(manager.Stdout, "Opening browser for login...")
-	_, _ = fmt.Fprintf(manager.Stdout, "If the browser does not open, visit this URL manually:\n  %s\n", authorizationURL)
+	_, _ = fmt.Fprintln(manager.Stdout, "If the browser does not open, or you're logging in on a remote machine, run: rticloud login --device")
 	_ = manager.OpenBrowser(authorizationURL)
 	select {
 	case result := <-resultCh:
@@ -396,6 +401,247 @@ func (manager *Manager) Login() (string, error) {
 	case <-time.After(5 * time.Minute):
 		return "", fmt.Errorf("Error: Did not receive an authorization code in time.")
 	}
+}
+
+type deviceAuthorizationRequest struct {
+	ClientID string `json:"client_id"`
+	Audience string `json:"audience"`
+	Scope    string `json:"scope"`
+}
+
+type deviceAuthorizationResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+type deviceTokenRequest struct {
+	DeviceCode string `json:"device_code"`
+	ClientID   string `json:"client_id"`
+}
+
+type deviceTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int    `json:"expires_in"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+func (manager *Manager) LoginWithDeviceFlow() (string, error) {
+	if !manager.Config.RequireConfiguration(manager.Stdout) {
+		return "", nil
+	}
+	configValues, err := manager.Config.GetConfig()
+	if err != nil {
+		return "", err
+	}
+	apiHost := strings.TrimRight(configValues["api_host"], "/")
+	if apiHost == "" {
+		return "", fmt.Errorf("Error: API host is not configured. Run 'rticloud configure' first.")
+	}
+	deviceBaseURL := deviceAuthBaseURL(apiHost)
+	clientID := manager.Config.GetClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("Error: Client ID not available. This build is missing the Auth0 client ID; set CONNEXT_CLOUD_CLI_CLIENT_ID for development or fix the release packaging.")
+	}
+	audience := configValues["audience"]
+	if audience == "" {
+		audience = defaultAuth0Audience()
+	}
+	scope := configValues["scope"]
+	if scope == "" {
+		scope = defaultAuth0Scope()
+	}
+
+	authorization, err := manager.startDeviceAuthorization(deviceBaseURL, deviceAuthorizationRequest{
+		ClientID: clientID,
+		Audience: audience,
+		Scope:    scope,
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := validateDeviceAuthorizationResponse(authorization); err != nil {
+		return "", err
+	}
+	verificationURI := deviceAuthURL(authorization.VerificationURI)
+	verificationURIComplete := deviceAuthURL(authorization.VerificationURIComplete)
+
+	_, _ = fmt.Fprintln(manager.Stdout, "Attempting to automatically open the SSO authorization page in your default browser.")
+	_, _ = fmt.Fprintln(manager.Stdout, "If the browser does not open or you wish to use a different device to authorize this request, open the following URL:")
+	_, _ = fmt.Fprintln(manager.Stdout)
+	_, _ = fmt.Fprintf(manager.Stdout, "  %s\n", verificationURI)
+	_, _ = fmt.Fprintln(manager.Stdout)
+	_, _ = fmt.Fprintln(manager.Stdout, "Then enter the code:")
+	_, _ = fmt.Fprintln(manager.Stdout)
+	_, _ = fmt.Fprintf(manager.Stdout, "  %s\n", strings.ToUpper(authorization.UserCode))
+	_ = manager.OpenBrowser(verificationURIComplete)
+
+	interval := deviceFlowInterval(authorization.Interval)
+	deadline := manager.Now().Add(time.Duration(authorization.ExpiresIn) * time.Second)
+	for {
+		if !manager.Now().Before(deadline) {
+			return "", deviceFlowExpiredError()
+		}
+		manager.sleep(interval)
+		if !manager.Now().Before(deadline) {
+			return "", deviceFlowExpiredError()
+		}
+		payload, err := manager.pollDeviceToken(deviceBaseURL, deviceTokenRequest{DeviceCode: authorization.DeviceCode, ClientID: clientID})
+		if err != nil {
+			return "", err
+		}
+		switch strings.TrimSpace(payload.Error) {
+		case "":
+			if payload.AccessToken == "" {
+				return "", fmt.Errorf("Error: Device authorization token response did not include an access token")
+			}
+			if err := manager.SaveAccessToken(payload.AccessToken, payload.ExpiresIn); err != nil {
+				return "", err
+			}
+			return payload.AccessToken, nil
+		case "authorization_pending":
+			continue
+		case "slow_down":
+			interval += 5 * time.Second
+			continue
+		case "access_denied":
+			return "", fmt.Errorf("Error: Device authorization was denied.")
+		case "expired_token":
+			return "", deviceFlowExpiredError()
+		default:
+			if detail := strings.TrimSpace(payload.ErrorDescription); detail != "" {
+				return "", fmt.Errorf("Error: Device authorization failed: %s: %s", payload.Error, detail)
+			}
+			return "", fmt.Errorf("Error: Device authorization failed: %s", payload.Error)
+		}
+	}
+}
+
+func (manager *Manager) startDeviceAuthorization(apiHost string, payload deviceAuthorizationRequest) (deviceAuthorizationResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return deviceAuthorizationResponse{}, err
+	}
+	request, err := http.NewRequest(http.MethodPost, apiHost+"/auth/device", bytes.NewReader(body))
+	if err != nil {
+		return deviceAuthorizationResponse{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := manager.HTTPClient.Do(request)
+	if err != nil {
+		return deviceAuthorizationResponse{}, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return deviceAuthorizationResponse{}, err
+	}
+	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusNotFound {
+			return deviceAuthorizationResponse{}, fmt.Errorf("Error: Device authorization not available on this Connext Cloud server")
+		}
+		return deviceAuthorizationResponse{}, fmt.Errorf("Error: Device authorization failed: %s", httputil.FormatError(response.StatusCode, responseBody))
+	}
+	var authorization deviceAuthorizationResponse
+	if err := json.Unmarshal(responseBody, &authorization); err != nil {
+		return deviceAuthorizationResponse{}, err
+	}
+	return authorization, nil
+}
+
+func (manager *Manager) pollDeviceToken(apiHost string, payload deviceTokenRequest) (deviceTokenResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return deviceTokenResponse{}, err
+	}
+	request, err := http.NewRequest(http.MethodPost, apiHost+"/auth/device/token", bytes.NewReader(body))
+	if err != nil {
+		return deviceTokenResponse{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := manager.HTTPClient.Do(request)
+	if err != nil {
+		return deviceTokenResponse{}, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return deviceTokenResponse{}, err
+	}
+	var token deviceTokenResponse
+	if err := json.Unmarshal(responseBody, &token); err != nil {
+		if response.StatusCode != http.StatusOK {
+			return deviceTokenResponse{}, fmt.Errorf("Error: Device authorization failed: %s", httputil.FormatError(response.StatusCode, responseBody))
+		}
+		return deviceTokenResponse{}, err
+	}
+	if response.StatusCode != http.StatusOK && !isDeviceFlowPollError(token.Error) {
+		return deviceTokenResponse{}, fmt.Errorf("Error: Device authorization failed: %s", httputil.FormatError(response.StatusCode, responseBody))
+	}
+	return token, nil
+}
+
+func isDeviceFlowPollError(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "authorization_pending", "slow_down", "access_denied", "expired_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func deviceAuthBaseURL(apiHost string) string {
+	trimmed := strings.TrimRight(apiHost, "/")
+	if trimmed == config.RegionURLMap["dev-local"] {
+		return devLocalDeviceAuthBaseURL
+	}
+	return trimmed
+}
+
+func deviceAuthURL(rawURL string) string {
+	trimmed := strings.TrimRight(rawURL, "/")
+	if suffix, ok := strings.CutPrefix(trimmed, config.RegionURLMap["dev-local"]); ok && (suffix == "" || strings.HasPrefix(suffix, "/") || strings.HasPrefix(suffix, "?")) {
+		return devLocalDeviceAuthBaseURL + suffix
+	}
+	return trimmed
+}
+
+func validateDeviceAuthorizationResponse(response deviceAuthorizationResponse) error {
+	if response.DeviceCode == "" || response.UserCode == "" || response.VerificationURI == "" || response.VerificationURIComplete == "" || response.ExpiresIn <= 0 {
+		return fmt.Errorf("Error: Device authorization response was missing required fields.")
+	}
+	return nil
+}
+
+func deviceFlowInterval(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (manager *Manager) sleep(duration time.Duration) {
+	if manager.Sleep != nil {
+		manager.Sleep(duration)
+		return
+	}
+	time.Sleep(duration)
+}
+
+func deviceFlowExpiredError() error {
+	return fmt.Errorf("Error: Device authorization expired. Run 'rticloud login --device' again.")
+}
+
+func defaultAuth0Audience() string {
+	return "https://cloud.rti.com/api/v1"
+}
+
+func defaultAuth0Scope() string {
+	return "openid profile email list:databus query:databus create:databus delete:databus create:databus_client create:workspace"
 }
 
 func defaultAuth0Domain(configValues map[string]string) string {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -53,6 +54,7 @@ type RenderedView struct {
 	HideRoutes      bool
 	LogTitle        string
 	LogEmptyMessage string
+	Findings        []diagnostics.Finding
 }
 
 type KeyValueRow struct {
@@ -70,10 +72,12 @@ type RoutingLiveView struct {
 	CollectorStatusFunc func(config map[string]any, collectorName string) string
 	LastSnapshot        RenderedView
 	Enabled             bool
+	Detector            *diagnostics.Detector
 }
 
 type TerminalRenderer struct {
-	Out io.Writer
+	Out    io.Writer
+	screen *tui.Screen
 }
 
 func NewRoutingLiveView(config map[string]any) *RoutingLiveView {
@@ -82,19 +86,22 @@ func NewRoutingLiveView(config map[string]any) *RoutingLiveView {
 		State:           NewRoutingState(RoutingLiveLogLines),
 		CollectorStatus: "not configured",
 		Enabled:         true,
+		Detector:        diagnostics.NewDetector(),
 	}
 }
 
-func (view *RoutingLiveView) HandleLine(line string) {
+func (view *RoutingLiveView) HandleLine(line string) (diagnostics.Finding, bool) {
 	view.State.Update(line)
+	return view.Detector.Observe("routing", line)
 }
 
-func (view *RoutingLiveView) HandleCollectorLine(line string) {
+func (view *RoutingLiveView) HandleCollectorLine(line string) (diagnostics.Finding, bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
-		return
+		return diagnostics.Finding{}, false
 	}
 	view.State.appendLog("collector " + trimmed)
+	return view.Detector.Observe("collector", line)
 }
 
 func (view *RoutingLiveView) SeedFromConfig(xmlPath string) {
@@ -150,6 +157,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 			HideRoutes:      true,
 			LogTitle:        "Collector Log",
 			LogEmptyMessage: "Waiting for telemetry from Connext applications and gateways.",
+			Findings:        view.Detector.Findings(),
 		}
 	}
 	topicRows := VisibleTopicRows(view.State.TopicRows())
@@ -204,6 +212,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		LogLines: view.State.RecentLogs(),
 		LogTimes: view.State.RecentLogTimes(),
 		Border:   tui.RTIOrange,
+		Findings: view.Detector.Findings(),
 	}
 }
 
@@ -368,13 +377,24 @@ func collectorSummaryChip(status string) string {
 	}
 }
 
-func (renderer TerminalRenderer) Render(view RenderedView) error {
-	if renderer.Out == nil {
+func (renderer *TerminalRenderer) Render(view RenderedView) error {
+	if renderer == nil || renderer.Out == nil {
 		return nil
 	}
+	if renderer.screen == nil {
+		renderer.screen = tui.NewScreen(renderer.Out)
+	}
 	width, height := tui.TerminalSize(renderer.Out, defaultTerminalWidth, defaultTerminalHeight)
-	_, err := io.WriteString(renderer.Out, renderANSIForSize(view, width, height))
-	return err
+	return renderer.screen.Paint(renderFrameLines(view, width, height), width, height)
+}
+
+// Finish restores the cursor once the live view is done so follow-up messages
+// print below the last frame.
+func (renderer *TerminalRenderer) Finish() error {
+	if renderer == nil || renderer.screen == nil {
+		return nil
+	}
+	return renderer.screen.Finish()
 }
 
 func renderANSI(view RenderedView) string {
@@ -382,6 +402,10 @@ func renderANSI(view RenderedView) string {
 }
 
 func renderANSIForSize(view RenderedView, width int, height int) string {
+	return strings.Join(renderFrameLines(view, width, height), "\n")
+}
+
+func renderFrameLines(view RenderedView, width int, height int) []string {
 	if width <= 0 {
 		width = defaultTerminalWidth
 	}
@@ -421,20 +445,31 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		formatSummaryPanelLine(view.Header, contentWidth),
 		formatSummaryPanelLine(view.Resource, contentWidth),
 	}, width, summaryPanelTheme())
+	diagnosticsPanel := tui.RenderDiagnosticsPanel(view.Findings, width)
 	if view.HideRoutes {
 		fixedOverhead := 1 + len(summaryPanel) + 1 + 2
+		if len(diagnosticsPanel) > 0 {
+			fixedOverhead += len(diagnosticsPanel) + 1
+		}
 		logBudget := height - fixedOverhead
 		if logBudget <= 0 {
 			logBudget = 1
 		}
 		logsPanel := tui.RenderPanel(logTitle, resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
-		lines := []string{"\x1b[H\x1b[J"}
+		lines := []string{""}
 		lines = append(lines, summaryPanel...)
 		lines = append(lines, "")
+		if len(diagnosticsPanel) > 0 {
+			lines = append(lines, diagnosticsPanel...)
+			lines = append(lines, "")
+		}
 		lines = append(lines, logsPanel...)
-		return strings.Join(lines, "\n")
+		return lines
 	}
 	fixedOverhead := 1 + len(summaryPanel) + 1 + 2 + 1 + 2
+	if len(diagnosticsPanel) > 0 {
+		fixedOverhead += len(diagnosticsPanel) + 1
+	}
 	available := height - fixedOverhead
 	routeBudget, logBudget := tui.SplitSectionBudget(available, len(routeLines), len(logLines))
 	if routeBudget <= 0 {
@@ -445,13 +480,17 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 	}
 	routesPanel := tui.RenderPanel("Routes", resizePanelBody(routeLines, routeBudget, contentWidth), width, routesPanelTheme())
 	logsPanel := tui.RenderPanel(logTitle, resizePanelBody(logLines, logBudget, contentWidth), width, logPanelTheme())
-	lines := []string{"\x1b[H\x1b[J"}
+	lines := []string{""}
 	lines = append(lines, summaryPanel...)
 	lines = append(lines, "")
 	lines = append(lines, routesPanel...)
 	lines = append(lines, "")
+	if len(diagnosticsPanel) > 0 {
+		lines = append(lines, diagnosticsPanel...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, logsPanel...)
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 // gatewayLogEntries pairs each summarized routing log line with its severity and
@@ -517,10 +556,10 @@ func resolveRouteTableWidths(routes []RenderedRoute, contentWidth int) (int, int
 
 func formatRouteHeaderLine(topicWidth int, typeWidth int, statusWidth int) string {
 	return fmt.Sprintf("%s  %s  %s  %s",
-		tui.Dim(tui.PadDisplay("IO", routeIOWidth)),
-		tui.Dim(tui.PadDisplay("Topic", topicWidth)),
-		tui.Dim(tui.PadDisplay("Type", typeWidth)),
-		tui.Dim(tui.PadDisplay("Status", statusWidth)))
+		tui.StyleColumnHeader("IO", routeIOWidth),
+		tui.StyleColumnHeader("Topic", topicWidth),
+		tui.StyleColumnHeader("Type", typeWidth),
+		tui.StyleColumnHeader("Status", statusWidth))
 }
 
 func formatRouteEmptyLine(contentWidth int) string {

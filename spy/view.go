@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -56,12 +57,13 @@ type RenderedStats struct {
 }
 
 type RenderedView struct {
-	Title   string
-	Header  SummaryLine
-	Topics  []RenderedTopic
-	Samples []RenderedSample
-	Stats   RenderedStats
-	Border  string
+	Title    string
+	Header   SummaryLine
+	Topics   []RenderedTopic
+	Samples  []RenderedSample
+	Stats    RenderedStats
+	Border   string
+	Findings []diagnostics.Finding
 }
 
 type LiveView struct {
@@ -69,18 +71,21 @@ type LiveView struct {
 	State         *SpyState
 	DatabusSecure bool
 	LastSnapshot  RenderedView
+	Detector      *diagnostics.Detector
 }
 
 type TerminalRenderer struct {
-	Out io.Writer
+	Out    io.Writer
+	screen *tui.Screen
 }
 
 func NewLiveView(config map[string]any) *LiveView {
-	return &LiveView{Config: config, State: NewSpyState(SpyLiveLogLines)}
+	return &LiveView{Config: config, State: NewSpyState(SpyLiveLogLines), Detector: diagnostics.NewDetector()}
 }
 
-func (view *LiveView) HandleLine(line string) {
+func (view *LiveView) HandleLine(line string) (diagnostics.Finding, bool) {
 	view.State.Update(line)
+	return view.Detector.Observe("spy", line)
 }
 
 func (view *LiveView) PulseFrame(now ...float64) int {
@@ -157,12 +162,13 @@ func (view *LiveView) Render(pulseFrame int) RenderedView {
 	}
 	writers, readers := view.State.EndpointTotals()
 	return RenderedView{
-		Title:   SpyPanelTitle(),
-		Header:  header,
-		Topics:  topics,
-		Samples: samples,
-		Stats:   RenderedStats{DataWriters: writers, DataReaders: readers, Rows: view.State.StatisticsRows()},
-		Border:  SpyOrange,
+		Title:    SpyPanelTitle(),
+		Header:   header,
+		Topics:   topics,
+		Samples:  samples,
+		Stats:    RenderedStats{DataWriters: writers, DataReaders: readers, Rows: view.State.StatisticsRows()},
+		Border:   SpyOrange,
+		Findings: view.Detector.Findings(),
 	}
 }
 
@@ -214,13 +220,24 @@ func spySummaryChip(status string, activeTopicCount int, connectedHostCount int,
 	return fmt.Sprintf("[yellow]◌ %s[/yellow]", short)
 }
 
-func (renderer TerminalRenderer) Render(view RenderedView) error {
-	if renderer.Out == nil {
+func (renderer *TerminalRenderer) Render(view RenderedView) error {
+	if renderer == nil || renderer.Out == nil {
 		return nil
 	}
+	if renderer.screen == nil {
+		renderer.screen = tui.NewScreen(renderer.Out)
+	}
 	width, height := tui.TerminalSize(renderer.Out, spyDefaultWidth, spyDefaultHeight)
-	_, err := io.WriteString(renderer.Out, renderANSIForSize(view, width, height))
-	return err
+	return renderer.screen.Paint(renderFrameLines(view, width, height), width, height)
+}
+
+// Finish restores the cursor once the live view is done so follow-up messages
+// print below the last frame.
+func (renderer *TerminalRenderer) Finish() error {
+	if renderer == nil || renderer.screen == nil {
+		return nil
+	}
+	return renderer.screen.Finish()
 }
 
 func renderANSI(view RenderedView) string {
@@ -228,6 +245,10 @@ func renderANSI(view RenderedView) string {
 }
 
 func renderANSIForSize(view RenderedView, width int, height int) string {
+	return strings.Join(renderFrameLines(view, width, height), "\n")
+}
+
+func renderFrameLines(view RenderedView, width int, height int) []string {
 	if width <= 0 {
 		width = spyDefaultWidth
 	}
@@ -253,21 +274,29 @@ func renderANSIForSize(view RenderedView, width int, height int) string {
 		}
 	}
 	statsLines := formatStatisticsLines(view.Stats, contentWidth)
+	diagnosticsPanel := tui.RenderDiagnosticsPanel(view.Findings, width)
 	fixed := 1 + len(summary) + 1 + 2 + 1 + 2 + 1 + tui.MinInt(len(statsLines)+2, 6)
+	if len(diagnosticsPanel) > 0 {
+		fixed += len(diagnosticsPanel) + 1
+	}
 	available := tui.MaxInt(2, height-fixed)
 	topicBudget := tui.MinInt(len(topicLines), tui.MaxInt(1, available/2))
 	sampleBudget := tui.MaxInt(1, available-topicBudget)
-	lines := []string{"\x1b[H\x1b[J"}
+	lines := []string{""}
 	lines = append(lines, summary...)
 	lines = append(lines, "")
 	lines = append(lines, tui.RenderPanel("Topics", resizeLines(topicLines, topicBudget), width, topicsPanelTheme())...)
 	lines = append(lines, "")
+	if len(diagnosticsPanel) > 0 {
+		lines = append(lines, diagnosticsPanel...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, tui.RenderPanel("Samples", resizeLines(sampleLines, sampleBudget), width, samplesPanelTheme())...)
 	if len(statsLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, tui.RenderPanel("Statistics", resizeLines(statsLines, tui.MinInt(len(statsLines), 4)), width, topicsPanelTheme())...)
 	}
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 func formatSummaryLines(line SummaryLine, contentWidth int) []string {
@@ -302,7 +331,7 @@ func formatHostsLine(hosts []string, contentWidth int) string {
 }
 
 func formatTopicHeader(contentWidth int) string {
-	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", tui.Dim(tui.PadDisplay("IO", 4)), tui.Dim(tui.PadDisplay("Topic", 24)), tui.Dim(tui.PadDisplay("Type", 18)), tui.Dim(tui.PadDisplay("W/R", 5)), tui.Dim(tui.PadDisplay("Samples", 7)), tui.Dim(tui.PadDisplay("Last sample", tui.MaxInt(12, contentWidth-70))))
+	return fmt.Sprintf("%s  %s  %s  %s  %s  %s", tui.StyleColumnHeader("IO", 4), tui.StyleColumnHeader("Topic", 24), tui.StyleColumnHeader("Type", 18), tui.StyleColumnHeader("W/R", 5), tui.StyleColumnHeader("Samples", 7), tui.StyleColumnHeader("Last sample", tui.MaxInt(12, contentWidth-70)))
 }
 
 func formatTopicLine(topic RenderedTopic, contentWidth int) string {

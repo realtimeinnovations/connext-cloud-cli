@@ -41,7 +41,7 @@ const (
 	CancelSpySetupLabel    = "Cancel spy setup"
 	SpyLogName             = "spy.log"
 	spyRenderPollInterval  = 50 * time.Millisecond
-	spyLiveRefreshInterval = 250 * time.Millisecond
+	spyLiveRefreshInterval = 100 * time.Millisecond
 )
 
 type UserError = common.UserError
@@ -462,6 +462,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	liveView := NewLiveView(config)
 	liveView.DatabusSecure = databusSecure
 	renderer := TerminalRenderer{Out: app.Out}
+	defer func() { _ = renderer.Finish() }()
 	logFile, err := os.OpenFile(app.SpyLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
@@ -492,10 +493,13 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		if shouldWriteSpyLogLine(line) {
 			_, _ = fmt.Fprintf(logFile, "%s [spy] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 		}
-		liveView.HandleLine(line)
+		finding, first := liveView.HandleLine(line)
 		if options.TextOutput {
 			for _, eventLine := range PlainEventLines(line) {
 				_, _ = fmt.Fprintln(app.Out, eventLine)
+			}
+			if first {
+				_, _ = fmt.Fprint(app.Out, tui.FormatTextFinding(finding))
 			}
 		}
 	}
@@ -645,12 +649,15 @@ done:
 			if !options.TextOutput {
 				_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 			}
+			_ = renderer.Finish()
 			if interrupted {
 				_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
+				_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
 				app.printRestartHint()
 				return 130, nil
 			}
 			_, _ = fmt.Fprintln(app.Out, "Spy stopped.")
+			_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
 			app.printRestartHint()
 			return exitErr.ExitCode(), nil
 		}
@@ -659,9 +666,11 @@ done:
 	if !options.TextOutput {
 		_ = renderer.Render(liveView.PrintSnapshot("stopped"))
 	}
+	_ = renderer.Finish()
 	if interrupted {
 		_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
 	}
+	_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
 	app.printRestartHint()
 	return 0, nil
 }

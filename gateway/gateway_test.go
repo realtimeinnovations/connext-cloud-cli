@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -622,6 +623,42 @@ func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsPanelAppearsImmediatelyAboveGatewayLog(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"databus": "db",
+		"templates": map[string]any{
+			"gateway": "gw",
+		},
+	})
+	view.HandleLine("ERROR " + diagnostics.UDPUnicastSocketCreateFailure + " (errno = 48)")
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+
+	routes := strings.Index(rendered, "╭─ Routes")
+	attention := strings.Index(rendered, "╭─ ⚠ Needs attention")
+	logs := strings.Index(rendered, "╭─ Routing Log")
+	if routes < 0 || attention < routes || logs < attention {
+		t.Fatalf("expected Routes, Needs attention, Routing Log order:\n%s", rendered)
+	}
+}
+
+func TestDiagnosticsPanelAppearsBetweenSummaryAndCollectorLog(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.HandleCollectorLine("ERROR " + diagnostics.UDPUnicastSocketCreateFailure + " (errno = 48)")
+	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
+
+	summary := strings.Index(rendered, "Connext Cloud Gateway")
+	attention := strings.Index(rendered, "╭─ ⚠ Needs attention")
+	logs := strings.Index(rendered, "╭─ Collector Log")
+	if summary < 0 || attention < summary || logs < attention || strings.Contains(rendered, "╭─ Routes") {
+		t.Fatalf("expected Summary, Needs attention, Collector Log order without routes:\n%s", rendered)
+	}
+}
+
 func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 	view := RenderedView{
 		Title:    GatewayPanelTitle(),
@@ -629,11 +666,10 @@ func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "obs / collector"},
 	}
 	rendered := renderANSI(view)
-	if !strings.HasPrefix(rendered, "\x1b[H\x1b[J") {
-		t.Fatalf("expected cursor-home redraw prefix, got %q", rendered[:minInt(len(rendered), 8)])
-	}
-	if strings.HasPrefix(rendered, "\x1b[2J") {
-		t.Fatalf("expected renderer to avoid full-screen clear, got %q", rendered[:minInt(len(rendered), 8)])
+	for _, sequence := range []string{"\x1b[2J", "\x1b[H", "\x1b[J"} {
+		if strings.Contains(rendered, sequence) {
+			t.Fatalf("expected frame content without screen-clear sequences, found %q", sequence)
+		}
 	}
 }
 

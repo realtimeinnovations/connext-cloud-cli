@@ -8,8 +8,10 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
@@ -104,6 +107,63 @@ func TestParserUpdateCheck(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in output: %s", want, out.String())
 		}
+	}
+}
+
+func TestParserLoginDeviceFlag(t *testing.T) {
+	var out bytes.Buffer
+	if err := Execute([]string{"login", "--help"}, &out, io.Discard, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "--device") {
+		t.Fatalf("login help missing --device: %s", out.String())
+	}
+	if strings.Contains(out.String(), "--device-flow") {
+		t.Fatalf("login help still includes --device-flow: %s", out.String())
+	}
+}
+
+func TestParserLoginDeviceRoutesToDeviceLogin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/auth/device":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"device_code":               "secret-device-code",
+				"user_code":                 "ABCD-EFGH",
+				"verification_uri":          "https://login.example.test/device",
+				"verification_uri_complete": "https://login.example.test/device?user_code=ABCD-EFGH",
+				"expires_in":                30,
+				"interval":                  1,
+			})
+		case "/api/v1/auth/device/token":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": "token-value", "expires_in": 3600})
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	authManager := auth.New(parserAuthConfigProvider{apiHost: server.URL + "/api/v1"}, filepath.Join(t.TempDir(), "credentials.json"))
+	authManager.Stdout = &out
+	authManager.Now = func() time.Time { return now }
+	authManager.Sleep = func(duration time.Duration) { now = now.Add(duration) }
+	authManager.OpenBrowser = func(string) error { return nil }
+	runtime := &app.Runtime{Auth: authManager}
+
+	if err := Execute([]string{"login", "--device"}, &out, io.Discard, runtime); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	token, err := authManager.GetAccessTokenFromHomeFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "token-value" {
+		t.Fatalf("saved token = %q, want token-value", token)
+	}
+	if !strings.Contains(out.String(), "ABCD-EFGH") {
+		t.Fatalf("device instructions missing user code: %s", out.String())
 	}
 }
 
@@ -303,3 +363,14 @@ func roundTripClient(fn roundTripFunc) *http.Client {
 func stringResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }
+
+type parserAuthConfigProvider struct {
+	apiHost string
+}
+
+func (provider parserAuthConfigProvider) GetConfig() (map[string]string, error) {
+	return map[string]string{"api_host": provider.apiHost}, nil
+}
+
+func (parserAuthConfigProvider) GetClientID() string                 { return "client-id" }
+func (parserAuthConfigProvider) RequireConfiguration(io.Writer) bool { return true }
