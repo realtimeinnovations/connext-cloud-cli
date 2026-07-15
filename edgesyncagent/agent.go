@@ -622,7 +622,7 @@ func (a *Agent) findNodeDomain(service, participant, node string) string {
 			continue
 		}
 		if _, err := a.ReadFile(a.Store.NodeKeyPath(service, d.Name(), participant, node)); err == nil {
-			return d.Name()
+			return edgestore.DomainFromPathSegment(d.Name())
 		}
 	}
 	return ""
@@ -737,8 +737,11 @@ func (a *Agent) findAdoptableNodes() []adoptableNode {
 			if !dom.IsDir() {
 				continue
 			}
-			domain := dom.Name()
-			parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain))
+			// dom.Name() is the on-disk (path-sanitized) directory name; recover
+			// the true "<id>:<tag>" domain template id for use as a profile key
+			// and for anything that leaves the filesystem (state, display, API).
+			domain := edgestore.DomainFromPathSegment(dom.Name())
+			parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name()))
 			if err != nil {
 				continue
 			}
@@ -747,7 +750,7 @@ func (a *Agent) findAdoptableNodes() []adoptableNode {
 					continue
 				}
 				participant := part.Name()
-				nodes, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain, participant))
+				nodes, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name(), participant))
 				if err != nil {
 					continue
 				}

@@ -83,6 +83,19 @@ func (s *Store) fileExists(path string) bool {
 //	participant — participant template id      (e.g. participant-sensors-0849)
 //	node        — node id (device serial)      (e.g. b9a00ae9a51d4086b52dc96015e4c5b0)
 
+// DomainPathSegment converts a domain template id ("<id>:<tag>", e.g.
+// "29:north-field") into a filesystem-safe directory name by replacing the
+// ":" separator with "." — ":" cannot appear in a Windows path segment.
+func DomainPathSegment(domain string) string {
+	return strings.Replace(domain, ":", ".", 1)
+}
+
+// DomainFromPathSegment reverses DomainPathSegment, recovering the true
+// "<id>:<tag>" domain template id from an on-disk directory name.
+func DomainFromPathSegment(name string) string {
+	return strings.Replace(name, ".", ":", 1)
+}
+
 // AgentDir returns the agent base directory that holds the agent's operational
 // files (inbox, log, mTLS credentials, per-node state). It is never relocated
 // by ConnextDir.
@@ -125,7 +138,7 @@ func (s *Store) PermissionsCAPath(service, domain string) string {
 // DomainDir returns the DOMAIN-scope directory that holds artifacts shared by
 // every participant template in the domain (governance, CRL, PSK).
 func (s *Store) DomainDir(service, domain string) string {
-	return filepath.Join(s.ServiceDir(service), domain)
+	return filepath.Join(s.ServiceDir(service), DomainPathSegment(domain))
 }
 
 // GovernancePath is the signed governance document, shared across the domain.
@@ -182,7 +195,7 @@ func (s *Store) MTLSRoot(service string) string {
 // connext_artifacts node path but always lives under BaseDir (never relocated
 // by ConnextDir).
 func (s *Store) NodeAgentDir(service, domain, participant, node string) string {
-	return filepath.Join(s.MTLSRoot(service), domain, participant, node)
+	return filepath.Join(s.MTLSRoot(service), DomainPathSegment(domain), participant, node)
 }
 
 // NodeCertPath is the mTLS leaf certificate for a node.
@@ -369,7 +382,7 @@ func (s *Store) ListNodesWithURL() []NodeInfo {
 					}
 					nodes = append(nodes, NodeInfo{
 						Service:     svc.Name(),
-						Domain:      dom.Name(),
+						Domain:      DomainFromPathSegment(dom.Name()),
 						Participant: part.Name(),
 						Node:        leaf.Name(),
 						URL:         u,
