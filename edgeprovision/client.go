@@ -104,7 +104,8 @@ func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile strin
 		RootCAs:      caCertPool,
 	}
 
-	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
 	if serverAddr != "" {
 		// Redirect TCP dial to serverAddr while keeping TLS SNI from the URL hostname.
 		// Equivalent to curl's --connect-to flag.
