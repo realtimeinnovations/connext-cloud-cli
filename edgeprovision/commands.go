@@ -133,7 +133,7 @@ func (runner *Runner) saveToFile(outputPath string, data []byte) error {
 }
 
 // extractLease builds a summary map containing only the "lease" and
-// "server_time_utc" keys from a JSON response.  Returns nil when neither key
+// "serverTimeUtc" keys from a JSON response.  Returns nil when neither key
 // is present.
 func extractLease(result map[string]any) map[string]any {
 	out := map[string]any{}

@@ -14,7 +14,7 @@ import (
 )
 
 // Store manages the local artifact cache under BaseDir.
-// All file I/O fields are injectable for testing.
+// WriteFile/MkdirAll/Stat are injectable for testing.
 type Store struct {
 	// BaseDir is the agent base directory (typically <workdir>/.connext). It
 	// always holds the agent's operational files (inbox, log, mTLS credentials
@@ -214,8 +214,8 @@ func (s *Store) NodeStatePath(service, domain, participant, node string) string 
 // WriteEnrollArtifacts persists enrollment artifacts into the layered layout:
 //
 //	node.crt / node.key / ca-chain.crt   → NodeAgentDir (mTLS, per node)
-//	identity_ca.crt + permissions_ca.crt → ServiceDir   (shared by the service)
-//	governance.p7s                → DomainDir     (shared by the domain)
+//	identity_ca.crt + permissions_ca.crt → DomainDir    (shared by the domain)
+//	governance.p7s                      → DomainDir    (shared by the domain)
 //
 // Fields with nil or empty bytes are silently skipped.
 func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, a EnrollArtifacts) error {
