@@ -1,18 +1,35 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package cli
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
+	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
 
 const commandGroupAnnotation = "rticloud.commandGroup"
+
+// slotResolutionNote is embedded in --url and --output flag descriptions to
+// document when the value is auto-resolved from the local store.
+const slotResolutionNote = "when --service, --domain-tpl-id, --participant-tpl-id and --serial are set"
 
 var rootCommandGroups = []string{
 	"Connect to Connext Cloud",
@@ -63,6 +80,8 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		groupCommand(newAppClientCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newNetworkCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newLicenseCommand(runtime), "Manage Connext Cloud"),
+		groupCommand(newEdgeProvisioningCommand(runtime), "Manage Connext Cloud"),
+		groupCommand(newEdgeSyncCommand(runtime), "Connect to Connext Cloud"),
 		groupCommand(newGatewayCommand(runtime), "Connect to Connext Cloud"),
 		groupCommand(newSpyCommand(runtime), "Connect to Connext Cloud"),
 	)
@@ -182,6 +201,108 @@ func printCommandList(out io.Writer, commands []*cobra.Command) {
 	for _, cmd := range commands {
 		_, _ = fmt.Fprintf(out, "  %-*s  %s\n", width, cmd.Name(), cmd.Short)
 	}
+}
+
+// resolveNodeOutput returns the node-scoped Connext artifacts directory (with a
+// trailing separator so resolveOutputPath treats it as a directory) when the
+// slot is fully identified and the caller did not supply an explicit --output.
+// Identity and permissions are node-scoped. Falls back to the caller-supplied
+// value (including "") in all other cases.
+func resolveNodeOutput(rt *app.Runtime, service, domainID, participantID, serial, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" || participantID == "" || serial == "" {
+		return output
+	}
+	return rt.EdgeStore.NodeDir(service, domainID, participantID, serial) + string(os.PathSeparator)
+}
+
+// resolveDomainOutput returns the domain-scoped Connext artifacts directory.
+// PSK and CRL are shared by every participant in the domain.
+func resolveDomainOutput(rt *app.Runtime, service, domainID, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" {
+		return output
+	}
+	return rt.EdgeStore.DomainDir(service, domainID) + string(os.PathSeparator)
+}
+
+// resolveMTLSOutput returns the node-scoped mTLS directory (renew-cert writes
+// node.crt and ca-chain.crt here).
+func resolveMTLSOutput(rt *app.Runtime, service, domainID, participantID, serial, output string) string {
+	if output != "" || rt == nil || rt.EdgeStore == nil ||
+		service == "" || domainID == "" || participantID == "" || serial == "" {
+		return output
+	}
+	return rt.EdgeStore.NodeAgentDir(service, domainID, participantID, serial) + string(os.PathSeparator)
+}
+
+// resolveConnextURL returns the device endpoint URL from the local store when
+// --url is not set.  All three of --service, --domain-tpl-id, and
+// --participant-tpl-id must be set for a store lookup to proceed; otherwise the
+// caller-supplied value (including "") is returned unchanged.
+//
+// If the requested slot has no node_url but other enrolled slots exist under
+// the serial, returns an actionable error listing them.
+func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID, rawURL string) (string, error) {
+	if rawURL != "" || service == "" || domainID == "" || participantID == "" || rt == nil || rt.EdgeStore == nil {
+		return rawURL, nil
+	}
+	if serial == "" {
+		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
+	}
+	if u := rt.EdgeStore.ResolveNodeURL(service, domainID, participantID, serial); u != "" {
+		return u, nil
+	}
+	// Requested node has no node_url; list enrolled nodes for diagnosis.
+	others := rt.EdgeStore.ListNodesWithURL()
+	if len(others) > 0 {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "no enrolled node for service %q / domain %q / participant %q / serial %s.\n\tfound instead:", service, domainID, participantID, serial)
+		for _, ni := range others {
+			ts := ""
+			if !ni.EnrolledAt.IsZero() {
+				ts = "  (enrolled " + ni.EnrolledAt.UTC().Format(time.RFC3339) + ")"
+			}
+			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --serial %s%s",
+				ni.Service, ni.Domain, ni.Participant, ni.Node, ts)
+		}
+		return "", fmt.Errorf("%s", sb.String())
+	}
+	return "", fmt.Errorf("--url is required (node_url not found in store at %s)",
+		rt.EdgeStore.NodeURLPath(service, domainID, participantID, serial))
+}
+
+// campaignTokenClaims decodes the payload of a JWT and returns its claims as a
+// map.  Returns nil on any error.
+//
+// SECURITY: the signature is NOT verified here — only the base64url payload is
+// decoded.  The returned claims are therefore UNTRUSTED and must only be used
+// for convenience (e.g. defaulting the device URL).  Never make an
+// authorization decision on them client-side; the server re-validates the
+// signed token on enrollment.
+func campaignTokenClaims(token string) map[string]any {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	// JWT payload uses raw base64url encoding (no padding).
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return nil
+	}
+	return claims
+}
+
+// claimString extracts a string value from a JWT claims map using the
+// "https://devices.cloud.rti.com/<key>" namespace prefix.
+func claimString(claims map[string]any, key string) string {
+	const ns = "https://devices.cloud.rti.com/"
+	v, _ := claims[ns+key].(string)
+	return v
 }
 
 func parentCommand(use string, short string) *cobra.Command {
@@ -841,5 +962,1118 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 			},
 		},
 	)
+	return cmd
+}
+
+// ── Edge Provisioning (parent) ────────────────────────────────────────────────
+
+func newEdgeProvisioningCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("edge-provisioning", "Manage Edge Provisioning Services")
+	cmd.AddCommand(
+		newEdgeProvisioningServiceCommand(runtime),
+		newEdgeProvisioningGovernanceTemplateCommand(runtime),
+		newEdgeProvisioningPermissionsTemplateCommand(runtime),
+		newEdgeProvisioningDomainTemplateCommand(runtime),
+		newEdgeProvisioningParticipantTemplateCommand(runtime),
+		newEdgeProvisioningCampaignCommand(runtime),
+		newEdgeProvisioningDeviceCommand(runtime),
+	)
+	return cmd
+}
+
+// ── edge-provisioning service ─────────────────────────────────────────────────
+
+func newEdgeProvisioningServiceCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("service", "Manage Provisioning Services")
+
+	{ // list
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Provisioning Services",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runtime.Commands.ListEdgeSystems()
+			},
+		}
+		cmd.AddCommand(c)
+	}
+
+	{ // create
+		var name, description string
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Create a Provisioning Service",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.CreateEdgeSystem(name, description)
+			},
+		}
+		c.Flags().StringVar(&name, "name", "", "Provisioning Service name")
+		c.Flags().StringVar(&description, "description", "", "Optional description")
+		cmd.AddCommand(c)
+	}
+
+	{ // query
+		var name string
+		c := &cobra.Command{
+			Use:   "query",
+			Short: "Show Provisioning Service details",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.QueryEdgeSystem(name)
+			},
+		}
+		c.Flags().StringVar(&name, "name", "", "Edge System name or ID")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var name string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Provisioning Service",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.DeleteEdgeSystem(name)
+			},
+		}
+		c.Flags().StringVar(&name, "name", "", "Edge System name or ID")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning governance-template ───────────────────────────────────────
+
+func newEdgeProvisioningGovernanceTemplateCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("governance-template", "Manage Governance Templates")
+
+	{ // create
+		var edgeSystem, name, xmlFile string
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Upload a Governance Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				if xmlFile == "" {
+					return fmt.Errorf("--governance-file is required")
+				}
+				return runtime.Commands.CreateGovernanceTemplate(edgeSystem, name, xmlFile)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&name, "name", "", "Template name")
+		c.Flags().StringVar(&xmlFile, "governance-file", "", "Path to DDS Security Governance XML file")
+		cmd.AddCommand(c)
+	}
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Governance Templates",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListGovernanceTemplates(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var edgeSystem, templateName string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Governance Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateName == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.DeleteGovernanceTemplate(edgeSystem, templateName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateName, "name", "", "Template name")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning permissions-template ──────────────────────────────────────
+
+func newEdgeProvisioningPermissionsTemplateCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("permissions-template", "Manage Permissions Templates")
+
+	{ // create
+		var edgeSystem, name, xmlFile string
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Upload a Permissions Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				if xmlFile == "" {
+					return fmt.Errorf("--permissions-file is required")
+				}
+				return runtime.Commands.CreatePermissionsTemplate(edgeSystem, name, xmlFile)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&name, "name", "", "Template name")
+		c.Flags().StringVar(&xmlFile, "permissions-file", "", "Path to DDS Security Permissions XML file")
+		cmd.AddCommand(c)
+	}
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Permissions Templates",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListPermissionsTemplates(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // get
+		var edgeSystem, templateName string
+		c := &cobra.Command{
+			Use:   "get",
+			Short: "Get a Permissions Template (includes XML)",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateName == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.GetPermissionsTemplate(edgeSystem, templateName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateName, "name", "", "Template name")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var edgeSystem, templateName string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Permissions Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateName == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.DeletePermissionsTemplate(edgeSystem, templateName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateName, "name", "", "Template name")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning domain-template ──────────────────────────────────────────
+
+func newEdgeProvisioningDomainTemplateCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("domain-template", "Manage Domain Templates")
+
+	{ // create
+		var edgeSystem, governanceTemplate, customGovernanceFile, customGovernanceName, domainTag string
+		var domainID int
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Create a Domain Template",
+			Long: `Create a Domain Template
+
+To see available Governance Templates for a service, run:
+  rticloud edge-provisioning governance-template list --service <service>`,
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if governanceTemplate == "" && customGovernanceFile == "" {
+					return fmt.Errorf("--governance-template is required (or provide --custom-governance-file to create one inline)")
+				}
+				if customGovernanceFile != "" && customGovernanceName == "" {
+					return fmt.Errorf("--custom-governance-name is required when --custom-governance-file is provided")
+				}
+				return runtime.Commands.CreateDomainTemplate(edgeSystem, domainID, governanceTemplate, domainTag, customGovernanceFile, customGovernanceName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().IntVar(&domainID, "domain-id", 0, "DDS domain ID")
+		c.Flags().StringVar(&governanceTemplate, "governance-template", "", "Name of an existing Governance Template (see: governance-template list)")
+		c.Flags().StringVar(&domainTag, "domain-tag", "", "Tag to identify the domain template")
+		c.Flags().StringVar(&customGovernanceFile, "custom-governance-file", "", "Path to inline custom Governance XML (creates a Governance Template automatically)")
+		c.Flags().StringVar(&customGovernanceName, "custom-governance-name", "", "Name to assign to the Governance Template created from --custom-governance-file")
+		cmd.AddCommand(c)
+	}
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Domain Templates",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListDomainTemplates(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var edgeSystem, templateID string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Domain Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateID == "" {
+					return fmt.Errorf("--template-id is required")
+				}
+				return runtime.Commands.DeleteDomainTemplate(edgeSystem, templateID)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateID, "template-id", "", "Domain Template ID (e.g. 1:rafa)")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning participant-template ──────────────────────────────────────
+
+func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("participant-template", "Manage Participant Templates")
+
+	{ // create
+		var edgeSystem, name, permissionsRef string
+		var artifactMaxTTLMinutes int
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Create a Participant Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				if permissionsRef == "" {
+					return fmt.Errorf("--permissions-ref is required")
+				}
+				return runtime.Commands.CreateParticipantTemplate(edgeSystem, name, permissionsRef, artifactMaxTTLMinutes)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&name, "name", "", "Participant template name")
+		c.Flags().StringVar(&permissionsRef, "permissions-ref", "", "Name of an existing Permissions Template")
+		c.Flags().IntVar(&artifactMaxTTLMinutes, "artifact-max-ttl-minutes", 0, "Max artifact TTL in minutes (default: server-side 1440)")
+		cmd.AddCommand(c)
+	}
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Participant Templates",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListParticipantTemplates(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // get
+		var edgeSystem, templateName string
+		c := &cobra.Command{
+			Use:   "get",
+			Short: "Show Participant Template details",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateName == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.GetParticipantTemplate(edgeSystem, templateName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateName, "name", "", "Participant template name")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var edgeSystem, templateName string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Participant Template",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if templateName == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.DeleteParticipantTemplate(edgeSystem, templateName)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&templateName, "name", "", "Participant template name")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning campaign ───────────────────────────────────────────────
+
+func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("campaign", "Manage Campaigns")
+
+	{ // create
+		var edgeSystem, participantID, enrollmentList, domainTemplateID string
+		c := &cobra.Command{
+			Use:   "create",
+			Short: "Create a Campaign",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if participantID == "" {
+					return fmt.Errorf("--participant-tpl-id is required")
+				}
+				if enrollmentList == "" {
+					return fmt.Errorf("--enrollment-list is required")
+				}
+				if domainTemplateID == "" {
+					return fmt.Errorf("--domain-tpl-id is required")
+				}
+				return runtime.Commands.CreateCampaign(edgeSystem, participantID, enrollmentList, domainTemplateID)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
+		c.Flags().StringVar(&enrollmentList, "enrollment-list", "", "Path to JSON or CSV file with the list of devices to enroll")
+		c.Flags().StringVar(&domainTemplateID, "domain-tpl-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
+		cmd.AddCommand(c)
+	}
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List Campaigns",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListCampaigns(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // list-devices
+		var edgeSystem, campaignID string
+		c := &cobra.Command{
+			Use:   "list-devices",
+			Short: "List devices in a Campaign",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if campaignID == "" {
+					return fmt.Errorf("--campaign-id is required")
+				}
+				return runtime.Commands.ListCampaignDevices(edgeSystem, campaignID)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
+		cmd.AddCommand(c)
+	}
+
+	{ // delete
+		var edgeSystem, campaignID string
+		c := &cobra.Command{
+			Use:   "delete",
+			Short: "Delete a Campaign",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if campaignID == "" {
+					return fmt.Errorf("--campaign-id is required")
+				}
+				return runtime.Commands.DeleteCampaign(edgeSystem, campaignID)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-provisioning device ─────────────────────────────────────────────────
+
+func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("device", "Manage Devices")
+
+	{ // list
+		var edgeSystem string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List all devices in a Provisioning Service",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				return runtime.Commands.ListEdgeDevices(edgeSystem)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		cmd.AddCommand(c)
+	}
+
+	{ // revoke
+		var edgeSystem, participantID, campaignID, serial string
+		c := &cobra.Command{
+			Use:   "revoke",
+			Short: "Revoke a Device",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if edgeSystem == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if participantID == "" {
+					return fmt.Errorf("--participant-id is required")
+				}
+				if campaignID == "" {
+					return fmt.Errorf("--campaign-id is required")
+				}
+				if serial == "" {
+					return fmt.Errorf("--serial is required")
+				}
+				return runtime.Commands.RevokeDevice(edgeSystem, participantID, campaignID, serial)
+			},
+		}
+		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
+		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
+		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
+		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
+		cmd.AddCommand(c)
+	}
+
+	return cmd
+}
+
+// ── edge-sync ─────────────────────────────────────────────────────────────────
+
+// ensureConnextDir validates and, if needed, creates the directory given to
+// --connext-dir. Failing fast here (instead of deep inside enrollment) avoids
+// surfacing a raw filesystem error such as "mkdir rafa: not a directory" from
+// a path whose parent already exists as a regular file.
+func ensureConnextDir(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("--connext-dir %q exists but is not a directory", path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("--connext-dir %q: %w", path, err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
+	}
+	return nil
+}
+
+func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("edge-sync", "Sync security artifacts from a Provisioning Service to this device")
+
+	// Persistent slot-selection flags shared by all subcommands.
+	var connextDir, service, domainID, participantID, serial string
+	var debug bool
+	cmd.PersistentFlags().StringVar(&connextDir, "connext-dir", "", "Directory for the Connext artifacts tree (default: <workdir>/.connext/agent/<service>/connext_artifacts); does not affect the agent's inbox, log or mTLS files")
+	cmd.PersistentFlags().StringVar(&service, "service", "", "Provisioning Service ID (selects the store slot)")
+	cmd.PersistentFlags().StringVar(&domainID, "domain-tpl-id", "", "Domain Template ID")
+	cmd.PersistentFlags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID")
+	cmd.PersistentFlags().StringVar(&serial, "serial", "", "Device serial number (node id; selects the store slot)")
+	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Log HTTP request and response bodies to stdout (or to --log-file for the agent subcommand)")
+
+	// All edge-sync endpoints use mTLS and require certificate verification.
+	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		// --connext-dir relocates only the Connext artifacts tree; the agent
+		// base (inbox, log, mTLS, state) stays under BaseDir.
+		if connextDir != "" {
+			if err := ensureConnextDir(connextDir); err != nil {
+				return err
+			}
+			if runtime != nil && runtime.EdgeStore != nil {
+				runtime.EdgeStore.ConnextDir = connextDir
+			}
+		}
+		if runtime != nil {
+			if runtime.EdgeProvision != nil {
+				runtime.EdgeProvision.Debug = debug
+			}
+			if runtime.EdgeSyncAgent != nil {
+				runtime.EdgeSyncAgent.Debug = debug
+			}
+		}
+		return nil
+	}
+
+	{ // enroll
+		var csrFile, keyFile, campaignToken string
+		var macs []string
+		c := &cobra.Command{
+			Use:   "enroll",
+			Short: "Enroll this device with a Provisioning Service (first-time setup)",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if serial == "" {
+					return fmt.Errorf("--serial is required")
+				}
+				if len(macs) == 0 {
+					return fmt.Errorf("--mac is required (at least one)")
+				}
+				if csrFile == "" {
+					return fmt.Errorf("--csr-file is required")
+				}
+				// Auto-populate service, participant-id and domain-id from the campaign
+				// token when the user has not supplied them explicitly.
+				effectiveService := service
+				effectiveParticipant := participantID
+				if campaignToken != "" {
+					if claims := campaignTokenClaims(campaignToken); claims != nil {
+						if effectiveService == "" {
+							effectiveService = claimString(claims, "edge_system_id")
+						}
+						if effectiveParticipant == "" {
+							effectiveParticipant = claimString(claims, "participant_id")
+						}
+					}
+				}
+				if effectiveService == "" {
+					return fmt.Errorf("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
+				}
+				if effectiveParticipant == "" {
+					return fmt.Errorf("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
+				}
+				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken)
+				if err != nil {
+					return err
+				}
+				// Persist the device endpoint URL into the node slot so subsequent
+				// commands resolve it from the correct folder. domainTemplateID is
+				// guaranteed non-empty here (EnrollDevice errors otherwise).
+				if runtime.EdgeStore != nil {
+					domain := edgesyncagent.CampaignTokenDeviceDomain(campaignToken)
+					if domain == "" {
+						return fmt.Errorf("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
+					}
+					deviceURL := "https://" + domain
+					if err := runtime.EdgeStore.WriteNodeURL(effectiveService, domainTemplateID, effectiveParticipant, serial, deviceURL); err != nil {
+						_, _ = fmt.Fprintf(runtime.Out, "Warning: could not save device URL: %v\n", err)
+					}
+				}
+				return nil
+			},
+		}
+		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (can be specified multiple times)")
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
+		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
+		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (required by the enrollment endpoint)")
+		cmd.AddCommand(c)
+	}
+
+	{ // enroll-direct
+		var csrFile, keyFile, domainTemplateIDFlag, participantTemplateIDFlag, deviceName string
+		var macs []string
+		c := &cobra.Command{
+			Use:   "enroll-direct",
+			Short: "Operator-initiated direct enrollment (no campaign required)",
+			Long: `Enroll a device directly using your management token, without a pre-existing campaign.
+
+Unlike 'enroll' (which requires a campaign JWT), this command authenticates
+with your regular login credentials and performs enrollment in a single API call.
+
+The --serial flag identifies this participant on the Provisioning Service.
+You may choose any stable, unique string (e.g. device serial number, hostname,
+or UUID) — it is stored permanently and cannot be changed after enrollment.
+
+Requires:
+  rticloud login
+
+Example:
+  rticloud edge-sync enroll-direct \
+    --service my-provisioning-service \
+    --domain-template-id 1:my-domain \
+    --participant-template-id my-participant \
+    --serial my-device-001 \
+    --csr-file device.csr \
+    --key-file device.key`,
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if service == "" {
+					return fmt.Errorf("--service is required")
+				}
+				if domainTemplateIDFlag == "" {
+					return fmt.Errorf("--domain-template-id is required")
+				}
+				if participantTemplateIDFlag == "" {
+					return fmt.Errorf("--participant-template-id is required")
+				}
+				if serial == "" {
+					return fmt.Errorf("--serial is required")
+				}
+				if csrFile == "" {
+					return fmt.Errorf("--csr-file is required")
+				}
+				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile)
+				return err
+			},
+		}
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
+		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
+		c.Flags().StringVar(&domainTemplateIDFlag, "domain-template-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
+		c.Flags().StringVar(&participantTemplateIDFlag, "participant-template-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
+		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (optional, can be specified multiple times)")
+		c.Flags().StringVar(&deviceName, "device-name", "", "Device name to record in the inventory (optional)")
+		cmd.AddCommand(c)
+	}
+
+	{ // identity
+		var url, certFile, keyFile, caFile, serverAddr, csrFile, output string
+		c := &cobra.Command{
+			Use:   "identity",
+			Short: "Request or renew an identity certificate",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if participantID == "" {
+					return fmt.Errorf("--participant-id is required")
+				}
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				out := resolveNodeOutput(runtime, service, domainID, participantID, serial, output)
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				return runtime.EdgeProvision.RequestIdentity(resolvedURL, cert, key, ca, serverAddr, csrFile, out)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (required for first issuance)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save identityCertPem to this path (defaults to the node's Connext artifacts dir "+slotResolutionNote+")")
+		cmd.AddCommand(c)
+	}
+
+	{ // permissions
+		var url, certFile, keyFile, caFile, serverAddr, output string
+		c := &cobra.Command{
+			Use:   "permissions",
+			Short: "Request or renew a permissions document",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if participantID == "" {
+					return fmt.Errorf("--participant-id is required")
+				}
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				out := resolveNodeOutput(runtime, service, domainID, participantID, serial, output)
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				return runtime.EdgeProvision.RequestPermissions(resolvedURL, cert, key, ca, serverAddr, out)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save permissionsDocSmime to this path (defaults to the node's Connext artifacts dir "+slotResolutionNote+")")
+		cmd.AddCommand(c)
+	}
+
+	{ // psk
+		var url, certFile, keyFile, caFile, serverAddr, output string
+		c := &cobra.Command{
+			Use:   "psk",
+			Short: "Request or rotate a Pre-Shared Key",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				out := resolveDomainOutput(runtime, service, domainID, output)
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				return runtime.EdgeProvision.RequestPSK(resolvedURL, cert, key, ca, serverAddr, out)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVarP(&output, "output", "o", "", "Save PSK JSON to this path (defaults to the domain's Connext artifacts dir when --service and --domain-tpl-id are set)")
+		cmd.AddCommand(c)
+	}
+
+	{ // crl
+		var url, certFile, keyFile, caFile, serverAddr, output string
+		c := &cobra.Command{
+			Use:   "crl",
+			Short: "Fetch the Certificate Revocation List",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if participantID == "" {
+					return fmt.Errorf("--participant-id is required")
+				}
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				out := resolveDomainOutput(runtime, service, domainID, output)
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				return runtime.EdgeProvision.GetCRL(resolvedURL, cert, key, ca, serverAddr, out)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVarP(&output, "output", "o", "", "Output path (defaults to the domain's Connext artifacts dir when --service and --domain-tpl-id are set)")
+		cmd.AddCommand(c)
+	}
+
+	{ // renew-cert
+		var url, certFile, keyFile, caFile, serverAddr, csrFile, output string
+		var validityMinutes int
+		c := &cobra.Command{
+			Use:   "renew-cert",
+			Short: "Renew the mTLS device certificate using the same key pair",
+			Long: `Renew the mTLS device certificate without rotating the private key.
+
+The device presents its current certificate via mTLS.  The server verifies that
+the CSR subject and public key match the current certificate before signing and
+returning a fresh certificate valid for a new period.
+
+Provide a CSR generated from the same private key currently in use
+(the node's mtls_artifacts/node.key).  When the slot is fully identified the
+renewed certificate and CA chain are saved directly into the node's
+mtls_artifacts/ directory.`,
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if csrFile == "" {
+					return fmt.Errorf("--csr-file is required")
+				}
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				out := resolveMTLSOutput(runtime, service, domainID, participantID, serial, output)
+				return runtime.EdgeProvision.RenewDeviceCert(resolvedURL, cert, key, ca, serverAddr, csrFile, validityMinutes, out)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (must be signed by the same key as the current device certificate)")
+		c.Flags().IntVar(&validityMinutes, "validity-minutes", 0, "Requested certificate lifetime in minutes (0 = server default)")
+		c.Flags().StringVarP(&output, "output", "o", "", "Directory to save node.crt and ca-chain.crt (defaults to the node's mtls_artifacts dir "+slotResolutionNote+")")
+		cmd.AddCommand(c)
+	}
+
+	{ // status
+		var url, certFile, keyFile, caFile, serverAddr string
+		c := &cobra.Command{
+			Use:   "status",
+			Short: "Get this device's enrollment and artifact status",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				cert, key, ca := certFile, keyFile, caFile
+				if runtime != nil && runtime.EdgeStore != nil {
+					cert, key, ca = runtime.EdgeStore.ResolveNodeMTLS(service, domainID, participantID, serial, cert, key, ca)
+				}
+				resolvedURL, err := resolveConnextURL(runtime, serial, service, domainID, participantID, url)
+				if err != nil {
+					return err
+				}
+				return runtime.EdgeProvision.DeviceStatus(resolvedURL, cert, key, ca, serverAddr)
+			},
+		}
+		c.Flags().StringVar(&url, "url", "", "Device endpoint URL (auto-resolved from store "+slotResolutionNote+")")
+		c.Flags().StringVar(&certFile, "cert", "", "Path to client certificate PEM file")
+		c.Flags().StringVar(&keyFile, "key", "", "Path to client private key PEM file")
+		c.Flags().StringVar(&caFile, "ca", "", "Path to Provisioning Service CA chain PEM file")
+		c.Flags().StringVar(&serverAddr, "server", "", "TCP address to connect to (e.g. nlb.example.com:443); overrides DNS lookup while preserving TLS SNI")
+		cmd.AddCommand(c)
+	}
+
+	{ // agent
+		var crlInterval time.Duration
+		var logFile string
+		var manualMode bool
+		var deviceID string
+		var agentMACs []string
+		var campaignToken string
+		c := &cobra.Command{
+			Use:   "agent",
+			Short: "Run the artifact lifecycle agent (foreground process)",
+			Long: `Run the long-lived artifact lifecycle agent.
+
+The agent autonomously manages enrollment, identity certificates, permissions,
+PSK, and CRL for one or more Participant Profiles.
+
+On first run an interactive wizard enrolls the device, either directly with
+your Connext Cloud account (pick the Provisioning Service, Domain Template and
+Participant Template from lists; requires 'rticloud login') or with a campaign
+token issued by an operator.  The serial number and MAC addresses are
+auto-detected; use --manual to confirm or override them.
+
+For unattended provisioning skip the wizard entirely by passing either
+--campaign-token, or --service, --domain-tpl-id and --participant-tpl-id
+(direct enrollment with your management login).
+
+Once the agent is running, additional profiles can be enrolled with the
+'enroll' sub-command or by dropping an enroll-*.json file into the inbox
+directory.
+
+The process runs in the foreground. Use systemd (Type=simple), launchd, or
+your container runtime for supervision.`,
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if crlInterval > 0 {
+					runtime.EdgeSyncAgent.CRLInterval = crlInterval
+				}
+				runtime.EdgeSyncAgent.LogFile = logFile
+				runtime.EdgeSyncAgent.ManualMode = manualMode
+				// The edge-sync --serial persistent flag doubles as the agent
+				// device id so slot flags and first-run enrollment agree.
+				if deviceID == "" {
+					deviceID = serial
+				}
+				runtime.EdgeSyncAgent.DeviceID = deviceID
+				runtime.EdgeSyncAgent.MACs = agentMACs
+				runtime.EdgeSyncAgent.CampaignToken = campaignToken
+				runtime.EdgeSyncAgent.Service = service
+				runtime.EdgeSyncAgent.DomainTemplateID = domainID
+				runtime.EdgeSyncAgent.ParticipantTemplateID = participantID
+				err := runtime.EdgeSyncAgent.Run(cmd.Context())
+				if err == nil {
+					return nil
+				}
+				if _, ok := err.(common.UserError); ok {
+					return gateway.GatewayError{Message: "Agent enrollment cancelled."}
+				}
+				if err == context.Canceled || err == context.DeadlineExceeded {
+					return gateway.GatewayError{Message: "Agent enrollment cancelled."}
+				}
+				return err
+			},
+		}
+		c.Flags().DurationVar(&crlInterval, "crl-interval", 5*time.Minute, "How often to refresh the Certificate Revocation List")
+		c.Flags().StringVar(&logFile, "log-file", ".connext/agent/rticloud-edge-agent.log", "Path to the agent log file (empty to disable)")
+		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override auto-detected serial number and MAC addresses during first-run enrollment")
+		c.Flags().StringVar(&deviceID, "device-id", "", "Device identifier (serial number) to use instead of auto-detecting")
+		c.Flags().StringSliceVar(&agentMACs, "macs", nil, "Comma-separated MAC addresses to use instead of auto-detecting")
+		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT for headless first-run enrollment (skips the wizard)")
+
+		{ // agent enroll
+			var campaignToken, serial, deviceName string
+			var macs []string
+			enroll := &cobra.Command{
+				Use:   "enroll",
+				Short: "Enroll an additional Participant Profile into the running agent",
+				Long: `Write an enrollment request to the agent inbox.
+
+The agent picks up the request within its poll interval (default 10 s) and
+runs the full enrollment flow autonomously.
+
+With --campaign-token, the token is decoded to extract the service ID and
+participant ID automatically.  Without it, pass --service, --domain-tpl-id and
+--participant-tpl-id for a direct (operator-initiated) enrollment using the
+agent's management login.`,
+				Args: cobra.NoArgs,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
+						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
+					}
+					inboxDir := runtime.EdgeSyncAgent.InboxDir
+					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+						return err
+					}
+					if serial == "" {
+						serial = edgesyncagent.DetectSerial()
+					}
+					if len(macs) == 0 {
+						macs = edgesyncagent.DetectMACs()
+					}
+					var req edgesyncagent.EnrollRequest
+					if campaignToken != "" {
+						if deviceName == "" {
+							return fmt.Errorf("--device-name is required (the name registered in the inventory)")
+						}
+						serviceID, tokenParticipantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
+						if err != nil {
+							return fmt.Errorf("invalid campaign token: %w", err)
+						}
+						req = edgesyncagent.EnrollRequest{
+							ServiceID:     serviceID,
+							ParticipantID: tokenParticipantID,
+							CampaignToken: campaignToken,
+							Serial:        serial,
+							MACs:          macs,
+							DeviceName:    deviceName,
+						}
+					} else {
+						req = edgesyncagent.EnrollRequest{
+							ServiceID:        service,
+							DomainTemplateID: domainID,
+							ParticipantID:    participantID,
+							Serial:           serial,
+							MACs:             macs,
+							DeviceName:       deviceName,
+						}
+					}
+					data, _ := json.MarshalIndent(req, "", "  ")
+					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
+					dest := filepath.Join(inboxDir, "enroll-"+fname)
+					if err := os.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
+						return err
+					}
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Enrollment request written to %s\n", dest)
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "The agent will process it within its next poll interval.")
+					return nil
+				},
+			}
+			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (omit for direct enrollment via --service/--domain-tpl-id/--participant-tpl-id)")
+			enroll.Flags().StringVar(&deviceName, "device-name", "", "Device name as registered in the inventory (used as CSR Common Name prefix)")
+			enroll.Flags().StringVar(&serial, "serial", "", "Device serial number (auto-detected if omitted)")
+			enroll.Flags().StringArrayVar(&macs, "mac", nil, "MAC address (auto-detected if omitted; repeatable)")
+			c.AddCommand(enroll)
+		}
+
+		{ // agent reset
+			reset := &cobra.Command{
+				Use:   "reset",
+				Short: "Remove all agent state and start fresh",
+				Long: `Remove all enrolled profiles, certificates, keys, and cached artifacts from
+.connext/agent. The agent log and the parent .connext directory are left in
+place. The next run of the agent will trigger the first-run enrollment wizard.`,
+				Args: cobra.NoArgs,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if err := runtime.EdgeSyncAgent.Reset(); err != nil {
+						return fmt.Errorf("reset failed: %w", err)
+					}
+					return nil
+				},
+			}
+			c.AddCommand(reset)
+		}
+
+		cmd.AddCommand(c)
+	}
+
 	return cmd
 }

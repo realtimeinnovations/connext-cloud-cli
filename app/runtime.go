@@ -1,11 +1,26 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package app
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
@@ -14,8 +29,11 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
+	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
+	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -31,16 +49,19 @@ const (
 )
 
 type Runtime struct {
-	Out      io.Writer
-	Config   *config.Manager
-	Auth     *auth.Manager
-	WorkAuth *auth.Manager
-	CloudAPI *cloudapi.Client
-	Commands *commands.Runner
-	License  *commands.Runner
-	Gateway  *gateway.GatewayApp
-	Spy      *spy.App
-	Updater  *update.Manager
+	Out           io.Writer
+	Config        *config.Manager
+	Auth          *auth.Manager
+	WorkAuth      *auth.Manager
+	CloudAPI      *cloudapi.Client
+	Commands      *commands.Runner
+	License       *commands.Runner
+	Gateway       *gateway.GatewayApp
+	Spy           *spy.App
+	EdgeProvision *edgeprovision.Runner
+	EdgeStore     *edgestore.Store
+	EdgeSyncAgent *edgesyncagent.Agent
+	Updater       *update.Manager
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -84,8 +105,61 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return spy.DiscoverConnextInstallWithPrompt(nil, prompt, spyApp.SelectFunc, spyApp.InputFunc)
 	}
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
+	edgeProvisionRunner := edgeprovision.NewRunner(out)
+	edgeStoreRunner := edgestore.New(filepath.Join(workDir, ".connext"))
+	commandRunner.EdgeStore = edgeStoreRunner
+	agentApp := edgesyncagent.NewAgent(edgeStoreRunner, out)
+	agentApp.In = os.Stdin
+	agentApp.EnrollFunc = func(serviceID, participantID, serial string, macs []string, csrFile, keyFile, campaignToken string) (string, error) {
+		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken)
+	}
+	agentApp.EnrollDirectFunc = func(serviceID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error) {
+		return commandRunner.EnrollDeviceDirect(serviceID, domainTemplateID, participantTemplateID, serial, macs, deviceName, csrFile, keyFile)
+	}
+	agentApp.ListServicesFunc = commandRunner.FetchEdgeSystems
+	agentApp.ListDomainTemplatesFunc = commandRunner.FetchDomainTemplates
+	agentApp.ListParticipantTemplatesFunc = commandRunner.FetchParticipantTemplates
+	// newAgentEdgeRunner builds an edgeprovision.Runner configured for the agent
+	// (log-file output + current debug flag).  Each artifact closure below builds
+	// one on demand because cert/key/ca/URL come from the per-call store slot.
+	newAgentEdgeRunner := func() *edgeprovision.Runner {
+		r := edgeprovision.NewRunner(agentApp.LogOut)
+		r.Debug = agentApp.Debug
+		return r
+	}
+	agentApp.RequestIdentityFunc = func(url, cert, key, ca, serverAddr, csrFile, output string) error {
+		return newAgentEdgeRunner().RequestIdentity(url, cert, key, ca, serverAddr, csrFile, output)
+	}
+	agentApp.RequestPermissionsFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		return newAgentEdgeRunner().RequestPermissions(url, cert, key, ca, serverAddr, output)
+	}
+	agentApp.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		return newAgentEdgeRunner().RequestPSK(url, cert, key, ca, serverAddr, output)
+	}
+	agentApp.GetCRLFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		return newAgentEdgeRunner().GetCRL(url, cert, key, ca, serverAddr, output)
+	}
+	agentApp.RenewDeviceCertFunc = func(url, cert, key, ca, serverAddr, csrFile string, validityMinutes int, output string) error {
+		return newAgentEdgeRunner().RenewDeviceCert(url, cert, key, ca, serverAddr, csrFile, validityMinutes, output)
+	}
+	agentApp.GenerateKeyAndCSRFunc = generateAgentKeyAndCSR
+	agentApp.GenerateCSRFromKeyFunc = generateAgentCSRFromKey
 	updater := update.New(configManager, out)
-	return &Runtime{Out: out, Config: configManager, Auth: authManager, WorkAuth: evaluationAuthManager, CloudAPI: cloudClient, Commands: commandRunner, License: licenseRunner, Gateway: gatewayApp, Spy: spyApp, Updater: updater}
+	return &Runtime{
+		Out:           out,
+		Config:        configManager,
+		Auth:          authManager,
+		WorkAuth:      evaluationAuthManager,
+		CloudAPI:      cloudClient,
+		Commands:      commandRunner,
+		License:       licenseRunner,
+		Gateway:       gatewayApp,
+		Spy:           spyApp,
+		EdgeProvision: edgeProvisionRunner,
+		EdgeStore:     edgeStoreRunner,
+		EdgeSyncAgent: agentApp,
+		Updater:       updater,
+	}
 }
 
 func (runtime *Runtime) Logout() error {
@@ -100,6 +174,80 @@ func (runtime *Runtime) Logout() error {
 		}
 	}
 	return nil
+}
+
+// generateAgentKeyAndCSR generates a fresh ECDSA P-256 private key and a CSR
+// for the given common name and organisation, writing both PEM files to tmpDir.
+func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath string, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyPath = filepath.Join(tmpDir, "identity.key")
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return "", "", err
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: commonName, Organization: []string{org}},
+	}, key)
+	if err != nil {
+		return "", "", err
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	csrPath = filepath.Join(tmpDir, "identity.csr")
+	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+		return "", "", err
+	}
+	return keyPath, csrPath, nil
+}
+
+// generateAgentCSRFromKey creates a CSR from an existing PEM-encoded private
+// key, writing the CSR PEM file to tmpDir.  Used for identity renewal so the
+// device key is never rotated.
+func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir string) (csrPath string, err error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return "", fmt.Errorf("no PEM block found in key data")
+	}
+	var signer crypto.Signer
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		signer, err = x509.ParseECPrivateKey(block.Bytes)
+	case "RSA PRIVATE KEY":
+		signer, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		var parsed any
+		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err == nil {
+			var ok bool
+			signer, ok = parsed.(crypto.Signer)
+			if !ok {
+				return "", fmt.Errorf("PKCS8 key is not a signer")
+			}
+		}
+	default:
+		return "", fmt.Errorf("unsupported PEM block type: %s", block.Type)
+	}
+	if err != nil {
+		return "", fmt.Errorf("parsing private key: %w", err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: commonName, Organization: []string{org}},
+	}, signer)
+	if err != nil {
+		return "", err
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	csrPath = filepath.Join(tmpDir, "identity.csr")
+	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+		return "", err
+	}
+	return csrPath, nil
 }
 
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {

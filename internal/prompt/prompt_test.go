@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package prompt
 
 import (
@@ -109,5 +115,39 @@ func TestSplitPromptMessageMultiLine(t *testing.T) {
 	}
 	if label != "Select how to continue:" {
 		t.Fatalf("unexpected label: %q", label)
+	}
+}
+
+func TestFitItemsToWidth_TruncatesToOneLine(t *testing.T) {
+	long := "ces-farm-greenfield-d06522276c4142f4942a9f7bccfe6ae2 / 29:north-field / tractor (serial MF-4700-001)"
+	items := []selectItem{
+		{Label: long},
+		{Label: "short", Detail: long},
+	}
+	const width = 40
+	fitItemsToWidth(items, width)
+
+	// The "▸ " active prefix (2) plus the label must fit within the width, with
+	// a column to spare for the terminal's auto-wrap edge.
+	if w := len([]rune(items[0].Label)); w > width-3 {
+		t.Fatalf("label width %d exceeds budget %d: %q", w, width-3, items[0].Label)
+	}
+	if !strings.HasSuffix(items[0].Label, "…") {
+		t.Fatalf("expected truncated label to end with ellipsis, got %q", items[0].Label)
+	}
+	if items[1].Label != "short" {
+		t.Fatalf("short label should be untouched, got %q", items[1].Label)
+	}
+	if w := len([]rune(items[1].Detail)); w > width-5 {
+		t.Fatalf("detail width %d exceeds budget %d", w, width-5)
+	}
+}
+
+func TestFitItemsToWidth_NonPositiveWidthNoOp(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	items := []selectItem{{Label: long}}
+	fitItemsToWidth(items, 0)
+	if items[0].Label != long {
+		t.Fatal("width 0 must leave labels unchanged")
 	}
 }

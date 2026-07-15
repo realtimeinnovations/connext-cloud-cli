@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package app
 
 import (
@@ -252,6 +258,11 @@ func (api *runtimeFakeAPI) Get(path string) (*http.Response, error) {
 }
 
 func (api *runtimeFakeAPI) Post(path string, payload any) (*http.Response, error) {
+	api.calls++
+	return api.response("POST", path), nil
+}
+
+func (api *runtimeFakeAPI) PostWithBearerToken(path string, payload any, _ string) (*http.Response, error) {
 	api.calls++
 	return api.response("POST", path), nil
 }

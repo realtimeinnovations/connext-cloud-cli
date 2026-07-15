@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package gateway
 
 import (
@@ -43,6 +49,7 @@ type RenderedView struct {
 	Resource        RenderedSummaryLine
 	Routes          []RenderedRoute
 	LogLines        []string
+	LogTimes        []time.Time // parallel to LogLines; zero entries suppress the timestamp
 	Border          string
 	HideRoutes      bool
 	LogTitle        string
@@ -203,6 +210,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 		Resource: resource,
 		Routes:   routes,
 		LogLines: view.State.RecentLogs(),
+		LogTimes: view.State.RecentLogTimes(),
 		Border:   tui.RTIOrange,
 		Findings: view.Detector.Findings(),
 	}
@@ -425,11 +433,12 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 		}
 	}
 	logLines := []string{}
-	if len(view.LogLines) == 0 {
+	logEntries := gatewayLogEntries(view.LogLines, view.LogTimes)
+	if len(logEntries) == 0 {
 		logLines = append(logLines, formatLogLine(logEmptyMessage, contentWidth))
 	} else {
-		for _, line := range compactLogLines(view.LogLines) {
-			logLines = append(logLines, formatLogLine(line, contentWidth))
+		for _, entry := range tui.CompactLogEntries(logEntries) {
+			logLines = append(logLines, tui.FormatLogEntry(entry, contentWidth))
 		}
 	}
 	summaryPanel := tui.RenderPanel(tui.StripMarkup(view.Title), []string{
@@ -462,7 +471,7 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 		fixedOverhead += len(diagnosticsPanel) + 1
 	}
 	available := height - fixedOverhead
-	routeBudget, logBudget := splitSectionBudget(available, len(routeLines), len(logLines))
+	routeBudget, logBudget := tui.SplitSectionBudget(available, len(routeLines), len(logLines))
 	if routeBudget <= 0 {
 		routeBudget = 1
 	}
@@ -484,30 +493,20 @@ func renderFrameLines(view RenderedView, width int, height int) []string {
 	return lines
 }
 
-func splitSectionBudget(available int, routeLines int, logLines int) (int, int) {
-	if available <= 0 {
-		return 0, 0
+// gatewayLogEntries pairs each summarized routing log line with its severity and
+// (when known) arrival time so the shared renderer can dedup, color, and stamp.
+func gatewayLogEntries(lines []string, times []time.Time) []tui.LogEntry {
+	entries := make([]tui.LogEntry, len(lines))
+	for i, line := range lines {
+		entry := tui.LogEntry{Text: line, Severity: gatewayLogSeverity(line)}
+		if i < len(times) {
+			entry.Time = times[i]
+		}
+		entries[i] = entry
 	}
-	if routeLines == 0 {
-		routeLines = 1
-	}
-	if logLines == 0 {
-		logLines = 1
-	}
-	minLogLines := minInt(logLines, 4)
-	routeBudget := minInt(routeLines, tui.MaxInt(1, available-minLogLines))
-	logBudget := minInt(logLines, tui.MaxInt(1, available-routeBudget))
-	for routeBudget+logBudget > available && logBudget > 1 {
-		logBudget--
-	}
-	for routeBudget+logBudget > available && routeBudget > 1 {
-		routeBudget--
-	}
-	if routeBudget+logBudget > available {
-		logBudget = tui.MaxInt(0, available-routeBudget)
-	}
-	return routeBudget, logBudget
+	return entries
 }
+
 func resizePanelBody(lines []string, size int, width int) []string {
 	if size <= 0 {
 		return nil
@@ -576,51 +575,29 @@ func formatRouteLine(route RenderedRoute, topicWidth int, typeWidth int, statusW
 		styleRouteStatus(status, statusWidth))
 }
 
-func compactLogLines(lines []string) []string {
-	if len(lines) == 0 {
-		return nil
-	}
-	compacted := make([]string, 0, len(lines))
-	current := lines[0]
-	count := 1
-	flush := func() {
-		if count > 1 {
-			compacted = append(compacted, fmt.Sprintf("%s (x%d)", current, count))
-		} else {
-			compacted = append(compacted, current)
-		}
-	}
-	for _, line := range lines[1:] {
-		if line == current {
-			count++
-			continue
-		}
-		flush()
-		current = line
-		count = 1
-	}
-	flush()
-	return compacted
+// formatLogLine classifies one Routing Log line by keyword and renders it via
+// the shared tui helper, so the glyph/color for a given severity stays in sync
+// with the Edge-Sync Agent log panel.
+func formatLogLine(line string, contentWidth int) string {
+	return tui.FormatLogLine(line, contentWidth, gatewayLogSeverity(line))
 }
 
-func formatLogLine(line string, contentWidth int) string {
-	trimmed := strings.TrimSpace(line)
-	textWidth := tui.MaxInt(8, contentWidth-2)
-	formatted := tui.TruncateDisplay(trimmed, textWidth)
-	lower := strings.ToLower(trimmed)
+// gatewayLogSeverity maps a summarized routing log line to its display severity.
+func gatewayLogSeverity(line string) tui.LogSeverity {
+	lower := strings.ToLower(strings.TrimSpace(line))
 	switch {
 	case strings.Contains(lower, "warning"):
-		return "· " + tui.Dim(formatted)
+		return tui.LogInfo
 	case strings.Contains(lower, "error") || strings.Contains(lower, "mismatch") || strings.Contains(lower, "missing"):
-		return "! " + "\x1b[33m" + formatted + "\x1b[0m"
+		return tui.LogWarn
 	case strings.HasPrefix(lower, "input lost") || strings.HasPrefix(lower, "output lost") || strings.HasSuffix(lower, " lost"):
-		return "! " + "\x1b[33m" + formatted + "\x1b[0m"
+		return tui.LogWarn
 	case strings.HasPrefix(lower, "run ") || strings.HasPrefix(lower, "start ") || strings.HasPrefix(lower, "routing "):
-		return "• " + "\x1b[32m" + formatted + "\x1b[0m"
+		return tui.LogGood
 	case strings.HasPrefix(lower, "discovered ") || strings.HasPrefix(lower, "disposed ") || strings.Contains(lower, "matched"):
-		return "· " + tui.Dim(formatted)
+		return tui.LogInfo
 	default:
-		return "· " + tui.Dim(formatted)
+		return tui.LogInfo
 	}
 }
 func summaryPanelTheme() tui.PanelTheme {

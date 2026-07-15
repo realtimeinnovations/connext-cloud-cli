@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package prompt
 
 import (
@@ -105,6 +111,9 @@ func (selector Selector) cursorSelect(message string, choices []string, inputFil
 		}
 		items = append(items, item)
 	}
+	// Keep every rendered row within a single terminal line (see fitItemsToWidth).
+	width, _ := tui.TerminalSize(outputFile, 80, 24)
+	fitItemsToWidth(items, width)
 	prefix, label := splitPromptMessage(message)
 	if prefix != "" {
 		_, _ = fmt.Fprintln(outputFile, prefix)
@@ -155,6 +164,27 @@ func (selector Selector) printNumberedChoice(index int, label string) {
 func newSelectItem(label string) selectItem {
 	title, detail := splitSelectionLabel(label)
 	return selectItem{Label: title, Detail: detail}
+}
+
+// fitItemsToWidth truncates each item's label and detail so a rendered row
+// never exceeds one terminal line. promptui assumes every item occupies exactly
+// one row when it repositions the cursor after a keypress; a label (or detail)
+// wider than the terminal wraps onto a second row and corrupts the redraw
+// (repeated prompt headers, garbled selection). The "▸ " active prefix costs 2
+// columns and the detail line is indented 4, so we leave room for those plus
+// the terminal's auto-wrap last column. A non-positive width is a no-op.
+func fitItemsToWidth(items []selectItem, width int) {
+	if width <= 0 {
+		return
+	}
+	labelMax := tui.MaxInt(8, width-3)
+	detailMax := tui.MaxInt(8, width-5)
+	for i := range items {
+		items[i].Label = tui.TruncateDisplay(items[i].Label, labelMax)
+		if items[i].Detail != "" {
+			items[i].Detail = tui.TruncateDisplay(items[i].Detail, detailMax)
+		}
+	}
 }
 
 func selectionTitle(label string) string {

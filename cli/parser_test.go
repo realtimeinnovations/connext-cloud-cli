@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package cli
 
 import (
@@ -6,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,6 +238,115 @@ func TestParserRejectsSpyObsCommand(t *testing.T) {
 	err := Execute([]string{"spy", "obs"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected unsupported spy command error")
+	}
+}
+
+func TestParserEdgeProvisioningServiceHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"edge-provisioning", "service"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for edge-provisioning service help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Manage Provisioning Services") || !strings.Contains(out.String(), "create") {
+		t.Fatalf("unexpected edge-provisioning service help: %s", out.String())
+	}
+}
+
+func TestParserEdgeProvisioningParticipantTemplateHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"edge-provisioning", "participant-template"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for edge-provisioning participant-template help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Manage Participant Templates") || !strings.Contains(out.String(), "create") {
+		t.Fatalf("unexpected edge-provisioning participant-template help: %s", out.String())
+	}
+}
+
+func TestParserEdgeProvisioningCampaignHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"edge-provisioning", "campaign"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for edge-provisioning campaign help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Manage Campaigns") || !strings.Contains(out.String(), "create") {
+		t.Fatalf("unexpected edge-provisioning campaign help: %s", out.String())
+	}
+}
+
+func TestParserEdgeProvisioningDeviceHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"edge-provisioning", "device"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for edge-provisioning device help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Manage Devices") || !strings.Contains(out.String(), "list") {
+		t.Fatalf("unexpected edge-provisioning device help: %s", out.String())
+	}
+}
+
+func TestParserEdgeSyncHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := Execute([]string{"edge-sync"}, &out, &out, nil)
+	if err != nil {
+		t.Fatalf("expected nil for edge-sync help, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Sync security artifacts") {
+		t.Fatalf("unexpected edge-sync help: %s", out.String())
+	}
+}
+
+func TestParserEdgeProvisioningServiceRequiresName(t *testing.T) {
+	err := Execute([]string{"edge-provisioning", "service", "query"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected --name required error")
+	}
+}
+
+func TestParserEdgeProvisioningProfileRequiresService(t *testing.T) {
+	err := Execute([]string{"edge-provisioning", "profile", "list"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected --service required error")
+	}
+}
+
+func TestParserEdgeSyncIdentityRequiresParticipantID(t *testing.T) {
+	err := Execute([]string{"edge-sync", "identity"}, io.Discard, io.Discard, nil)
+	if err == nil {
+		t.Fatal("expected --participant-id required error")
+	}
+}
+
+func TestParserEdgeSyncConnextDirRejectsNonDirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "rafa")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	err := Execute([]string{"edge-sync", "identity", "--connext-dir", file}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected not-a-directory error, got %v", err)
+	}
+}
+
+func TestParserEdgeSyncConnextDirCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rafa")
+	err := Execute([]string{"edge-sync", "identity", "--connext-dir", dir}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--participant-id") {
+		t.Fatalf("expected --participant-id required error once connext-dir is valid, got %v", err)
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("expected --connext-dir to be created, stat err=%v", statErr)
+	}
+}
+
+func TestRootHelpShowsOperatorCommands(t *testing.T) {
+	var out bytes.Buffer
+	_ = Execute(nil, &out, &out, nil)
+	output := out.String()
+	if !strings.Contains(output, "edge-provisioning") ||
+		!strings.Contains(output, "edge-sync") {
+		t.Fatalf("expected operator commands in root help: %s", output)
 	}
 }
 

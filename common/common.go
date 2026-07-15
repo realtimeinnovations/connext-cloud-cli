@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Real-Time Innovations, Inc.  All rights reserved.
+// No duplications, whole or partial, manual or electronic, may be made
+// without express written permission.  Any such copies, or revisions thereof,
+// must display this notice unaltered.
+// This code contains trade secrets of Real-Time Innovations, Inc.
+
 package common
 
 import (
@@ -114,8 +120,8 @@ var SecureFiles = []string{
 	"client.crt",
 	"identity_ca.crt",
 	"permissions_ca.crt",
-	"signed_governance.p7s",
-	"signed_permissions.p7s",
+	"governance.p7s",
+	"permissions.p7s",
 	"psk.key",
 }
 
