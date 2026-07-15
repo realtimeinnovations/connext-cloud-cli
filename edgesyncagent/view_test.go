@@ -15,6 +15,67 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
+// TestAgentSummaryChip_RevokedFitsStatusWidth guards against silent
+// truncation: agentSummaryStatusWidth is a fixed column width (not derived
+// from terminal size), so tui.StyleChipWidth/PadDisplay truncates — with an
+// ellipsis, mid-word — any chip text that doesn't fit, regardless of how wide
+// the terminal actually is.
+func TestAgentSummaryChip_RevokedFitsStatusWidth(t *testing.T) {
+	for _, profiles := range []int{1, 2, 9, 42, 99} {
+		for _, revoked := range []int{1, profiles} {
+			got := agentSummaryChip(profiles, 0, revoked)
+			if w := tui.DisplayWidth(got); w > agentSummaryStatusWidth {
+				t.Errorf("agentSummaryChip(%d,_,%d) = %q (visible width %d) exceeds agentSummaryStatusWidth=%d and will be truncated",
+					profiles, revoked, got, w, agentSummaryStatusWidth)
+			}
+		}
+	}
+}
+
+// TestRenderAgentView_RevokedSelectedRowKeepsHighlight guards against a
+// layout regression: tui.RenderPanel's panelBodyLine falls back to stripping
+// ALL ANSI styling from a line whose visible width exceeds the panel's
+// content width. A revoked row's hint text must stay short enough that the
+// selected/highlighted revoked row keeps both its red "revoked" styling and
+// its gray row-highlight background instead of silently losing both.
+func TestRenderAgentView_RevokedSelectedRowKeepsHighlight(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
+	p.mu.Lock()
+	p.serial = "SN-001"
+	p.domainTemplateID = "dom"
+	p.state = StateRevoked
+	p.notAfter[ArtifactPermissions] = time.Unix(0, 0).Add(100 * time.Second)
+	p.issuedAt[ArtifactPermissions] = time.Unix(0, 0)
+	p.mu.Unlock()
+
+	// rowSel=1 selects ArtifactPermissions (the second entry in
+	// displayArtifacts), a node-scoped artifact that renders as "revoked".
+	vs := agentViewState{activeTab: 0, rowSel: 1, focus: focusTable}
+	out := a.renderAgentView(vs)
+
+	lines := strings.Split(out, "\r\n")
+	var permissionsLine string
+	for _, l := range lines {
+		if strings.Contains(l, "permissions") {
+			permissionsLine = l
+			break
+		}
+	}
+	if permissionsLine == "" {
+		t.Fatal("could not find the permissions row in rendered output")
+	}
+	if !strings.Contains(permissionsLine, "\x1b[48;5;238m") {
+		t.Errorf("selected revoked row lost its gray highlight background: %q", permissionsLine)
+	}
+	if !strings.Contains(permissionsLine, "\x1b[1;31m") {
+		t.Errorf("selected revoked row lost its red \"revoked\" styling: %q", permissionsLine)
+	}
+}
+
 func TestAgentFormatDuration(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
@@ -144,21 +205,23 @@ func TestAgentSummaryChip(t *testing.T) {
 	cases := []struct {
 		profiles     int
 		needsRenewal int
+		revoked      int
 		wantText     string
 		wantColor    string // markup tag resolved by tui.StyleChipWidth
 	}{
-		{0, 0, "waiting for enrollment", "[dim]"},
-		{1, 0, "1 participant artifact monitored", "[green]"},
-		{3, 0, "3 participant artifacts monitored", "[green]"},
-		{3, 2, "3 participant artifacts monitored", "[yellow]"},
+		{0, 0, 0, "waiting for enrollment", "[dim]"},
+		{1, 0, 0, "1 participant artifact monitored", "[green]"},
+		{3, 0, 0, "3 participant artifacts monitored", "[green]"},
+		{3, 2, 0, "3 participant artifacts monitored", "[yellow]"},
+		{3, 2, 1, "1 of 3 participants revoked", "[red]"},
 	}
 	for _, c := range cases {
-		got := agentSummaryChip(c.profiles, c.needsRenewal)
+		got := agentSummaryChip(c.profiles, c.needsRenewal, c.revoked)
 		if !strings.Contains(got, c.wantText) {
-			t.Errorf("agentSummaryChip(%d,%d) = %q, want it to contain %q", c.profiles, c.needsRenewal, got, c.wantText)
+			t.Errorf("agentSummaryChip(%d,%d,%d) = %q, want it to contain %q", c.profiles, c.needsRenewal, c.revoked, got, c.wantText)
 		}
 		if !strings.Contains(got, c.wantColor) {
-			t.Errorf("agentSummaryChip(%d,%d) = %q, want color %q", c.profiles, c.needsRenewal, got, c.wantColor)
+			t.Errorf("agentSummaryChip(%d,%d,%d) = %q, want color %q", c.profiles, c.needsRenewal, c.revoked, got, c.wantColor)
 		}
 	}
 }

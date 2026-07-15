@@ -42,6 +42,11 @@ const (
 	StateEnrolled     ProfileState = "enrolled"
 	StateActive       ProfileState = "active"
 	StateRenewing     ProfileState = "renewing"
+	// StateRevoked marks a profile whose mTLS credentials were rejected by the
+	// Provisioning Service (e.g. the participant was revoked from the webapp).
+	// Set by renewArtifact on an auth-rejection error and cleared automatically
+	// the moment any renewal for that profile succeeds again.
+	StateRevoked ProfileState = "revoked"
 )
 
 // ArtifactID identifies one of the security artifacts managed by the agent.
@@ -203,6 +208,12 @@ func domainOwnerKey(service, domain string) string { return service + "/" + doma
 // expiry) so that, after a restart, the profile that originally fetched the PSK
 // reclaims ownership regardless of rehydration order.  Callers must not hold
 // p.mu; it is only invoked from the serial enroll and rehydrate paths.
+//
+// A revoked profile is never preferred over a non-revoked one, even if it
+// still carries stale domain state from before it was revoked: without this
+// check, restarting the agent after renewArtifact's auth-rejection failover
+// (see failoverDomainOwner) could re-elect the revoked participant as owner
+// again, purely because its on-disk state happened to load first.
 func (a *Agent) claimDomainOwner(p *profile) {
 	key := domainOwnerKey(p.service(), p.domain())
 	existing, loaded := a.domainOwners.LoadOrStore(key, p)
@@ -211,6 +222,13 @@ func (a *Agent) claimDomainOwner(p *profile) {
 	}
 	cur := existing.(*profile)
 	if cur == p {
+		return
+	}
+	if a.isRevoked(cur) && !a.isRevoked(p) {
+		a.domainOwners.Store(key, p)
+		return
+	}
+	if a.isRevoked(p) {
 		return
 	}
 	if a.hasDomainState(p) && !a.hasDomainState(cur) {
@@ -231,6 +249,14 @@ func (a *Agent) hasDomainState(p *profile) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return !p.notAfter[ArtifactPSK].IsZero()
+}
+
+// isRevoked reports whether p's mTLS credentials were last rejected by the
+// Provisioning Service (see renewArtifact's auth-rejection handling).
+func (a *Agent) isRevoked(p *profile) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state == StateRevoked
 }
 
 // profileKey uniquely identifies a profile in the in-memory map. The first

@@ -190,6 +190,7 @@ func renderTabBar(profiles []profileSnapshot, active int) string {
 	chips := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		num := fmt.Sprintf("%d", i+1)
+		revoked := profiles[i].state == StateRevoked
 		if i == active {
 			// Prefer the device name, then the serial (unique per node), then
 			// the participant template. The serial fallback keeps nodes enrolled
@@ -202,7 +203,13 @@ func renderTabBar(profiles []profileSnapshot, active int) string {
 				label = profiles[i].participantID
 			}
 			label = truncateLabel(label, tabActiveLabelMax)
-			chips = append(chips, orangeFg+"\x1b[1m[ "+num+" "+label+" ]\x1b[0m")
+			if revoked {
+				chips = append(chips, "\x1b[1;31m[ "+num+" ✗ "+label+" ]\x1b[0m")
+			} else {
+				chips = append(chips, orangeFg+"\x1b[1m[ "+num+" "+label+" ]\x1b[0m")
+			}
+		} else if revoked {
+			chips = append(chips, "\x1b[31m[ "+num+" ✗ ]\x1b[0m")
 		} else {
 			chips = append(chips, tui.Dim("[ "+num+" ]"))
 		}
@@ -269,8 +276,9 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 	// Lifecycle events and manual-renew outcomes are surfaced in the Agent Log
 	// panel below (via emit), so they are intentionally not duplicated here.
 	needsRenewal := countArtifactsNeedingRenewal(now, profiles)
+	revokedCount := countRevoked(profiles)
 	summaryBody := []string{
-		formatAgentSummaryLine("agent", agentSummaryChip(len(profiles), needsRenewal), "Logs: "+a.LogFile, contentWidth),
+		formatAgentSummaryLine("agent", agentSummaryChip(len(profiles), needsRenewal, revokedCount), "Logs: "+a.LogFile, contentWidth),
 	}
 
 	// ── Details section: the participant list and their renewal artifacts. ──
@@ -289,6 +297,10 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 		body = append(body, tui.Dim("  Edge Provision Svc:   ")+pr.serviceID)
 		body = append(body, tui.Dim("  Domain Template:      ")+pr.domainTemplateID)
 		body = append(body, tui.Dim("  Participant Template: ")+pr.participantID)
+		if pr.state == StateRevoked {
+			body = append(body, tui.Dim("  Status:               ")+
+				"\x1b[1;31m✗ REVOKED — credentials rejected by the server. Re-enroll to restore this participant\x1b[0m")
+		}
 		body = append(body, "")
 
 		// ── Artifact renewal table ──
@@ -299,24 +311,41 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 		body = append(body, artHeader, artSep)
 
 		for rowIdx, art := range displayArtifacts {
+			// This participant's own credentials were rejected, so it cannot
+			// itself renew ANY artifact — including PSK/CRL: another, still
+			// valid participant may keep the shared domain secrets renewed
+			// (see failoverDomainOwner), but this one, on its own, cannot.
+			revokedRow := pr.state == StateRevoked
 			na, ok := pr.notAfter[art]
 			var renewCell string
-			if !ok || na.IsZero() {
+			switch {
+			case revokedRow:
+				renewCell = "\x1b[1;31m" + tui.PadDisplay("revoked", colRenewalW) + "\x1b[0m"
+			case !ok || na.IsZero():
 				renewCell = tui.Dim(tui.PadDisplay("–", colRenewalW))
-			} else {
+			default:
 				renewCell = agentRenewalCell(now, pr.issuedAt[art], na)
 			}
 			expiryCell := agentExpirationCell(art, pr.notAfter)
 			artName := tui.PadDisplay(artifactLabel[art], colArtifactW)
 			cells := artName + "  " + renewCell + "  " + expiryCell
 
+			// Keep the hint text the same length regardless of state: a longer
+			// revoked-specific hint pushes the row's visible width past the
+			// panel's content width, which makes tui.RenderPanel fall back to
+			// stripping ALL ANSI styling from the line — silently dropping both
+			// the red "revoked" cell color and the row highlight background.
+			hint := "\x1b[1mPress Enter to renew\x1b[0m"
+			if revokedRow {
+				hint = "\x1b[1mRevoked — retry\x1b[0m"
+			}
 			switch {
 			case rowIdx == vs.rowSel && vs.focus == focusTable:
 				// Full-line background highlight. Each embedded \x1b[0m inside
 				// the colored cells is rewritten to also re-apply the row
 				// background, so the bar does not break at the first reset.
 				inner := strings.ReplaceAll("  "+cells, "\x1b[0m", "\x1b[0m"+rowHighlightBg)
-				body = append(body, rowHighlightBg+inner+"  \x1b[1mPress Enter to renew\x1b[0m")
+				body = append(body, rowHighlightBg+inner+"  "+hint)
 			case rowIdx == vs.rowSel:
 				// Selected but table not focused: keep a subtle marker only.
 				body = append(body, "\x1b[38;5;208m› \x1b[0m"+cells)
@@ -367,15 +396,34 @@ func countArtifactsNeedingRenewal(now time.Time, profiles []profileSnapshot) int
 	return count
 }
 
+// countRevoked counts the profiles currently marked StateRevoked (their own
+// mTLS credentials were rejected by the Provisioning Service).
+func countRevoked(profiles []profileSnapshot) int {
+	count := 0
+	for _, p := range profiles {
+		if p.state == StateRevoked {
+			count++
+		}
+	}
+	return count
+}
+
 // agentSummaryChip renders the status chip shown in the summary panel, using
 // the same [color] markup convention as the gateway/spy chips (resolved by
-// tui.StyleChipWidth): dim when idle, green when everything is healthy, yellow
-// when one or more artifacts are due for renewal.
-func agentSummaryChip(profileCount, needsRenewal int) string {
+// tui.StyleChipWidth): dim when idle, red when any participant is revoked
+// (highest priority — it needs attention no renewal retry will fix), yellow
+// when one or more artifacts are due for renewal, green when healthy.
+func agentSummaryChip(profileCount, needsRenewal, revokedCount int) string {
 	if profileCount == 0 {
 		return "[dim]○ waiting for enrollment[/dim]"
 	}
 	phrase := fmt.Sprintf("%d %s monitored", profileCount, agentPluralize(profileCount, "participant artifact"))
+	if revokedCount > 0 {
+		// Kept short deliberately: agentSummaryStatusWidth is a fixed column
+		// width (not tied to terminal size), so a longer message here gets
+		// silently truncated by tui.StyleChipWidth/PadDisplay.
+		return fmt.Sprintf("[red]✗ %d of %d %s revoked[/red]", revokedCount, profileCount, agentPluralize(profileCount, "participant"))
+	}
 	if needsRenewal > 0 {
 		return fmt.Sprintf("[yellow]● %s[/yellow]", phrase)
 	}

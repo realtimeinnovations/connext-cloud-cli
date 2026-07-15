@@ -15,6 +15,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"io/fs"
 	"math/big"
@@ -819,6 +820,158 @@ func TestClaimDomainOwner_PrefersProfileWithDomainState(t *testing.T) {
 	}
 	if a.isDomainOwner(other) {
 		t.Fatal("the stateless profile should yield ownership")
+	}
+}
+
+// ─── Revocation failover ───────────────────────────────────────────────────
+
+func TestIsAuthRejection(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{fmt.Errorf("HTTP 401: unauthorized"), true},
+		{fmt.Errorf("HTTP 403: forbidden"), true},
+		{fmt.Errorf("psk 80%%: fetching next PSK: HTTP 403: device revoked"), true},
+		{fmt.Errorf("Get \"https://x\": remote error: tls: certificate required"), true},
+		{fmt.Errorf("x509: certificate signed by unknown authority"), true},
+		{fmt.Errorf("HTTP 500: internal server error"), false},
+		{fmt.Errorf("dial tcp: connection refused"), false},
+		{fmt.Errorf("context deadline exceeded"), false},
+	}
+	for _, c := range cases {
+		if got := isAuthRejection(c.err); got != c.want {
+			t.Errorf("isAuthRejection(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+// TestRenewArtifact_PSK_FailsOverWhenOwnerRevoked reproduces the reported bug:
+// two participants share a domain, the first (the domain owner) is revoked
+// server-side, and a renewal is requested for the PSK. It must not just keep
+// failing against the revoked owner — it should fail over PSK/CRL ownership
+// to the other, still-valid participant and complete the renewal.
+func TestRenewArtifact_PSK_FailsOverWhenOwnerRevoked(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	pskNotAfter := time.Unix(0, 0).Add(1000 * time.Second)
+	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte("sA\nsB"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"), pskLeaseJSON(pskNotAfter, pskNotAfter.Add(100*time.Second)), 0o644)
+		return nil
+	}
+	a.GetCRLFunc = func(_, _, _, _, _, _ string) error { return nil }
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("CERT"), 0o644)
+		return nil
+	}
+
+	token := buildJWT(map[string]any{"device_domain": "svc.devices.cloud.dev-rti.com"})
+	mkReq := func(part string) EnrollRequest {
+		return EnrollRequest{ServiceID: "svc", ParticipantID: part, CampaignToken: token, Serial: "SN-001", MACs: []string{"AA:BB:CC:DD:EE:01"}}
+	}
+	if err := a.enrollProfile(mkReq("part1")); err != nil {
+		t.Fatalf("enroll part1: %v", err)
+	}
+	if err := a.enrollProfile(mkReq("part2")); err != nil {
+		t.Fatalf("enroll part2: %v", err)
+	}
+
+	v1, _ := a.profiles.Load(profileKey("dom", "part1", "SN-001"))
+	v2, _ := a.profiles.Load(profileKey("dom", "part2", "SN-001"))
+	part1, part2 := v1.(*profile), v2.(*profile)
+	if !a.isDomainOwner(part1) {
+		t.Fatal("part1 (first to enroll) should own the domain before revocation")
+	}
+
+	// Simulate part1 being revoked from the webapp: the Provisioning Service
+	// now rejects requests presenting part1's mTLS certificate. buildTestAgent's
+	// fake EnrollFunc only ever writes node.key (not node.crt), so key —
+	// rather than cert — is what actually resolves to a participant-specific
+	// path here.
+	a.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		if strings.Contains(key, filepath.Join("part1", "SN-001")) {
+			return fmt.Errorf("HTTP 403: device revoked")
+		}
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA2"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte("sA2\nsB2"), 0o644)
+		newNotAfter := pskNotAfter.Add(1000 * time.Second)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"), pskLeaseJSON(newNotAfter, newNotAfter.Add(100*time.Second)), 0o644)
+		return nil
+	}
+
+	// This mirrors a manual renew requested from part2's tab in the TUI: the
+	// caller asks for part2, but RenewArtifact redirects PSK renewal to
+	// whichever profile currently owns the domain (part1, still revoked).
+	if err := a.RenewArtifact("dom", "part2", "SN-001", ArtifactPSK); err != nil {
+		t.Fatalf("RenewArtifact: %v", err)
+	}
+	a.wg.Wait()
+
+	if !a.isDomainOwner(part2) {
+		t.Fatal("part2 should have been promoted to domain owner after part1's revocation was detected")
+	}
+	part1.mu.Lock()
+	part1State := part1.state
+	part1.mu.Unlock()
+	if part1State != StateRevoked {
+		t.Fatalf("part1 should be marked StateRevoked, got %q", part1State)
+	}
+	part2.mu.Lock()
+	part2PSK := part2.notAfter[ArtifactPSK]
+	part2State := part2.state
+	part2.mu.Unlock()
+	if part2PSK.IsZero() {
+		t.Fatal("part2 should have completed the PSK renewal after failover")
+	}
+	if part2State != StateActive {
+		t.Fatalf("part2 should be StateActive after a successful renewal, got %q", part2State)
+	}
+}
+
+// TestRenewArtifact_NodeScoped_MarksRevokedWithoutFailover verifies that a
+// node-scoped artifact (identity, permissions, device-cert) has no failover
+// target — each participant can only renew its own — so an auth-rejection
+// just marks the profile revoked rather than attempting ownership transfer.
+func TestRenewArtifact_NodeScoped_MarksRevokedWithoutFailover(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, _ string) error {
+		return fmt.Errorf("HTTP 401: unauthorized")
+	}
+
+	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
+	p.mu.Lock()
+	p.serial = "SN-001"
+	p.domainTemplateID = "dom"
+	p.mu.Unlock()
+
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.renewArtifact(p, ArtifactIdentity, "test")
+	}()
+	a.wg.Wait()
+
+	p.mu.Lock()
+	state := p.state
+	p.mu.Unlock()
+	if state != StateRevoked {
+		t.Fatalf("expected StateRevoked after an auth-rejected identity renewal, got %q", state)
 	}
 }
 

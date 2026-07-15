@@ -27,6 +27,8 @@ var (
 		"[/green]", "",
 		"[yellow]", "",
 		"[/yellow]", "",
+		"[red]", "",
+		"[/red]", "",
 		"[dim]", "",
 		"[/dim]", "",
 		"[bold]", "",
@@ -225,6 +227,8 @@ func StyleChipWidth(markup string, width int) string {
 		return "\x1b[32m" + content + "\x1b[0m"
 	case strings.Contains(markup, "[yellow]"):
 		return "\x1b[33m" + content + "\x1b[0m"
+	case strings.Contains(markup, "[red]"):
+		return "\x1b[1;31m" + content + "\x1b[0m"
 	case strings.Contains(markup, "[dim]"):
 		return Dim(content)
 	default:

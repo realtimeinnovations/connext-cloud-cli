@@ -200,6 +200,87 @@ func (a *Agent) RenewArtifact(domainTemplateID, participantID, serial string, ar
 	return nil
 }
 
+// isAuthRejection reports whether err indicates the mTLS credentials used for
+// a Provisioning Service request were rejected — the signal that a
+// participant has been revoked from the webapp — rather than a transient
+// network or server error. The Provisioning Service surfaces this as an HTTP
+// 401/403 response (see edgeprovision/commands.go's "HTTP %d: %s" error
+// format) or, when the sidecar enforces certificate revocation at the TLS
+// layer, as a handshake failure. Deliberately conservative: connection
+// timeouts, DNS failures and 5xx responses do not match, so a transient
+// outage never gets misclassified as a revocation.
+func isAuthRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{"http 401", "http 403", "tls:", "x509:", "certificate"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// domainArtifacts lists every ArtifactID managed by the domain owner, used to
+// stop a former owner's in-flight timers for all of them once ownership fails
+// over to another participant (see failoverDomainOwner).
+var domainArtifacts = []ArtifactID{ArtifactPSK, ArtifactCRL, ArtifactPSKRotate, ArtifactPSKCleanup}
+
+// failoverDomainOwner is called when a domain-scoped artifact (PSK or CRL)
+// renewal fails because p's credentials were rejected — p is presumably the
+// domain owner and has just been revoked. It looks for another currently
+// loaded, non-revoked profile sharing the same (service, domain), promotes it
+// to domain owner, and retries the renewal on it so PSK/CRL keep renewing
+// without the revoked participant in the loop.
+//
+// Returns true if a fallback profile was found and dispatched to retry the
+// renewal (regardless of whether that retry ultimately succeeds); the caller
+// must not also reschedule p's own retry timer for this artifact in that case,
+// since the fallback profile now owns it.
+func (a *Agent) failoverDomainOwner(p *profile, artifact ArtifactID, reason string) bool {
+	key := domainOwnerKey(p.service(), p.domain())
+
+	var candidate *profile
+	a.profiles.Range(func(_, val any) bool {
+		other := val.(*profile)
+		if other == p || other.service() != p.service() || other.domain() != p.domain() {
+			return true
+		}
+		if a.isRevoked(other) {
+			return true
+		}
+		candidate = other
+		return false // first non-revoked sibling found
+	})
+	if candidate == nil {
+		return false
+	}
+
+	// Stop p's own timers for every domain-scoped artifact, not just the one
+	// that just failed: they were all scheduled against p as owner and would
+	// otherwise keep independently rediscovering the same revocation.
+	p.mu.Lock()
+	for _, art := range domainArtifacts {
+		if t, ok := p.timers[art]; ok && t != nil {
+			t.Stop()
+		}
+	}
+	p.mu.Unlock()
+
+	a.domainOwners.Store(key, candidate)
+	a.emitf(catRenewal, tui.LogWarn,
+		"domain owner service=%s participant=%s serial=%s appears revoked; failing over PSK/CRL ownership to participant=%s serial=%s",
+		p.serviceID, p.participantID, p.serial, candidate.participantID, candidate.serial)
+
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.renewArtifact(candidate, artifact, reason+"_failover")
+	}()
+	return true
+}
+
 // renewArtifact performs the renewal for one artifact and reschedules its timer.
 func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	a.emitf(catRenewal, tui.LogInfo, "artifact renewal started service=%s participant=%s artifact=%s reason=%s",
@@ -279,13 +360,35 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 	if err != nil {
 		a.emitf(catRenewal, tui.LogWarn, "artifact renewal failed service=%s participant=%s artifact=%s err=%v",
 			p.serviceID, p.participantID, artifact, err)
+
+		revoked := isAuthRejection(err)
+		failedOver := revoked && isDomainArtifact(artifact) && a.failoverDomainOwner(p, artifact, reason)
+
 		p.mu.Lock()
-		p.setState(StateActive)
-		notAfter := p.notAfter[artifact]
-		p.timers[artifact] = a.AfterFunc(a.RetryInterval, func() {
-			a.onTimerFire(p, artifact, notAfter)
-		})
+		wasRevoked := p.state == StateRevoked
+		if revoked {
+			p.setState(StateRevoked)
+		} else {
+			p.setState(StateActive)
+		}
+		if !failedOver {
+			// Ownership moved to another participant when failedOver is true —
+			// the new owner's copy of this artifact now drives its own retry
+			// timer, so p's must not be rearmed too (that would renew it twice).
+			notAfter := p.notAfter[artifact]
+			p.timers[artifact] = a.AfterFunc(a.RetryInterval, func() {
+				a.onTimerFire(p, artifact, notAfter)
+			})
+		}
 		p.mu.Unlock()
+
+		if revoked && !wasRevoked {
+			a.emitf(catRenewal, tui.LogWarn, "participant appears to be revoked service=%s participant=%s serial=%s",
+				p.serviceID, p.participantID, p.serial)
+			if perr := a.persistState(p); perr != nil {
+				a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state: %v", perr)
+			}
+		}
 		return
 	}
 
