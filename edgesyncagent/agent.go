@@ -112,13 +112,14 @@ type AgentState struct {
 	// reconstructs the profile from this field, so it is always set.
 	DomainTemplateID string `json:"domain_template_id,omitempty"`
 
-	// Serial is the device serial number — the node id leaf of the layered
-	// layout (<service>/<domain>/<participant>/<node>).
+	// Serial is the device serial number — the node id level of the layered
+	// layout (<service>/<domain>/<node>/<participant>), nested directly under
+	// the domain so every participant template for one node lives together.
 	Serial string `json:"serial,omitempty"`
 
-	// ParticipantTemplateID is the participant template identifier — the scope
-	// level between domain and node. It matches the participant_id field of the
-	// EnrollRequest.
+	// ParticipantTemplateID is the participant template identifier — the leaf
+	// scope level beneath the node serial. It matches the participant_id field
+	// of the EnrollRequest.
 	ParticipantTemplateID string `json:"participant_template_id,omitempty"`
 
 	// PSK rolling-key protocol state.
@@ -346,9 +347,9 @@ type Agent struct {
 	// any interactive selection step.
 	ManualMode bool
 
-	// DeviceID, when non-empty, is used as the serial/device identifier
+	// DeploymentName, when non-empty, is used as the serial/device identifier
 	// without prompting or auto-detecting.
-	DeviceID string
+	DeploymentName string
 
 	// MACs, when non-empty, is used as the MAC address list without
 	// prompting or auto-detecting.
@@ -627,7 +628,7 @@ func (a *Agent) Run(ctx context.Context) error {
 //
 // Layout:
 //
-//	<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>/agent_state.json
+//	<agent>/<service>/mtls_artifacts/<domain>/<node>/<participant>/agent_state.json
 func (a *Agent) rehydrate() {
 	for _, statePath := range a.findStateFiles(a.Store.AgentDir()) {
 		a.loadProfile(statePath)
@@ -735,7 +736,7 @@ func (a *Agent) countProfiles() int {
 }
 
 // findAdoptableNodes walks the per-node mTLS tree
-// (<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>) and returns
+// (<agent>/<service>/mtls_artifacts/<domain>/<node>/<participant>) and returns
 // every node that carries mTLS credentials (node.key) and a stored device
 // endpoint URL (node_url) but has neither an agent_state.json nor an already
 // loaded in-memory profile. These are enrollments performed out-of-band that
@@ -767,24 +768,24 @@ func (a *Agent) findAdoptableNodes() []adoptableNode {
 			// the true "<id>:<tag>" domain template id for use as a profile key
 			// and for anything that leaves the filesystem (state, display, API).
 			domain := edgestore.DomainFromPathSegment(dom.Name())
-			parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name()))
+			nodeDirs, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name()))
 			if err != nil {
 				continue
 			}
-			for _, part := range parts {
-				if !part.IsDir() {
+			for _, nd := range nodeDirs {
+				if !nd.IsDir() {
 					continue
 				}
-				participant := part.Name()
-				nodes, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name(), participant))
+				node := nd.Name()
+				parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name(), node))
 				if err != nil {
 					continue
 				}
-				for _, nd := range nodes {
-					if !nd.IsDir() {
+				for _, part := range parts {
+					if !part.IsDir() {
 						continue
 					}
-					node := nd.Name()
+					participant := part.Name()
 					if n, ok := a.adoptableNode(service, domain, participant, node); ok {
 						found = append(found, n)
 					}

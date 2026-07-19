@@ -899,7 +899,7 @@ func TestRenewArtifact_PSK_FailsOverWhenOwnerRevoked(t *testing.T) {
 	// rather than cert — is what actually resolves to a participant-specific
 	// path here.
 	a.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
-		if strings.Contains(key, filepath.Join("part1", "SN-001")) {
+		if strings.Contains(key, filepath.Join("SN-001", "part1")) {
 			return fmt.Errorf("HTTP 403: device revoked")
 		}
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))

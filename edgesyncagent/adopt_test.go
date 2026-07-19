@@ -252,7 +252,7 @@ func TestConfigureFirstRun_NoReuseChoiceWithoutOrphans(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
 	nonFiringTimers(a)
-	a.DeviceID = "SN-001"
+	a.DeploymentName = "SN-001"
 	a.MACs = []string{"AA:BB:CC:DD:EE:01"}
 	a.ListServicesFunc = func() ([]string, error) { return []string{"svc"}, nil }
 	a.ListDomainTemplatesFunc = func(string) ([]string, error) { return []string{"1:dom"}, nil }

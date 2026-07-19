@@ -29,7 +29,7 @@ func TestLayeredPaths_Default(t *testing.T) {
 	// Agent base.
 	connextRoot := filepath.Join("/base", "agent", svc, "connext_artifacts")
 	domainRoot := filepath.Join(connextRoot, domPath)
-	mtlsNode := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, part, node)
+	mtlsNode := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, node, part)
 	cases := []struct {
 		name string
 		got  string
@@ -47,12 +47,12 @@ func TestLayeredPaths_Default(t *testing.T) {
 		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, domPath, "governance.p7s")},
 		{"CRLPath", s.CRLPath(svc, dom), filepath.Join(connextRoot, domPath, "crl.pem")},
 
-		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node)},
-		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node, "identity.crt")},
-		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node, "identity.key")},
-		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node, "identity.lease.json")},
-		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node, "permissions.p7s")},
-		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, part, node, "permissions.lease.json")},
+		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part)},
+		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.crt")},
+		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.key")},
+		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.lease.json")},
+		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "permissions.p7s")},
+		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "permissions.lease.json")},
 
 		{"NodeAgentDir", s.NodeAgentDir(svc, dom, part, node), mtlsNode},
 		{"NodeCertPath", s.NodeCertPath(svc, dom, part, node), filepath.Join(mtlsNode, "node.crt")},
@@ -85,11 +85,11 @@ func TestLayeredPaths_ConnextDirOverride(t *testing.T) {
 	if got := s.IdentityCAPath(svc, dom); got != filepath.Join("/rafa", domPath, "identity_ca.crt") {
 		t.Fatalf("IdentityCAPath with ConnextDir: got %s", got)
 	}
-	if got := s.NodeDir(svc, dom, part, node); got != filepath.Join("/rafa", domPath, part, node) {
+	if got := s.NodeDir(svc, dom, part, node); got != filepath.Join("/rafa", domPath, node, part) {
 		t.Fatalf("NodeDir with ConnextDir: got %s", got)
 	}
 	// The agent base (mtls + state) is unaffected by ConnextDir.
-	wantMTLS := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, part, node)
+	wantMTLS := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, node, part)
 	if got := s.NodeAgentDir(svc, dom, part, node); got != wantMTLS {
 		t.Fatalf("NodeAgentDir must ignore ConnextDir: got %s, want %s", got, wantMTLS)
 	}

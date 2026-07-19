@@ -522,14 +522,14 @@ func (a *Agent) enrollHeadless(req EnrollRequest) error {
 }
 
 // headlessSerialAndMACs resolves the serial and MAC addresses without
-// prompting, from the DeviceID/MACs flags first and auto-detection second.
+// prompting, from the DeploymentName/MACs flags first and auto-detection second.
 func (a *Agent) headlessSerialAndMACs(macsRequired bool) (string, []string, error) {
-	serial := a.DeviceID
+	serial := a.DeploymentName
 	if serial == "" {
 		serial = DetectSerial()
 	}
 	if serial == "" {
-		return "", nil, fmt.Errorf("could not auto-detect a serial number; pass --device-id")
+		return "", nil, fmt.Errorf("could not auto-detect a serial number; pass --deployment-name")
 	}
 	macs := a.MACs
 	if len(macs) == 0 {
@@ -541,13 +541,13 @@ func (a *Agent) headlessSerialAndMACs(macsRequired bool) (string, []string, erro
 	return serial, macs, nil
 }
 
-// resolveSerial returns the device serial number: the DeviceID flag first,
+// resolveSerial returns the device serial number: the DeploymentName flag first,
 // then the auto-detected machine id (confirmed interactively in ManualMode),
 // then an interactive prompt.
 func (a *Agent) resolveSerial() (string, error) {
-	if a.DeviceID != "" {
-		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", a.DeviceID)
-		return a.DeviceID, nil
+	if a.DeploymentName != "" {
+		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", a.DeploymentName)
+		return a.DeploymentName, nil
 	}
 	detected := DetectSerial()
 	if detected != "" && !a.ManualMode {

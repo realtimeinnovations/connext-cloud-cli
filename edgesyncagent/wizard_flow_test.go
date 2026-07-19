@@ -35,7 +35,7 @@ func TestConfigureFirstRun_OperatorAutoSelectsSingleEntries(t *testing.T) {
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
 	}
-	a.DeviceID = "SN-001"
+	a.DeploymentName = "SN-001"
 	a.MACs = []string{"AA:BB:CC:DD:EE:01"}
 	a.ListServicesFunc = func() ([]string, error) { return []string{"svc"}, nil }
 	a.ListDomainTemplatesFunc = func(string) ([]string, error) { return []string{"1:dom"}, nil }
@@ -88,7 +88,7 @@ func TestConfigureFirstRun_OperatorPickListsMultipleEntries(t *testing.T) {
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
 	}
-	a.DeviceID = "SN-002"
+	a.DeploymentName = "SN-002"
 	a.MACs = []string{"AA:BB:CC:DD:EE:02"}
 	a.ListServicesFunc = func() ([]string, error) { return []string{"svc-a", "svc-b"}, nil }
 	a.ListDomainTemplatesFunc = func(service string) ([]string, error) {
@@ -131,7 +131,7 @@ func TestConfigureFirstRun_OperatorPickListsMultipleEntries(t *testing.T) {
 func TestConfigureFirstRun_OperatorEmptyCatalogueRetriesThenExits(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
-	a.DeviceID = "SN-003"
+	a.DeploymentName = "SN-003"
 	listCalls := 0
 	a.ListServicesFunc = func() ([]string, error) { listCalls++; return nil, nil }
 	a.ListDomainTemplatesFunc = func(string) ([]string, error) { return nil, nil }
@@ -169,7 +169,7 @@ func TestConfigureFirstRun_HeadlessDirect(t *testing.T) {
 	a.Service = "svc"
 	a.DomainTemplateID = "1:dom"
 	a.ParticipantTemplateID = "part"
-	a.DeviceID = "SN-004"
+	a.DeploymentName = "SN-004"
 
 	var enrolled []string
 	wireDirectEnroll(a, ffs, "https://device.example", &enrolled)
@@ -203,7 +203,7 @@ func TestConfigureFirstRun_HeadlessCampaign(t *testing.T) {
 		"participant_id": "part",
 		"device_domain":  "svc.devices.example",
 	})
-	a.DeviceID = "SN-005"
+	a.DeploymentName = "SN-005"
 	a.MACs = []string{"AA:BB:CC:DD:EE:05"}
 
 	var enrolledToken string
@@ -235,7 +235,7 @@ func TestConfigureFirstRun_CampaignModeViaWizard(t *testing.T) {
 	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
 		return time.AfterFunc(10*time.Hour, f)
 	}
-	a.DeviceID = "SN-006"
+	a.DeploymentName = "SN-006"
 	a.MACs = []string{"AA:BB:CC:DD:EE:06"}
 
 	token := buildJWT(map[string]any{

@@ -114,7 +114,7 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return commandRunner.EnrollDevice(serviceID, participantID, serial, macs, csrFile, keyFile, campaignToken)
 	}
 	agentApp.EnrollDirectFunc = func(serviceID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error) {
-		return commandRunner.EnrollDeviceDirect(serviceID, domainTemplateID, participantTemplateID, serial, macs, deviceName, csrFile, keyFile)
+		return commandRunner.EnrollDeviceDirect(serviceID, domainTemplateID, participantTemplateID, serial, macs, deviceName, csrFile, keyFile, false)
 	}
 	agentApp.ListServicesFunc = commandRunner.FetchEdgeSystems
 	agentApp.ListDomainTemplatesFunc = commandRunner.FetchDomainTemplates

@@ -66,9 +66,9 @@ func (s *Store) fileExists(path string) bool {
 //	    connext_artifacts/
 //	      <domain>/                                     DOMAIN: identity_ca.crt, permissions_ca.crt,
 //	                                                            crl.pem, governance.p7s, psk_*
-//	        <participant>/<node>/                       NODE:   identity.crt, permissions.p7s, leases
+//	        <node>/<participant>/                       NODE:   identity.crt, permissions.p7s, leases
 //	    mtls_artifacts/
-//	      <domain>/<participant>/<node>/                NODE:   node.crt, node.key, ca-chain.crt, node_url,
+//	      <domain>/<node>/<participant>/                NODE:   node.crt, node.key, ca-chain.crt, node_url,
 //	                                                            agent_state.json
 //
 // When ConnextDir is set, the connext_artifacts <service> root is replaced by
@@ -152,9 +152,11 @@ func (s *Store) CRLPath(service, domain string) string {
 }
 
 // NodeDir returns the NODE-scope directory that holds the participant-specific
-// DDS identity and permissions material.
+// DDS identity and permissions material. The node serial is nested above the
+// participant template so that all participant templates for one physical node
+// live together under that node's serial.
 func (s *Store) NodeDir(service, domain, participant, node string) string {
-	return filepath.Join(s.DomainDir(service, domain), participant, node)
+	return filepath.Join(s.DomainDir(service, domain), node, participant)
 }
 
 // IdentityCertPath is the DDS identity certificate for a node.
@@ -192,10 +194,10 @@ func (s *Store) MTLSRoot(service string) string {
 
 // NodeAgentDir returns the per-node agent directory under mtls_artifacts that
 // holds the node's transport credentials and operational state. It mirrors the
-// connext_artifacts node path but always lives under BaseDir (never relocated
-// by ConnextDir).
+// connext_artifacts node path (<domain>/<node>/<participant>) but always lives
+// under BaseDir (never relocated by ConnextDir).
 func (s *Store) NodeAgentDir(service, domain, participant, node string) string {
-	return filepath.Join(s.MTLSRoot(service), DomainPathSegment(domain), participant, node)
+	return filepath.Join(s.MTLSRoot(service), DomainPathSegment(domain), node, participant)
 }
 
 // NodeCertPath is the mTLS leaf certificate for a node.
@@ -328,7 +330,7 @@ type NodeInfo struct {
 }
 
 // ListNodesWithURL walks the agent mTLS tree
-// (<service>/mtls_artifacts/<domain>/<participant>/<node>) and returns every
+// (<service>/mtls_artifacts/<domain>/<node>/<participant>) and returns every
 // node that has a stored node_url. Returns nil when the tree does not exist or
 // cannot be read.
 func (s *Store) ListNodesWithURL() []NodeInfo {
@@ -351,23 +353,23 @@ func (s *Store) ListNodesWithURL() []NodeInfo {
 			if !dom.IsDir() {
 				continue
 			}
-			parts, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name()))
+			nodeDirs, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name()))
 			if err != nil {
 				continue
 			}
-			for _, part := range parts {
-				if !part.IsDir() {
+			for _, nodeDir := range nodeDirs {
+				if !nodeDir.IsDir() {
 					continue
 				}
-				leaves, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name(), part.Name()))
+				participants, err := os.ReadDir(filepath.Join(mtlsRoot, dom.Name(), nodeDir.Name()))
 				if err != nil {
 					continue
 				}
-				for _, leaf := range leaves {
-					if !leaf.IsDir() {
+				for _, part := range participants {
+					if !part.IsDir() {
 						continue
 					}
-					urlPath := s.NodeURLPath(svc.Name(), dom.Name(), part.Name(), leaf.Name())
+					urlPath := s.NodeURLPath(svc.Name(), dom.Name(), part.Name(), nodeDir.Name())
 					fi, statErr := os.Stat(urlPath)
 					if statErr != nil {
 						continue
@@ -384,7 +386,7 @@ func (s *Store) ListNodesWithURL() []NodeInfo {
 						Service:     svc.Name(),
 						Domain:      DomainFromPathSegment(dom.Name()),
 						Participant: part.Name(),
-						Node:        leaf.Name(),
+						Node:        nodeDir.Name(),
 						URL:         u,
 						EnrolledAt:  fi.ModTime(),
 					})
