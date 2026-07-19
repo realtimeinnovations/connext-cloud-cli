@@ -92,6 +92,12 @@ func DomainPathSegment(domain string) string {
 
 // DomainFromPathSegment reverses DomainPathSegment, recovering the true
 // "<id>:<tag>" domain template id from an on-disk directory name.
+//
+// Relies on the id being an integer: the first "." is then always the
+// substituted ":", so dots in the tag survive ("0:domain.v2" round-trips).
+//
+// Known limitation: only the first ":" is replaced, so a tag containing its own
+// ":" yields a directory name Windows rejects.
 func DomainFromPathSegment(name string) string {
 	return strings.Replace(name, ".", ":", 1)
 }

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -827,22 +828,56 @@ func TestClaimDomainOwner_PrefersProfileWithDomainState(t *testing.T) {
 
 func TestIsAuthRejection(t *testing.T) {
 	cases := []struct {
+		name string
 		err  error
 		want bool
 	}{
-		{nil, false},
-		{fmt.Errorf("HTTP 401: unauthorized"), true},
-		{fmt.Errorf("HTTP 403: forbidden"), true},
-		{fmt.Errorf("psk 80%%: fetching next PSK: HTTP 403: device revoked"), true},
-		{fmt.Errorf("Get \"https://x\": remote error: tls: certificate required"), true},
-		{fmt.Errorf("x509: certificate signed by unknown authority"), true},
-		{fmt.Errorf("HTTP 500: internal server error"), false},
-		{fmt.Errorf("dial tcp: connection refused"), false},
-		{fmt.Errorf("context deadline exceeded"), false},
+		{"nil", nil, false},
+
+		// Structured status codes — the primary signal.
+		{"typed 401", &httputil.StatusError{StatusCode: 401, Message: "unauthorized"}, true},
+		{"typed 403", &httputil.StatusError{StatusCode: 403, Message: "device revoked"}, true},
+		{"typed wrapped 403", fmt.Errorf("psk 80%%: fetching next PSK: %w",
+			&httputil.StatusError{StatusCode: 403, Message: "device revoked"}), true},
+		{"typed 500", &httputil.StatusError{StatusCode: 500, Message: "internal server error"}, false},
+		{"typed 503", &httputil.StatusError{StatusCode: 503, Message: "upstream unavailable"}, false},
+
+		// Matching message text used to classify this as a revocation.
+		{"typed 500 mentioning certificates",
+			&httputil.StatusError{StatusCode: 500, Message: "certificate authority unavailable"}, false},
+
+		// Status text in a message is never matched — only the typed code
+		// counts, so a body quoting an upstream status cannot trigger a
+		// revocation.
+		{"untyped 403 text", fmt.Errorf("HTTP 403: forbidden"), false},
+		{"502 quoting an upstream 403",
+			&httputil.StatusError{StatusCode: 502, Message: "upstream returned HTTP 403"}, false},
+
+		// TLS alerts sent BY THE PEER reject the cert we presented.
+		{"peer alert: certificate required",
+			fmt.Errorf("Get \"https://x\": remote error: tls: certificate required"), true},
+		{"peer alert: revoked certificate",
+			fmt.Errorf("Get \"https://x\": remote error: tls: revoked certificate"), true},
+		{"peer alert: access denied",
+			fmt.Errorf("Get \"https://x\": remote error: tls: access denied"), true},
+
+		// Local failures mean WE rejected THEIR cert — a trust-store problem.
+		// A MITM proxy raises this on every request; it must not revoke.
+		{"local x509 verify failure",
+			fmt.Errorf("x509: certificate signed by unknown authority"), false},
+		{"local x509 hostname mismatch",
+			fmt.Errorf("x509: certificate is valid for a.example.com, not b.example.com"), false},
+		{"local tls handshake failure",
+			fmt.Errorf("tls: handshake failure"), false},
+
+		// Transient transport failures.
+		{"connection refused", fmt.Errorf("dial tcp: connection refused"), false},
+		{"deadline exceeded", fmt.Errorf("context deadline exceeded"), false},
+		{"dns failure", fmt.Errorf("dial tcp: lookup node.example.com: no such host"), false},
 	}
 	for _, c := range cases {
 		if got := isAuthRejection(c.err); got != c.want {
-			t.Errorf("isAuthRejection(%v) = %v, want %v", c.err, got, c.want)
+			t.Errorf("%s: isAuthRejection(%v) = %v, want %v", c.name, c.err, got, c.want)
 		}
 	}
 }
@@ -900,7 +935,7 @@ func TestRenewArtifact_PSK_FailsOverWhenOwnerRevoked(t *testing.T) {
 	// path here.
 	a.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
 		if strings.Contains(key, filepath.Join("SN-001", "part1")) {
-			return fmt.Errorf("HTTP 403: device revoked")
+			return &httputil.StatusError{StatusCode: 403, Message: "device revoked"}
 		}
 		dir := strings.TrimSuffix(output, string(os.PathSeparator))
 		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte("sA2"), 0o644)
@@ -939,6 +974,102 @@ func TestRenewArtifact_PSK_FailsOverWhenOwnerRevoked(t *testing.T) {
 	}
 }
 
+// TestRenewArtifact_FailoverCarriesWholeDomainSchedule guards a regression in
+// which failover handed the new owner only the artifact that had just failed,
+// leaving the other three armed nowhere: a PSK failover silently stopped CRL
+// refresh, a CRL failover stopped PSK rotation.
+func TestRenewArtifact_FailoverCarriesWholeDomainSchedule(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+	a.Now = func() time.Time { return time.Unix(0, 0) }
+
+	pskNotAfter := time.Unix(0, 0).Add(1000 * time.Second)
+	writePSK := func(output, seed string, notAfter time.Time) {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.key"), []byte(seed), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret_extra.key"), []byte(seed+"\n"+seed+"B"), 0o644)
+		ffs.WriteFile(filepath.Join(dir, "psk_secret.lease.json"), pskLeaseJSON(notAfter, notAfter.Add(100*time.Second)), 0o644)
+	}
+	a.RequestPSKFunc = func(_, _, _, _, _, output string) error {
+		writePSK(output, "sA", pskNotAfter)
+		return nil
+	}
+	a.GetCRLFunc = func(_, _, _, _, _, _ string) error { return nil }
+	a.RequestIdentityFunc = func(_, _, _, _, _, _, output string) error {
+		dir := strings.TrimSuffix(output, string(os.PathSeparator))
+		ffs.WriteFile(filepath.Join(dir, "identity.crt"), []byte("CERT"), 0o644)
+		return nil
+	}
+
+	token := buildJWT(map[string]any{"device_domain": "svc.devices.cloud.dev-rti.com"})
+	mkReq := func(part string) EnrollRequest {
+		return EnrollRequest{ServiceID: "svc", ParticipantID: part, CampaignToken: token, Serial: "SN-001", MACs: []string{"AA:BB:CC:DD:EE:01"}}
+	}
+	if err := a.enrollProfile(mkReq("part1")); err != nil {
+		t.Fatalf("enroll part1: %v", err)
+	}
+	if err := a.enrollProfile(mkReq("part2")); err != nil {
+		t.Fatalf("enroll part2: %v", err)
+	}
+
+	v1, _ := a.profiles.Load(profileKey("dom", "part1", "SN-001"))
+	v2, _ := a.profiles.Load(profileKey("dom", "part2", "SN-001"))
+	part1, part2 := v1.(*profile), v2.(*profile)
+	if !a.isDomainOwner(part1) {
+		t.Fatal("part1 (first to enroll) should own the domain before revocation")
+	}
+	// part2 owns no domain schedule while part1 is owner — what made the
+	// partial handover lose the non-failing artifacts.
+	part2.mu.Lock()
+	preCRL := part2.notAfter[ArtifactCRL]
+	part2.mu.Unlock()
+	if !preCRL.IsZero() {
+		t.Fatal("precondition: a non-owner should not track the domain CRL expiry")
+	}
+
+	// part1 is revoked. Only PSK fails here; CRL must survive the handover.
+	a.RequestPSKFunc = func(url, cert, key, ca, serverAddr, output string) error {
+		if strings.Contains(key, filepath.Join("SN-001", "part1")) {
+			return &httputil.StatusError{StatusCode: 403, Message: "device revoked"}
+		}
+		writePSK(output, "sA2", pskNotAfter.Add(1000*time.Second))
+		return nil
+	}
+
+	if err := a.RenewArtifact("dom", "part2", "SN-001", ArtifactPSK); err != nil {
+		t.Fatalf("RenewArtifact: %v", err)
+	}
+	a.wg.Wait()
+
+	if !a.isDomainOwner(part2) {
+		t.Fatal("part2 should have been promoted to domain owner")
+	}
+
+	part2.mu.Lock()
+	defer part2.mu.Unlock()
+	// CRL never failed, so it was never retried — it can only be armed if the
+	// whole schedule moved across.
+	if part2.notAfter[ArtifactCRL].IsZero() {
+		t.Error("new owner did not inherit the domain CRL expiry; CRL refresh would stop for the whole domain")
+	}
+	if t2, ok := part2.timers[ArtifactCRL]; !ok || t2 == nil {
+		t.Error("new owner has no CRL timer armed; CRL refresh would stop for the whole domain")
+	}
+	// The rolling-key window must travel too, or pskRotate/pskCleanup cannot
+	// place the next rotation.
+	if part2.pskBaseTTL == 0 {
+		t.Error("new owner did not inherit pskBaseTTL; PSK cleanup could not be scheduled")
+	}
+	for _, phase := range []ArtifactID{ArtifactPSKRotate, ArtifactPSKCleanup} {
+		if t2, ok := part2.timers[phase]; !ok || t2 == nil {
+			t.Errorf("new owner has no %s timer armed; the PSK would never rotate", phase)
+		}
+	}
+}
+
 // TestRenewArtifact_NodeScoped_MarksRevokedWithoutFailover verifies that a
 // node-scoped artifact (identity, permissions, device-cert) has no failover
 // target — each participant can only renew its own — so an auth-rejection
@@ -951,7 +1082,7 @@ func TestRenewArtifact_NodeScoped_MarksRevokedWithoutFailover(t *testing.T) {
 	}
 	a.Now = func() time.Time { return time.Unix(0, 0) }
 	a.RequestIdentityFunc = func(_, _, _, _, _, _, _ string) error {
-		return fmt.Errorf("HTTP 401: unauthorized")
+		return &httputil.StatusError{StatusCode: 401, Message: "unauthorized"}
 	}
 
 	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")

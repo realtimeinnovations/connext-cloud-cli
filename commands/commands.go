@@ -1256,13 +1256,6 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		generatedKey = key
 		csrPEM = csr
 		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
-		// When a key path is supplied alongside --gen-key, also drop a copy of
-		// the generated key there so the operator retains it outside the store.
-		if keyFile != "" {
-			if err := runner.WriteFile(keyFile, generatedKey, 0o600); err != nil {
-				_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
-			}
-		}
 	} else {
 		data, err := runner.ReadFile(csrFile)
 		if err != nil {
@@ -1297,6 +1290,15 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", "", err
+	}
+
+	// Written only now that the enrollment is accepted: --key-file may hold the
+	// key for the operator's current certificate. Kept ahead of the store block,
+	// which is skipped when no store is configured and would lose the only copy.
+	if generatedKey != nil && keyFile != "" {
+		if err := runner.WriteFile(keyFile, generatedKey, 0o600); err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
+		}
 	}
 
 	// The server confirms (or overrides) the domain_template_id; fall back to

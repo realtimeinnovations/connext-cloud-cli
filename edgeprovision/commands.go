@@ -79,9 +79,9 @@ func decodeBody[T any](out io.Writer, resp *http.Response) (T, error) {
 	body, _ := io.ReadAll(resp.Body)
 	var zero T
 	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(out, "Error: %s\n", msg)
-		return zero, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		statusErr := httputil.NewStatusError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(out, "Error: %s\n", statusErr.Message)
+		return zero, statusErr
 	}
 	var result T
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -442,9 +442,9 @@ func (runner *Runner) GetCRL(url, certFile, keyFile, caFile, serverAddr, output 
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		msg := httputil.FormatError(resp.StatusCode, body)
-		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", msg)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		statusErr := httputil.NewStatusError(resp.StatusCode, body)
+		_, _ = fmt.Fprintf(runner.Out, "Error: %s\n", statusErr.Message)
+		return statusErr
 	}
 	if output == "" {
 		_, _ = fmt.Fprintln(runner.Out, string(body))
