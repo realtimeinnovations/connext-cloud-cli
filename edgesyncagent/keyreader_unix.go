@@ -26,8 +26,6 @@ func AgentSupported() bool { return true }
 // restores the terminal and waits for the goroutine to exit; the caller must
 // invoke stop before reading from inFile (e.g. for the enrollment wizard).
 func startKeyReader(ctx context.Context, inFile *os.File, oldState *term.State) (<-chan keyEvent, func()) {
-	ch := make(chan keyEvent, 4)
-
 	// Wakeup pipe: writing to pw causes the goroutine's poll to return so it
 	// exits cleanly without needing an additional keypress from the user.
 	pr, pw, err := os.Pipe()
@@ -38,6 +36,7 @@ func startKeyReader(ctx context.Context, inFile *os.File, oldState *term.State) 
 		return nil, nil
 	}
 
+	ch := make(chan keyEvent, 4)
 	stdinFd := int(inFile.Fd())
 
 	send := func(k keyEvent) bool {
