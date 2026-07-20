@@ -28,4 +28,32 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: go build ./cmd/rticloud
+        run: go build -o /tmp/rticloud ./cmd/rticloud
+
+  build-release-targets:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build release target
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o /tmp/rticloud ./cmd/rticloud
