@@ -193,7 +193,7 @@ func TestDomainPathSegment_RoundTrip(t *testing.T) {
 	if got := DomainFromPathSegment(sanitized); got != domain {
 		t.Fatalf("DomainFromPathSegment(%q) = %q, want %q", sanitized, got, domain)
 	}
-	// A domain id without a separator (e.g. an already-sanitized on-disk name)
+	// A domain id without a separator (no ":")
 	// is passed through unchanged in both directions.
 	if got := DomainPathSegment("plain"); got != "plain" {
 		t.Fatalf("DomainPathSegment(%q) = %q, want unchanged", "plain", got)

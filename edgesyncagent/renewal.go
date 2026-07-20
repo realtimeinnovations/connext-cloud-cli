@@ -464,7 +464,7 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 
 		p.mu.Lock()
 		wasRevoked := p.state == StateRevoked
-		if revoked {
+		if revoked || wasRevoked {
 			p.setState(StateRevoked)
 		} else {
 			p.setState(StateActive)

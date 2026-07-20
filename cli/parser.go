@@ -1485,7 +1485,7 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── edge-provisioning device ─────────────────────────────────────────────────
+// ── edge-provisioning participant ────────────────────────────────────────────
 
 func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("participant", "Manage Participants")

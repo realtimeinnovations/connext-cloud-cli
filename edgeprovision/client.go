@@ -43,11 +43,22 @@ type Client struct {
 	DebugOut io.Writer
 }
 
+// defaultTransport returns a private copy of the default transport, so tuning
+// TLS or dialing on it cannot leak into other callers.  http.DefaultTransport
+// is a var any package may replace, so the assertion is checked rather than
+// left to panic.
+func defaultTransport() *http.Transport {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		return base.Clone()
+	}
+	return &http.Transport{Proxy: http.ProxyFromEnvironment}
+}
+
 // NewClient creates a plain (non-mTLS) client for the signing/healthcheck
 // endpoints on port 8080.  All Provisioning Service endpoints use TLS with
 // certificate verification, which is always enabled.
 func NewClient(baseURL string) *Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := defaultTransport()
 	return &Client{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: transport},
@@ -65,7 +76,7 @@ func NewClientWithCA(baseURL string, caFile string) (*Client, error) {
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return nil, fmt.Errorf("failed to parse CA certificate from %s", caFile)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := defaultTransport()
 	transport.TLSClientConfig = &tls.Config{
 		RootCAs: caCertPool,
 	}
@@ -104,7 +115,7 @@ func NewMTLSClient(baseURL string, certFile string, keyFile string, caFile strin
 		RootCAs:      caCertPool,
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := defaultTransport()
 	transport.TLSClientConfig = tlsConfig
 	if serverAddr != "" {
 		// Redirect TCP dial to serverAddr while keeping TLS SNI from the URL hostname.
