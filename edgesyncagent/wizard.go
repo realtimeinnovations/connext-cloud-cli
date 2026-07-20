@@ -232,10 +232,10 @@ func (a *Agent) printReuseSummary(chosen []adoptableNode) {
 	if len(chosen) == 1 {
 		n := chosen[0]
 		_, _ = fmt.Fprintln(a.Out, "Reusing existing enrollment:")
-		_, _ = fmt.Fprintf(a.Out, "  Service:     %s\n", n.service)
-		_, _ = fmt.Fprintf(a.Out, "  Domain:      %s\n", n.domain)
-		_, _ = fmt.Fprintf(a.Out, "  Participant: %s\n", n.participant)
-		_, _ = fmt.Fprintf(a.Out, "  Serial:      %s\n", n.node)
+		_, _ = fmt.Fprintf(a.Out, "  Service:         %s\n", n.service)
+		_, _ = fmt.Fprintf(a.Out, "  Domain:          %s\n", n.domain)
+		_, _ = fmt.Fprintf(a.Out, "  Participant:     %s\n", n.participant)
+		_, _ = fmt.Fprintf(a.Out, "  Deployment name: %s\n", n.node)
 		_, _ = fmt.Fprintln(a.Out)
 		return
 	}
@@ -546,17 +546,17 @@ func (a *Agent) headlessSerialAndMACs(macsRequired bool) (string, []string, erro
 // then an interactive prompt.
 func (a *Agent) resolveSerial() (string, error) {
 	if a.DeploymentName != "" {
-		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", a.DeploymentName)
+		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Deployment name: %s\n", a.DeploymentName)
 		return a.DeploymentName, nil
 	}
 	detected := DetectSerial()
 	if detected != "" && !a.ManualMode {
-		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Serial number: %s\n", detected)
+		_, _ = fmt.Fprintf(a.promptOut(), "\x1b[32m✓\x1b[0m Deployment name: %s\n", detected)
 		return detected, nil
 	}
 	if detected != "" {
 		choice, err := a.SelectFunc(
-			fmt.Sprintf("Serial number (detected: %s)", detected),
+			fmt.Sprintf("Deployment name (detected: %s)", detected),
 			[]string{detected, "enter manually"},
 		)
 		if err != nil {
@@ -567,7 +567,7 @@ func (a *Agent) resolveSerial() (string, error) {
 		}
 	}
 	for {
-		serial, err := a.InputFunc("Serial number")
+		serial, err := a.InputFunc("Deployment name")
 		if err != nil {
 			return "", err
 		}
@@ -630,14 +630,14 @@ func (a *Agent) resolveMACs(required bool) ([]string, error) {
 func (a *Agent) printEnrollSummary(req EnrollRequest) {
 	_, _ = fmt.Fprintln(a.Out)
 	_, _ = fmt.Fprintln(a.Out, "Enrolling:")
-	_, _ = fmt.Fprintf(a.Out, "  Service:     %s\n", req.ServiceID)
+	_, _ = fmt.Fprintf(a.Out, "  Service:         %s\n", req.ServiceID)
 	if req.DomainTemplateID != "" {
-		_, _ = fmt.Fprintf(a.Out, "  Domain:      %s\n", req.DomainTemplateID)
+		_, _ = fmt.Fprintf(a.Out, "  Domain:          %s\n", req.DomainTemplateID)
 	}
-	_, _ = fmt.Fprintf(a.Out, "  Participant: %s\n", req.ParticipantID)
-	_, _ = fmt.Fprintf(a.Out, "  Serial:      %s\n", req.Serial)
+	_, _ = fmt.Fprintf(a.Out, "  Participant:     %s\n", req.ParticipantID)
+	_, _ = fmt.Fprintf(a.Out, "  Deployment name: %s\n", req.Serial)
 	if len(req.MACs) > 0 {
-		_, _ = fmt.Fprintf(a.Out, "  MACs:        %s\n", strings.Join(req.MACs, ", "))
+		_, _ = fmt.Fprintf(a.Out, "  MACs:            %s\n", strings.Join(req.MACs, ", "))
 	}
 	_, _ = fmt.Fprintln(a.Out)
 }

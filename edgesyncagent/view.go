@@ -293,7 +293,7 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 
 		// ── Identifiers section ──
 		body = append(body, tui.StyleSection("Identifiers"))
-		body = append(body, tui.Dim("  Serial:               ")+pr.serial)
+		body = append(body, tui.Dim("  Deployment Name:      ")+pr.serial)
 		body = append(body, tui.Dim("  Edge Provision Svc:   ")+pr.serviceID)
 		body = append(body, tui.Dim("  Domain Template:      ")+pr.domainTemplateID)
 		body = append(body, tui.Dim("  Participant Template: ")+pr.participantID)
