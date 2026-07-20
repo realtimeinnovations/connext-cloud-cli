@@ -32,8 +32,10 @@ func startKeyReader(ctx context.Context, inFile *os.File, oldState *term.State) 
 	// exits cleanly without needing an additional keypress from the user.
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		close(ch)
-		return ch, func() {}
+		if oldState != nil {
+			_ = term.Restore(int(inFile.Fd()), oldState)
+		}
+		return nil, nil
 	}
 
 	stdinFd := int(inFile.Fd())
