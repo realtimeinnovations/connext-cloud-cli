@@ -58,26 +58,16 @@ func nddshomeSetCommand(minVersion string) string {
 	return fmt.Sprintf("  export NDDSHOME=/path/to/rti_connext_dds-%s", minVersion)
 }
 
-// userInstallPatterns appends a home-directory pattern where available.
-func userInstallPatterns(base []string, home string) []string {
-	if home == "" {
+func defaultInstallPatterns(base []string) []string {
+	home, err := UserHomeDir()
+	if err != nil || home == "" {
 		return base
 	}
 	return append(base, filepath.Join(home, "rti_connext_dds-*"))
 }
 
-func defaultInstallPatterns(base []string) []string {
-	if runtime.GOOS == "windows" {
-		return userInstallPatterns(base, os.Getenv("USERPROFILE"))
-	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		return userInstallPatterns(base, home)
-	}
-	return base
-}
-
 var (
+	UserHomeDir     = os.UserHomeDir
 	InstallPatterns = defaultInstallPatterns([]string{
 		"/Applications/rti_connext_dds-*",
 		"/opt/rti.com/rti_connext_dds-*",

@@ -17,41 +17,29 @@ import (
 	"testing"
 )
 
-func TestUserInstallPatterns(t *testing.T) {
+func TestDefaultInstallPatterns(t *testing.T) {
+	previousUserHomeDir := UserHomeDir
+	t.Cleanup(func() { UserHomeDir = previousUserHomeDir })
+
 	base := []string{"/opt/rti.com/rti_connext_dds-*"}
 	tests := []struct {
-		name            string
-		home            string
-		wantHomePattern bool
+		name string
+		home string
+		err  error
 	}{
-		{
-			name:            "linux home directory",
-			home:            "/home/alice",
-			wantHomePattern: true,
-		},
-		{
-			name:            "macOS home directory",
-			home:            "/Users/alice",
-			wantHomePattern: true,
-		},
-		{
-			name:            "windows user profile",
-			home:            `C:\Users\alice`,
-			wantHomePattern: true,
-		},
-		{
-			name: "missing home directory",
-		},
+		{name: "home directory available", home: "/home/alice"},
+		{name: "home directory unavailable", err: os.ErrNotExist},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := userInstallPatterns(append([]string(nil), base...), test.home)
+			UserHomeDir = func() (string, error) { return test.home, test.err }
+			got := defaultInstallPatterns(append([]string(nil), base...))
 			want := append([]string(nil), base...)
-			if test.wantHomePattern {
+			if test.err == nil && test.home != "" {
 				want = append(want, filepath.Join(test.home, "rti_connext_dds-*"))
 			}
 			if !slices.Equal(got, want) {
-				t.Fatalf("userInstallPatterns() = %#v, want %#v", got, want)
+				t.Fatalf("defaultInstallPatterns() = %#v, want %#v", got, want)
 			}
 		})
 	}
