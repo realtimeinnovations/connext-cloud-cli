@@ -12,9 +12,38 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestDefaultInstallPatterns(t *testing.T) {
+	previousUserHomeDir := UserHomeDir
+	t.Cleanup(func() { UserHomeDir = previousUserHomeDir })
+
+	base := []string{"/opt/rti.com/rti_connext_dds-*"}
+	tests := []struct {
+		name string
+		home string
+		err  error
+	}{
+		{name: "home directory available", home: "/home/alice"},
+		{name: "home directory unavailable", err: os.ErrNotExist},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			UserHomeDir = func() (string, error) { return test.home, test.err }
+			got := defaultInstallPatterns(append([]string(nil), base...))
+			want := append([]string(nil), base...)
+			if test.err == nil && test.home != "" {
+				want = append(want, filepath.Join(test.home, "rti_connext_dds-*"))
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("defaultInstallPatterns() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
 
 func TestDiscoverInstallIncludesNonStandardDirWarningWhenNotFound(t *testing.T) {
 	previousPatterns := append([]string(nil), InstallPatterns...)

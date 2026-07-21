@@ -1934,6 +1934,12 @@ mtls_artifacts/ directory.`,
 		var deploymentName string
 		var agentMACs []string
 		var campaignToken string
+		unsupportedPlatform := func() error {
+			if !edgesyncagent.AgentSupported() {
+				return fmt.Errorf("edge-sync agent is not supported on Windows")
+			}
+			return nil
+		}
 		c := &cobra.Command{
 			Use:   "agent",
 			Short: "Run the artifact lifecycle agent (foreground process)",
@@ -1960,6 +1966,9 @@ The process runs in the foreground. Use systemd (Type=simple), launchd, or
 your container runtime for supervision.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				if err := unsupportedPlatform(); err != nil {
+					return err
+				}
 				if crlInterval > 0 {
 					runtime.EdgeSyncAgent.CRLInterval = crlInterval
 				}
@@ -2013,6 +2022,9 @@ participant ID automatically.  Without it, pass --service, --domain-tpl-id and
 agent's management login.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
+					if err := unsupportedPlatform(); err != nil {
+						return err
+					}
 					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
 						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
@@ -2080,6 +2092,9 @@ agent's management login.`,
 place. The next run of the agent will trigger the first-run enrollment wizard.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
+					if err := unsupportedPlatform(); err != nil {
+						return err
+					}
 					if err := runtime.EdgeSyncAgent.Reset(); err != nil {
 						return fmt.Errorf("reset failed: %w", err)
 					}
