@@ -460,7 +460,6 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 			p.serviceID, p.participantID, artifact, err)
 
 		revoked := isAuthRejection(err)
-		failedOver := revoked && isDomainArtifact(artifact) && a.failoverDomainOwner(p, artifact, reason)
 
 		p.mu.Lock()
 		wasRevoked := p.state == StateRevoked
@@ -469,23 +468,29 @@ func (a *Agent) renewArtifact(p *profile, artifact ArtifactID, reason string) {
 		} else {
 			p.setState(StateActive)
 		}
-		if !failedOver {
-			// Ownership moved to another participant when failedOver is true —
-			// the new owner's copy of this artifact now drives its own retry
-			// timer, so p's must not be rearmed too (that would renew it twice).
-			notAfter := p.notAfter[artifact]
-			p.timers[artifact] = a.AfterFunc(a.RetryInterval, func() {
-				a.onTimerFire(p, artifact, notAfter)
-			})
-		}
 		p.mu.Unlock()
 
+		// Mark (and persist) this owner as revoked BEFORE handing ownership off.
 		if revoked && !wasRevoked {
 			a.emitf(catRenewal, tui.LogWarn, "participant appears to be revoked service=%s participant=%s serial=%s",
 				p.serviceID, p.participantID, p.serial)
 			if perr := a.persistState(p); perr != nil {
 				a.emitf(catWarning, tui.LogWarn, "Warning: could not persist agent state: %v", perr)
 			}
+		}
+
+		failedOver := revoked && isDomainArtifact(artifact) && a.failoverDomainOwner(p, artifact, reason)
+
+		if !failedOver {
+			// Ownership moved to another participant when failedOver is true —
+			// the new owner's copy of this artifact now drives its own retry
+			// timer, so p's must not be rearmed too (that would renew it twice).
+			p.mu.Lock()
+			notAfter := p.notAfter[artifact]
+			p.timers[artifact] = a.AfterFunc(a.RetryInterval, func() {
+				a.onTimerFire(p, artifact, notAfter)
+			})
+			p.mu.Unlock()
 		}
 		return
 	}
