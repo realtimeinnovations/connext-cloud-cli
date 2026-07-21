@@ -9,6 +9,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -687,7 +688,7 @@ func TestEnrollDeviceDirect_ReturnsNodeURL(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----"), nil
 	}
-	domain, nodeURL, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "device.csr", "")
+	domain, nodeURL, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "device.csr", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,5 +701,79 @@ func TestEnrollDeviceDirect_ReturnsNodeURL(t *testing.T) {
 	payload := api.lastPayload.(map[string]any)
 	if payload["serial"] != "SN001" || payload["domainTemplateId"] != "1:dom-a" || payload["participantTemplateId"] != "sensor-net" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestEnrollDeviceDirect_GenKey(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/ces-alpha-123/enroll-node": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate":        "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"domain_template_id": "1:dom-a",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	// --gen-key must not read any CSR file from disk.
+	runner.ReadFile = func(path string) ([]byte, error) {
+		return nil, fmt.Errorf("ReadFile should not be called with --gen-key, got %q", path)
+	}
+	var wroteKeyPath string
+	var wroteKeyData []byte
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		wroteKeyPath, wroteKeyData = path, data
+		return nil
+	}
+	runner.CSRGenerator = func(databus, app, clientID string) ([]byte, string, error) {
+		if databus != "ces-alpha-123" || app != "sensor-net" || clientID != "SN001" {
+			t.Fatalf("unexpected CSR subject args: %q %q %q", databus, app, clientID)
+		}
+		return []byte("GENERATED-KEY"), "GENERATED-CSR", nil
+	}
+	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", "out.key", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["csr"] != "GENERATED-CSR" {
+		t.Fatalf("expected generated CSR in payload, got %#v", payload["csr"])
+	}
+	if wroteKeyPath != "out.key" || string(wroteKeyData) != "GENERATED-KEY" {
+		t.Fatalf("expected generated key written to out.key, got path=%q data=%q", wroteKeyPath, wroteKeyData)
+	}
+}
+
+// TestEnrollDeviceDirect_GenKeyRejected_LeavesKeyFileIntact guards the ordering
+// of the --gen-key key-file write: --key-file may hold the key for the
+// operator's current certificate, so writing before the server accepts the
+// enrollment destroys it when the enrollment is then rejected.
+func TestEnrollDeviceDirect_GenKeyRejected_LeavesKeyFileIntact(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/ces-alpha-123/enroll-node": newJSONResponse(http.StatusConflict, map[string]any{
+			"error": "serial already enrolled",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(path string) ([]byte, error) {
+		return nil, fmt.Errorf("ReadFile should not be called with --gen-key, got %q", path)
+	}
+	var writes []string
+	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
+		writes = append(writes, path)
+		return nil
+	}
+	runner.CSRGenerator = func(_, _, _ string) ([]byte, string, error) {
+		return []byte("GENERATED-KEY"), "GENERATED-CSR", nil
+	}
+
+	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", "existing.key", true)
+	if err == nil {
+		t.Fatal("expected an error when the server rejects the enrollment")
+	}
+	for _, path := range writes {
+		if path == "existing.key" {
+			t.Fatal("generated key was written to --key-file despite the enrollment being rejected; " +
+				"the operator's existing private key would be destroyed")
+		}
 	}
 }

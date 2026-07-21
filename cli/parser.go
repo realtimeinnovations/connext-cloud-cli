@@ -1485,16 +1485,16 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// ── edge-provisioning device ─────────────────────────────────────────────────
+// ── edge-provisioning participant ────────────────────────────────────────────
 
 func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("device", "Manage Devices")
+	cmd := parentCommand("participant", "Manage Participants")
 
 	{ // list
 		var edgeSystem string
 		c := &cobra.Command{
 			Use:   "list",
-			Short: "List all devices in a Provisioning Service",
+			Short: "List all participants in a Provisioning Service",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
@@ -1511,7 +1511,7 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 		var edgeSystem, participantID, campaignID, serial string
 		c := &cobra.Command{
 			Use:   "revoke",
-			Short: "Revoke a Device",
+			Short: "Revoke a Participant",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
@@ -1665,6 +1665,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	{ // enroll-direct
 		var csrFile, keyFile, domainTemplateIDFlag, participantTemplateIDFlag, deviceName string
 		var macs []string
+		var genKey bool
 		c := &cobra.Command{
 			Use:   "enroll-direct",
 			Short: "Operator-initiated direct enrollment (no campaign required)",
@@ -1677,17 +1678,29 @@ The --serial flag identifies this participant on the Provisioning Service.
 You may choose any stable, unique string (e.g. device serial number, hostname,
 or UUID) — it is stored permanently and cannot be changed after enrollment.
 
+Supply the CSR yourself with --csr-file, or pass --gen-key to have the CLI
+generate a fresh private key and CSR locally (the key is kept in the artifact
+store, and also written to --key-file when that flag is given).
+
 Requires:
   rticloud login
 
-Example:
+Example (bring your own CSR):
   rticloud edge-sync enroll-direct \
     --service my-provisioning-service \
     --domain-template-id 1:my-domain \
     --participant-template-id my-participant \
     --serial my-device-001 \
     --csr-file device.csr \
-    --key-file device.key`,
+    --key-file device.key
+
+Example (generate the key locally):
+  rticloud edge-sync enroll-direct \
+    --service my-provisioning-service \
+    --domain-template-id 1:my-domain \
+    --participant-template-id my-participant \
+    --serial my-device-001 \
+    --gen-key`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if service == "" {
@@ -1702,15 +1715,19 @@ Example:
 				if serial == "" {
 					return fmt.Errorf("--serial is required")
 				}
-				if csrFile == "" {
-					return fmt.Errorf("--csr-file is required")
+				if genKey && csrFile != "" {
+					return fmt.Errorf("--csr-file and --gen-key are mutually exclusive")
 				}
-				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile)
+				if !genKey && csrFile == "" {
+					return fmt.Errorf("either --csr-file or --gen-key is required")
+				}
+				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile, genKey)
 				return err
 			},
 		}
-		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file")
-		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate")
+		c.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM CSR file (mutually exclusive with --gen-key)")
+		c.Flags().BoolVar(&genKey, "gen-key", false, "Generate the private key and CSR locally instead of supplying --csr-file")
+		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate (with --gen-key, the generated key is also written here)")
 		c.Flags().StringVar(&domainTemplateIDFlag, "domain-template-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
 		c.Flags().StringVar(&participantTemplateIDFlag, "participant-template-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
 		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (optional, can be specified multiple times)")
@@ -1914,7 +1931,7 @@ mtls_artifacts/ directory.`,
 		var crlInterval time.Duration
 		var logFile string
 		var manualMode bool
-		var deviceID string
+		var deploymentName string
 		var agentMACs []string
 		var campaignToken string
 		unsupportedPlatform := func() error {
@@ -1959,10 +1976,10 @@ your container runtime for supervision.`,
 				runtime.EdgeSyncAgent.ManualMode = manualMode
 				// The edge-sync --serial persistent flag doubles as the agent
 				// device id so slot flags and first-run enrollment agree.
-				if deviceID == "" {
-					deviceID = serial
+				if deploymentName == "" {
+					deploymentName = serial
 				}
-				runtime.EdgeSyncAgent.DeviceID = deviceID
+				runtime.EdgeSyncAgent.DeploymentName = deploymentName
 				runtime.EdgeSyncAgent.MACs = agentMACs
 				runtime.EdgeSyncAgent.CampaignToken = campaignToken
 				runtime.EdgeSyncAgent.Service = service
@@ -1984,7 +2001,7 @@ your container runtime for supervision.`,
 		c.Flags().DurationVar(&crlInterval, "crl-interval", 5*time.Minute, "How often to refresh the Certificate Revocation List")
 		c.Flags().StringVar(&logFile, "log-file", ".connext/agent/rticloud-edge-agent.log", "Path to the agent log file (empty to disable)")
 		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override auto-detected serial number and MAC addresses during first-run enrollment")
-		c.Flags().StringVar(&deviceID, "device-id", "", "Device identifier (serial number) to use instead of auto-detecting")
+		c.Flags().StringVar(&deploymentName, "deployment-name", "", "Identifier of the deployment unit, if unspecified the local serial number will be used.")
 		c.Flags().StringSliceVar(&agentMACs, "macs", nil, "Comma-separated MAC addresses to use instead of auto-detecting")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT for headless first-run enrollment (skips the wizard)")
 

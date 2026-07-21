@@ -1242,15 +1242,31 @@ func stringField(m map[string]any, key string) string {
 // Returns the domain_template_id confirmed by the server and the device
 // endpoint URL (nodeUrl) from the enrollment response, so callers such as the
 // edge-sync agent can route subsequent mTLS calls without a campaign token.
-func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string) (string, string, error) {
-	data, err := runner.ReadFile(csrFile)
-	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-		return "", "", fmt.Errorf("reading CSR file: %w", err)
+func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string, genKey bool) (string, string, error) {
+	var csrPEM string
+	var generatedKey []byte
+	if genKey {
+		if runner.CSRGenerator == nil {
+			return "", "", fmt.Errorf("CSR generator is not configured")
+		}
+		key, csr, err := runner.CSRGenerator(edgeSystemID, participantTemplateID, serial)
+		if err != nil {
+			return "", "", fmt.Errorf("generating private key and CSR: %w", err)
+		}
+		generatedKey = key
+		csrPEM = csr
+		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
+	} else {
+		data, err := runner.ReadFile(csrFile)
+		if err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
+			return "", "", fmt.Errorf("reading CSR file: %w", err)
+		}
+		csrPEM = string(data)
 	}
 	payload := map[string]any{
 		"serial":                serial,
-		"csr":                   string(data),
+		"csr":                   csrPEM,
 		"domainTemplateId":      domainTemplateID,
 		"participantTemplateId": participantTemplateID,
 	}
@@ -1276,6 +1292,15 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		return "", "", err
 	}
 
+	// Written only now that the enrollment is accepted: --key-file may hold the
+	// key for the operator's current certificate. Kept ahead of the store block,
+	// which is skipped when no store is configured and would lose the only copy.
+	if generatedKey != nil && keyFile != "" {
+		if err := runner.WriteFile(keyFile, generatedKey, 0o600); err != nil {
+			_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
+		}
+	}
+
 	// The server confirms (or overrides) the domain_template_id; fall back to
 	// the caller-supplied value if the response omits it.
 	retDomainTemplateID := stringField(result, "domain_template_id")
@@ -1294,7 +1319,9 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 			CAChainPEM:    []byte(stringField(result, "caChain")),
 			GovernanceP7S: []byte(stringField(result, "governanceP7s")),
 		}
-		if keyFile != "" {
+		if generatedKey != nil {
+			arts.PrivateKeyPEM = generatedKey
+		} else if keyFile != "" {
 			keyData, err := runner.ReadFile(keyFile)
 			if err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not read key file %s: %v\n", keyFile, err)

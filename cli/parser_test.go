@@ -276,12 +276,12 @@ func TestParserEdgeProvisioningCampaignHelp(t *testing.T) {
 
 func TestParserEdgeProvisioningDeviceHelp(t *testing.T) {
 	var out bytes.Buffer
-	err := Execute([]string{"edge-provisioning", "device"}, &out, &out, nil)
+	err := Execute([]string{"edge-provisioning", "participant"}, &out, &out, nil)
 	if err != nil {
-		t.Fatalf("expected nil for edge-provisioning device help, got %v", err)
+		t.Fatalf("expected nil for edge-provisioning participant help, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Manage Devices") || !strings.Contains(out.String(), "list") {
-		t.Fatalf("unexpected edge-provisioning device help: %s", out.String())
+	if !strings.Contains(out.String(), "Manage Participants") || !strings.Contains(out.String(), "list") {
+		t.Fatalf("unexpected edge-provisioning participant help: %s", out.String())
 	}
 }
 

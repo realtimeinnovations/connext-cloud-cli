@@ -20,15 +20,16 @@ func newTestStore(t *testing.T) *Store {
 func TestLayeredPaths_Default(t *testing.T) {
 	s := New("/base")
 	const (
-		svc  = "edge-prov"
-		dom  = "0:domain-0849"
-		part = "participant-sensors-0849"
-		node = "b9a00ae9a51d4086b52dc96015e4c5b0"
+		svc     = "edge-prov"
+		dom     = "0:domain-0849"
+		domPath = "0.domain-0849"
+		part    = "participant-sensors-0849"
+		node    = "b9a00ae9a51d4086b52dc96015e4c5b0"
 	)
 	// Agent base.
 	connextRoot := filepath.Join("/base", "agent", svc, "connext_artifacts")
-	domainRoot := filepath.Join(connextRoot, dom)
-	mtlsNode := filepath.Join("/base", "agent", svc, "mtls_artifacts", dom, part, node)
+	domainRoot := filepath.Join(connextRoot, domPath)
+	mtlsNode := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, node, part)
 	cases := []struct {
 		name string
 		got  string
@@ -42,16 +43,16 @@ func TestLayeredPaths_Default(t *testing.T) {
 		{"IdentityCAPath", s.IdentityCAPath(svc, dom), filepath.Join(domainRoot, "identity_ca.crt")},
 		{"PermissionsCAPath", s.PermissionsCAPath(svc, dom), filepath.Join(domainRoot, "permissions_ca.crt")},
 
-		{"DomainDir", s.DomainDir(svc, dom), filepath.Join(connextRoot, dom)},
-		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, dom, "governance.p7s")},
-		{"CRLPath", s.CRLPath(svc, dom), filepath.Join(connextRoot, dom, "crl.pem")},
+		{"DomainDir", s.DomainDir(svc, dom), filepath.Join(connextRoot, domPath)},
+		{"GovernancePath", s.GovernancePath(svc, dom), filepath.Join(connextRoot, domPath, "governance.p7s")},
+		{"CRLPath", s.CRLPath(svc, dom), filepath.Join(connextRoot, domPath, "crl.pem")},
 
-		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node)},
-		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.crt")},
-		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.key")},
-		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "identity.lease.json")},
-		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "permissions.p7s")},
-		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, dom, part, node, "permissions.lease.json")},
+		{"NodeDir", s.NodeDir(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part)},
+		{"IdentityCertPath", s.IdentityCertPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.crt")},
+		{"IdentityKeyPath", s.IdentityKeyPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.key")},
+		{"IdentityLeasePath", s.IdentityLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "identity.lease.json")},
+		{"PermissionsPath", s.PermissionsPath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "permissions.p7s")},
+		{"PermissionsLeasePath", s.PermissionsLeasePath(svc, dom, part, node), filepath.Join(connextRoot, domPath, node, part, "permissions.lease.json")},
 
 		{"NodeAgentDir", s.NodeAgentDir(svc, dom, part, node), mtlsNode},
 		{"NodeCertPath", s.NodeCertPath(svc, dom, part, node), filepath.Join(mtlsNode, "node.crt")},
@@ -71,23 +72,24 @@ func TestLayeredPaths_ConnextDirOverride(t *testing.T) {
 	s := New("/base")
 	s.ConnextDir = "/rafa"
 	const (
-		svc  = "edge-prov"
-		dom  = "0:domain-0849"
-		part = "participant-sensors-0849"
-		node = "b9a00ae9a51d4086b52dc96015e4c5b0"
+		svc     = "edge-prov"
+		dom     = "0:domain-0849"
+		domPath = "0.domain-0849"
+		part    = "participant-sensors-0849"
+		node    = "b9a00ae9a51d4086b52dc96015e4c5b0"
 	)
 	// ConnextDir replaces the <service> root: CAs land under /rafa/<domain>.
 	if got := s.ServiceDir(svc); got != "/rafa" {
 		t.Fatalf("ServiceDir with ConnextDir: got %s, want /rafa", got)
 	}
-	if got := s.IdentityCAPath(svc, dom); got != filepath.Join("/rafa", dom, "identity_ca.crt") {
+	if got := s.IdentityCAPath(svc, dom); got != filepath.Join("/rafa", domPath, "identity_ca.crt") {
 		t.Fatalf("IdentityCAPath with ConnextDir: got %s", got)
 	}
-	if got := s.NodeDir(svc, dom, part, node); got != filepath.Join("/rafa", dom, part, node) {
+	if got := s.NodeDir(svc, dom, part, node); got != filepath.Join("/rafa", domPath, node, part) {
 		t.Fatalf("NodeDir with ConnextDir: got %s", got)
 	}
 	// The agent base (mtls + state) is unaffected by ConnextDir.
-	wantMTLS := filepath.Join("/base", "agent", svc, "mtls_artifacts", dom, part, node)
+	wantMTLS := filepath.Join("/base", "agent", svc, "mtls_artifacts", domPath, node, part)
 	if got := s.NodeAgentDir(svc, dom, part, node); got != wantMTLS {
 		t.Fatalf("NodeAgentDir must ignore ConnextDir: got %s, want %s", got, wantMTLS)
 	}
@@ -179,5 +181,44 @@ func TestResolveNodeMTLSAndURL(t *testing.T) {
 	}
 	if u := s.ResolveNodeURL(svc, dom, part, node); u != "https://node.example.com" {
 		t.Fatalf("unexpected URL: %q", u)
+	}
+}
+
+func TestDomainPathSegment_RoundTrip(t *testing.T) {
+	const domain = "29:north-field"
+	sanitized := DomainPathSegment(domain)
+	if sanitized != "29.north-field" {
+		t.Fatalf("DomainPathSegment(%q) = %q, want 29.north-field", domain, sanitized)
+	}
+	if got := DomainFromPathSegment(sanitized); got != domain {
+		t.Fatalf("DomainFromPathSegment(%q) = %q, want %q", sanitized, got, domain)
+	}
+	// A domain id without a separator (no ":")
+	// is passed through unchanged in both directions.
+	if got := DomainPathSegment("plain"); got != "plain" {
+		t.Fatalf("DomainPathSegment(%q) = %q, want unchanged", "plain", got)
+	}
+	if got := DomainFromPathSegment("plain"); got != "plain" {
+		t.Fatalf("DomainFromPathSegment(%q) = %q, want unchanged", "plain", got)
+	}
+}
+
+func TestListNodesWithURL_RecoversTrueDomainID(t *testing.T) {
+	s := newTestStore(t)
+	const (
+		svc  = "edge-prov"
+		dom  = "29:north-field"
+		part = "tractor"
+		node = "MF-4700-001"
+	)
+	if err := s.WriteNodeURL(svc, dom, part, node, "https://node.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	nodes := s.ListNodesWithURL()
+	if len(nodes) != 1 {
+		t.Fatalf("expected exactly one node, got %d: %+v", len(nodes), nodes)
+	}
+	if nodes[0].Domain != dom {
+		t.Fatalf("ListNodesWithURL Domain = %q, want %q (the true colon-separated id, not the on-disk folder name)", nodes[0].Domain, dom)
 	}
 }

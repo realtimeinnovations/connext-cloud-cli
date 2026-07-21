@@ -42,6 +42,11 @@ const (
 	StateEnrolled     ProfileState = "enrolled"
 	StateActive       ProfileState = "active"
 	StateRenewing     ProfileState = "renewing"
+	// StateRevoked marks a profile whose mTLS credentials were rejected by the
+	// Provisioning Service (e.g. the participant was revoked from the webapp).
+	// Set by renewArtifact on an auth-rejection error and cleared automatically
+	// the moment any renewal for that profile succeeds again.
+	StateRevoked ProfileState = "revoked"
 )
 
 // ArtifactID identifies one of the security artifacts managed by the agent.
@@ -107,13 +112,14 @@ type AgentState struct {
 	// reconstructs the profile from this field, so it is always set.
 	DomainTemplateID string `json:"domain_template_id,omitempty"`
 
-	// Serial is the device serial number — the node id leaf of the layered
-	// layout (<service>/<domain>/<participant>/<node>).
+	// Serial is the device serial number — the node id level of the layered
+	// layout (<service>/<domain>/<node>/<participant>), nested directly under
+	// the domain so every participant template for one node lives together.
 	Serial string `json:"serial,omitempty"`
 
-	// ParticipantTemplateID is the participant template identifier — the scope
-	// level between domain and node. It matches the participant_id field of the
-	// EnrollRequest.
+	// ParticipantTemplateID is the participant template identifier — the leaf
+	// scope level beneath the node serial. It matches the participant_id field
+	// of the EnrollRequest.
 	ParticipantTemplateID string `json:"participant_template_id,omitempty"`
 
 	// PSK rolling-key protocol state.
@@ -203,6 +209,12 @@ func domainOwnerKey(service, domain string) string { return service + "/" + doma
 // expiry) so that, after a restart, the profile that originally fetched the PSK
 // reclaims ownership regardless of rehydration order.  Callers must not hold
 // p.mu; it is only invoked from the serial enroll and rehydrate paths.
+//
+// A revoked profile is never preferred over a non-revoked one, even if it
+// still carries stale domain state from before it was revoked: without this
+// check, restarting the agent after renewArtifact's auth-rejection failover
+// (see failoverDomainOwner) could re-elect the revoked participant as owner
+// again, purely because its on-disk state happened to load first.
 func (a *Agent) claimDomainOwner(p *profile) {
 	key := domainOwnerKey(p.service(), p.domain())
 	existing, loaded := a.domainOwners.LoadOrStore(key, p)
@@ -211,6 +223,13 @@ func (a *Agent) claimDomainOwner(p *profile) {
 	}
 	cur := existing.(*profile)
 	if cur == p {
+		return
+	}
+	if a.isRevoked(cur) && !a.isRevoked(p) {
+		a.domainOwners.Store(key, p)
+		return
+	}
+	if a.isRevoked(p) {
 		return
 	}
 	if a.hasDomainState(p) && !a.hasDomainState(cur) {
@@ -231,6 +250,14 @@ func (a *Agent) hasDomainState(p *profile) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return !p.notAfter[ArtifactPSK].IsZero()
+}
+
+// isRevoked reports whether p's mTLS credentials were last rejected by the
+// Provisioning Service (see renewArtifact's auth-rejection handling).
+func (a *Agent) isRevoked(p *profile) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state == StateRevoked
 }
 
 // profileKey uniquely identifies a profile in the in-memory map. The first
@@ -320,9 +347,9 @@ type Agent struct {
 	// any interactive selection step.
 	ManualMode bool
 
-	// DeviceID, when non-empty, is used as the serial/device identifier
+	// DeploymentName, when non-empty, is used as the serial/device identifier
 	// without prompting or auto-detecting.
-	DeviceID string
+	DeploymentName string
 
 	// MACs, when non-empty, is used as the MAC address list without
 	// prompting or auto-detecting.
@@ -601,7 +628,7 @@ func (a *Agent) Run(ctx context.Context) error {
 //
 // Layout:
 //
-//	<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>/agent_state.json
+//	<agent>/<service>/mtls_artifacts/<domain>/<node>/<participant>/agent_state.json
 func (a *Agent) rehydrate() {
 	for _, statePath := range a.findStateFiles(a.Store.AgentDir()) {
 		a.loadProfile(statePath)
@@ -622,7 +649,7 @@ func (a *Agent) findNodeDomain(service, participant, node string) string {
 			continue
 		}
 		if _, err := a.ReadFile(a.Store.NodeKeyPath(service, d.Name(), participant, node)); err == nil {
-			return d.Name()
+			return edgestore.DomainFromPathSegment(d.Name())
 		}
 	}
 	return ""
@@ -709,7 +736,7 @@ func (a *Agent) countProfiles() int {
 }
 
 // findAdoptableNodes walks the per-node mTLS tree
-// (<agent>/<service>/mtls_artifacts/<domain>/<participant>/<node>) and returns
+// (<agent>/<service>/mtls_artifacts/<domain>/<node>/<participant>) and returns
 // every node that carries mTLS credentials (node.key) and a stored device
 // endpoint URL (node_url) but has neither an agent_state.json nor an already
 // loaded in-memory profile. These are enrollments performed out-of-band that
@@ -737,25 +764,28 @@ func (a *Agent) findAdoptableNodes() []adoptableNode {
 			if !dom.IsDir() {
 				continue
 			}
-			domain := dom.Name()
-			parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain))
+			// dom.Name() is the on-disk (path-sanitized) directory name; recover
+			// the true "<id>:<tag>" domain template id for use as a profile key
+			// and for anything that leaves the filesystem (state, display, API).
+			domain := edgestore.DomainFromPathSegment(dom.Name())
+			nodeDirs, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name()))
 			if err != nil {
 				continue
 			}
-			for _, part := range parts {
-				if !part.IsDir() {
+			for _, nd := range nodeDirs {
+				if !nd.IsDir() {
 					continue
 				}
-				participant := part.Name()
-				nodes, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), domain, participant))
+				node := nd.Name()
+				parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name(), node))
 				if err != nil {
 					continue
 				}
-				for _, nd := range nodes {
-					if !nd.IsDir() {
+				for _, part := range parts {
+					if !part.IsDir() {
 						continue
 					}
-					node := nd.Name()
+					participant := part.Name()
 					if n, ok := a.adoptableNode(service, domain, participant, node); ok {
 						found = append(found, n)
 					}
