@@ -58,20 +58,27 @@ func nddshomeSetCommand(minVersion string) string {
 	return fmt.Sprintf("  export NDDSHOME=/path/to/rti_connext_dds-%s", minVersion)
 }
 
-// windowsUserInstallPatterns appends a %USERPROFILE%\rti_connext_dds-* pattern
-// on Windows, where users commonly install without admin rights.
-func windowsUserInstallPatterns(base []string) []string {
-	if runtime.GOOS != "windows" {
+// userInstallPatterns appends a home-directory pattern where available.
+func userInstallPatterns(base []string, home string) []string {
+	if home == "" {
 		return base
 	}
-	if profile := os.Getenv("USERPROFILE"); profile != "" {
-		return append(base, filepath.Join(profile, "rti_connext_dds-*"))
+	return append(base, filepath.Join(home, "rti_connext_dds-*"))
+}
+
+func defaultInstallPatterns(base []string) []string {
+	if runtime.GOOS == "windows" {
+		return userInstallPatterns(base, os.Getenv("USERPROFILE"))
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		return userInstallPatterns(base, home)
 	}
 	return base
 }
 
 var (
-	InstallPatterns = windowsUserInstallPatterns([]string{
+	InstallPatterns = defaultInstallPatterns([]string{
 		"/Applications/rti_connext_dds-*",
 		"/opt/rti.com/rti_connext_dds-*",
 		`C:\Program Files\rti_connext_dds-*`,
