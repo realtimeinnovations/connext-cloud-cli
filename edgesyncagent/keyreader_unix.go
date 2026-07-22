@@ -17,10 +17,6 @@ import (
 	"golang.org/x/term"
 )
 
-// AgentSupported reports whether the long-running agent is supported on this
-// platform.
-func AgentSupported() bool { return true }
-
 // startKeyReader puts inFile in raw mode and spawns a goroutine that sends
 // recognised key events to the returned channel. It returns a stop func that
 // restores the terminal and waits for the goroutine to exit; the caller must

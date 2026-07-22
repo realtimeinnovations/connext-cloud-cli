@@ -94,3 +94,14 @@ brew upgrade rticloud
 
 On Windows, run the installer again to update the CLI.
 
+## Known limitations on Windows
+
+The edge-sync agent (`rticloud agent`) runs on Windows with a reduced interactive
+dashboard:
+
+- **View-only dashboard.** The in-dashboard key actions are not available on
+  Windows: arrow-key navigation, Enter-to-renew, and Ctrl+A to add a participant.
+  Artifact renewal still happens automatically; add participants with
+  `rticloud agent enroll`.
+- **Stopping the agent.** Use Ctrl+C to stop the agent.
+
