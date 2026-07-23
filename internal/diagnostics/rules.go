@@ -5,7 +5,7 @@ import "strings"
 const (
 	UDPUnicastSocketCreateFailure = "NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicast socket"
 	ComponentNotInstalledPrefix   = "The current configuration of your RTI product does not include "
-	componentNotInstalledHint     = "See https://community.rti.com/documentation for information, or choose \"Download Connext Professional\". To start from scratch, run \"rticloud gateway reset\", then \"rticloud gateway\" again."
+	componentNotInstalledHint     = "See https://community.rti.com/documentation for information, or choose \"Download Connext Professional\" for a new installation that includes all the required components. To start from scratch, run \"rticloud gateway reset\", then \"rticloud gateway\" again."
 )
 
 func DefaultRules() []Rule {
