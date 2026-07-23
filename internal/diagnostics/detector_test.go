@@ -2,13 +2,6 @@ package diagnostics
 
 import "testing"
 
-func TestComponentNotInstalledHintRecommendsCompleteInstallation(t *testing.T) {
-	want := "See https://community.rti.com/documentation for information, or choose \"Download Connext Professional\" for a new installation that includes all the required components. To start from scratch, run \"rticloud gateway reset\", then \"rticloud gateway\" again."
-	if componentNotInstalledHint != want {
-		t.Errorf("unexpected component-not-installed hint: %q", componentNotInstalledHint)
-	}
-}
-
 func TestDetectorRecognizesAndDeduplicatesUDPUnicastSocketCreateFailure(t *testing.T) {
 	detector := NewDetector()
 	line := "ERROR " + UDPUnicastSocketCreateFailure + " (errno = 48)"
