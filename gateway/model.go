@@ -60,12 +60,18 @@ type discoveredValue struct {
 	Connection string
 }
 
+type DatabusDiscoveryState struct {
+	Known     bool
+	Connected bool
+}
+
 type RoutingState struct {
 	routes            map[routeKey]*RouteState
 	discoveredStreams map[discoveredKey]discoveredValue
 	recentLogs        []string
 	recentLogTimes    []time.Time
 	topicEvents       map[string]string
+	databusDiscovery  DatabusDiscoveryState
 	serviceState      string
 	maxLogs           int
 	now               func() time.Time
@@ -89,6 +95,8 @@ var (
 	routeRefRE           = regexp.MustCompile(routeRef())
 )
 
+const databusConnectionStream = "DDSVirtualSubscription"
+
 func routeRef() string {
 	return `/routes/(?:"([^@"]+)@([^"]+)"|([^@|/\]]+)@([^|/\]]+))`
 }
@@ -111,6 +119,10 @@ func NewRoutingState(maxLogs int) *RoutingState {
 
 func (state *RoutingState) ServiceState() string {
 	return state.serviceState
+}
+
+func (state *RoutingState) DatabusDiscovery() DatabusDiscoveryState {
+	return state.databusDiscovery
 }
 
 func (state *RoutingState) Routes() map[string]RouteState {
@@ -325,6 +337,10 @@ func (state *RoutingState) updateStreamDiscovery(line string) {
 		return
 	}
 	topic, typeName, connection := match[1], match[2], match[3]
+	if topic == databusConnectionStream && connection == "cloud" {
+		state.databusDiscovery.Known = true
+		state.databusDiscovery.Connected = true
+	}
 	if strings.HasPrefix(topic, "DDS") {
 		return
 	}
@@ -352,6 +368,10 @@ func (state *RoutingState) updateStreamDisposal(line string) {
 		return
 	}
 	topic, connection := match[1], match[3]
+	if topic == databusConnectionStream && connection == "cloud" {
+		state.databusDiscovery.Known = true
+		state.databusDiscovery.Connected = false
+	}
 	side := "edge"
 	if connection == "cloud" {
 		side = "cloud"

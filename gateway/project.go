@@ -63,6 +63,8 @@ type GatewayApp struct {
 	Now                           func() time.Time
 	collectorLines                <-chan string
 	collectorDiscoveryEnabled     bool
+	collectorProcess              *os.Process
+	collectorDone                 <-chan struct{}
 }
 
 type RunOptions struct {
@@ -419,13 +421,16 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	}
 	app.collectorLines = collectorLines
 	app.collectorDiscoveryEnabled = discoveryEnabled
+	collectorDone := make(chan struct{})
+	app.collectorProcess = cmd.Process
+	app.collectorDone = collectorDone
 	var streamWG sync.WaitGroup
 	stream := func(reader io.ReadCloser) {
 		defer streamWG.Done()
 		defer reader.Close()
 		_ = terminal.ReadLines(reader, func(line string) {
 			logMu.Lock()
-			_, _ = fmt.Fprintln(logFile, line)
+			_, _ = fmt.Fprintf(logFile, "%s [collector] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 			logMu.Unlock()
 			select {
 			case collectorLines <- line:
@@ -440,6 +445,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 		go stream(stderr)
 	}
 	go func() {
+		defer close(collectorDone)
 		_ = cmd.Wait()
 		streamWG.Wait()
 		close(collectorLines)
@@ -447,6 +453,17 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	}()
 	_, _ = fmt.Fprintf(app.Out, "Collector Service started (pid %d)\n", cmd.Process.Pid)
 	return cmd, nil
+}
+
+func (app *GatewayApp) stopManagedCollector(pid int) bool {
+	if pid <= 0 || app.collectorProcess == nil || app.collectorProcess.Pid != pid {
+		return false
+	}
+	terminal.KillProcess(app.collectorProcess)
+	if app.collectorDone != nil {
+		<-app.collectorDone
+	}
+	return true
 }
 
 // RunCollectorService runs rticollectorservicelite in the foreground, blocking
@@ -808,6 +825,10 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	}
 
 done:
+	if app.stopManagedCollector(collectorPID) {
+		liveView.CollectorStatus = "stopped"
+		liveView.CollectorStatusFunc = nil
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if !options.TextOutput {
