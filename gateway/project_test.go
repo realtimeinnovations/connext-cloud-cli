@@ -513,7 +513,7 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if supportsRoutingPTY() {
 		ttyCheck = "if [ ! -t 1 ]; then exit 3; fi\n"
 	}
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"printf '%s\\n' '"+collectorLine+"'\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"printf '%s\\n' 'collector started' '"+collectorLine+"'\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -753,11 +753,17 @@ func TestCollectorCommandOmitsUnsupportedDiscoveryOption(t *testing.T) {
 
 func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
 	executable := filepath.Join(t.TempDir(), "collector")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\n"), 0o755); err != nil {
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\necho '  * ENTITY_DISCOVERY'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if !collectorSupportsDiscoveryEvents(executable) {
-		t.Fatal("expected -logEvent support")
+		t.Fatal("expected ENTITY_DISCOVERY support")
+	}
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if collectorSupportsDiscoveryEvents(executable) {
+		t.Fatal("generic -logEvent support must not imply ENTITY_DISCOVERY support")
 	}
 }
 

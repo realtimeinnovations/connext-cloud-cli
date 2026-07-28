@@ -368,7 +368,8 @@ func collectorSupportsDiscoveryEvents(executable string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	output, _ := exec.CommandContext(ctx, executable, "-help").CombinedOutput()
-	return strings.Contains(string(output), "-logEvent")
+	help := string(output)
+	return strings.Contains(help, "-logEvent") && strings.Contains(help, "ENTITY_DISCOVERY")
 }
 
 func (app *GatewayApp) collectorCommand(executable string, xmlPath string, collectorTemplate string) ([]string, bool) {
@@ -432,6 +433,9 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 			logMu.Lock()
 			_, _ = fmt.Fprintf(logFile, "%s [collector] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 			logMu.Unlock()
+			if !collectorDiscoveryEventRE.MatchString(line) {
+				return
+			}
 			select {
 			case collectorLines <- line:
 			default:

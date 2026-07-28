@@ -36,6 +36,21 @@ func TestReadLinesPreservesEmptyLines(t *testing.T) {
 	}
 }
 
+func TestReadLinesHandlesLongFragmentedLine(t *testing.T) {
+	want := strings.Repeat("x", 64*1024)
+	var lines []string
+	reader := iotest.OneByteReader(strings.NewReader(want + "\nnext"))
+	if err := ReadLines(reader, func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("unexpected long fragmented line count: %d", len(lines))
+	}
+	if lines[0] != want || lines[1] != "next" {
+		t.Fatalf("unexpected long fragmented lines: lengths=%d,%d", len(lines[0]), len(lines[1]))
+	}
+}
+
 func TestPlainOutputRequestedHonorsEnvironmentOptOut(t *testing.T) {
 	var out bytes.Buffer
 	t.Setenv("NO_COLOR", "1")

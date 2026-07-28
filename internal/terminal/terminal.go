@@ -22,36 +22,53 @@ func ReadLines(reader io.Reader, handle func(string)) error {
 		return nil
 	}
 	buffer := make([]byte, 4096)
-	pending := ""
+	pending := make([]byte, 0, len(buffer))
+	scan := 0
 	flush := func(force bool) {
 		start := 0
-		for index := 0; index < len(pending); index++ {
+		index := scan
+		for index < len(pending) {
 			switch pending[index] {
 			case '\n':
-				handle(pending[start:index])
-				start = index + 1
+				handle(string(pending[start:index]))
+				index++
+				start = index
 			case '\r':
 				if index+1 == len(pending) && !force {
-					pending = pending[start:]
+					if start > 0 {
+						copy(pending, pending[start:])
+						pending = pending[:len(pending)-start]
+						index -= start
+					}
+					scan = index
 					return
 				}
-				handle(pending[start:index])
-				if index+1 < len(pending) && pending[index+1] == '\n' {
+				handle(string(pending[start:index]))
+				index++
+				if index < len(pending) && pending[index] == '\n' {
 					index++
 				}
-				start = index + 1
+				start = index
+			default:
+				index++
 			}
 		}
-		pending = pending[start:]
-		if force && pending != "" {
-			handle(pending)
-			pending = ""
+		if start > 0 {
+			copy(pending, pending[start:])
+			pending = pending[:len(pending)-start]
+			index -= start
+		}
+		scan = index
+		if force && len(pending) > 0 {
+			handle(string(pending))
+			pending = pending[:0]
+			scan = 0
 		}
 	}
 	for {
 		count, err := reader.Read(buffer)
 		if count > 0 {
-			pending += string(buffer[:count])
+			pending = append(pending, buffer[:count]...)
 			flush(false)
 		}
 		if err != nil {
