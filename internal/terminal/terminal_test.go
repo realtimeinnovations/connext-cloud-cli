@@ -8,8 +8,33 @@ package terminal
 
 import (
 	"bytes"
+	"strings"
 	"testing"
+	"testing/iotest"
 )
+
+func TestReadLinesHandlesSplitDelimitersAndFinalPartialLine(t *testing.T) {
+	reader := iotest.OneByteReader(strings.NewReader("first\r\nsecond\rthird\nfourth"))
+	var lines []string
+	if err := ReadLines(reader, func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"first", "second", "third", "fourth"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected lines: %#v", lines)
+	}
+}
+
+func TestReadLinesPreservesEmptyLines(t *testing.T) {
+	var lines []string
+	if err := ReadLines(strings.NewReader("first\n\nthird\n"), func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"first", "", "third"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected lines: %#v", lines)
+	}
+}
 
 func TestPlainOutputRequestedHonorsEnvironmentOptOut(t *testing.T) {
 	var out bytes.Buffer

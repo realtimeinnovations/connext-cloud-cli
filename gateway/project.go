@@ -383,55 +383,6 @@ func (app *GatewayApp) collectorCommand(executable string, xmlPath string, colle
 	return command, enabled
 }
 
-type collectorStreamWriter struct {
-	mu      sync.Mutex
-	logMu   *sync.Mutex
-	logFile io.Writer
-	lines   chan<- string
-	pending string
-}
-
-func (writer *collectorStreamWriter) Write(data []byte) (int, error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	writer.logMu.Lock()
-	written, err := writer.logFile.Write(data)
-	writer.logMu.Unlock()
-	writer.pending += string(data)
-	writer.flush(false)
-	return written, err
-}
-
-func (writer *collectorStreamWriter) close() {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	writer.flush(true)
-}
-
-func (writer *collectorStreamWriter) flush(force bool) {
-	writer.pending = strings.ReplaceAll(writer.pending, "\r\n", "\n")
-	writer.pending = strings.ReplaceAll(writer.pending, "\r", "\n")
-	for {
-		index := strings.IndexByte(writer.pending, '\n')
-		if index < 0 {
-			break
-		}
-		writer.sendLine(writer.pending[:index])
-		writer.pending = writer.pending[index+1:]
-	}
-	if force && writer.pending != "" {
-		writer.sendLine(writer.pending)
-		writer.pending = ""
-	}
-}
-
-func (writer *collectorStreamWriter) sendLine(line string) {
-	select {
-	case writer.lines <- line:
-	default:
-	}
-}
-
 // StartCollector launches rticollectorservicelite as a background subprocess.
 // The caller is responsible for stopping the returned process (e.g. via Kill
 // or SendInterrupt) when it is no longer needed.
@@ -460,8 +411,6 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
 	collectorLines := make(chan string, 256)
 	var logMu sync.Mutex
-	stdoutWriter := &collectorStreamWriter{logMu: &logMu, logFile: logFile, lines: collectorLines}
-	stderrWriter := &collectorStreamWriter{logMu: &logMu, logFile: logFile, lines: collectorLines}
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
 		logFile.Close()
@@ -471,17 +420,24 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	app.collectorLines = collectorLines
 	app.collectorDiscoveryEnabled = discoveryEnabled
 	var streamWG sync.WaitGroup
-	stream := func(reader io.ReadCloser, writer *collectorStreamWriter) {
+	stream := func(reader io.ReadCloser) {
 		defer streamWG.Done()
 		defer reader.Close()
-		_, _ = io.Copy(writer, reader)
-		writer.close()
+		_ = terminal.ReadLines(reader, func(line string) {
+			logMu.Lock()
+			_, _ = fmt.Fprintln(logFile, line)
+			logMu.Unlock()
+			select {
+			case collectorLines <- line:
+			default:
+			}
+		})
 	}
 	streamWG.Add(1)
-	go stream(stdout, stdoutWriter)
+	go stream(stdout)
 	if stderr != nil {
 		streamWG.Add(1)
-		go stream(stderr, stderrWriter)
+		go stream(stderr)
 	}
 	go func() {
 		_ = cmd.Wait()
@@ -545,40 +501,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	var streamWG sync.WaitGroup
 	stream := func(reader io.Reader) {
 		defer streamWG.Done()
-		if reader == nil {
-			return
-		}
-		buf := make([]byte, 4096)
-		pending := ""
-		flushPending := func(force bool) {
-			pending = strings.ReplaceAll(pending, "\r\n", "\n")
-			pending = strings.ReplaceAll(pending, "\r", "\n")
-			for {
-				idx := strings.IndexByte(pending, '\n')
-				if idx < 0 {
-					break
-				}
-				collectorLines <- pending[:idx]
-				pending = pending[idx+1:]
-			}
-			if force && pending != "" {
-				collectorLines <- pending
-				pending = ""
-			}
-		}
-		for {
-			n, readErr := reader.Read(buf)
-			if n > 0 {
-				text := string(buf[:n])
-				_, _ = fmt.Fprintf(logFile, "%s [collector] %s", app.Now().UTC().Format(time.RFC3339), text)
-				pending += text
-				flushPending(false)
-			}
-			if readErr != nil {
-				flushPending(true)
-				return
-			}
-		}
+		_ = terminal.ReadLines(reader, func(line string) { collectorLines <- line })
 	}
 	streamWG.Add(1)
 	go stream(stdout)
@@ -621,6 +544,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 				}
 				continue
 			}
+			_, _ = fmt.Fprintf(logFile, "%s [collector] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 			finding, first := liveView.HandleCollectorLine(line)
 			if options.TextOutput && strings.TrimSpace(line) != "" {
 				_, _ = fmt.Fprintln(app.Out, line)
@@ -764,39 +688,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	var streamWG sync.WaitGroup
 	stream := func(reader io.Reader) {
 		defer streamWG.Done()
-		if reader == nil {
-			return
-		}
-		buffer := make([]byte, 4096)
-		pending := ""
-		flushPending := func(force bool) {
-			pending = strings.ReplaceAll(pending, "\r\n", "\n")
-			pending = strings.ReplaceAll(pending, "\r", "\n")
-			for {
-				index := strings.IndexByte(pending, '\n')
-				if index < 0 {
-					break
-				}
-				line := pending[:index]
-				pending = pending[index+1:]
-				routingLines <- line
-			}
-			if force && pending != "" {
-				routingLines <- pending
-				pending = ""
-			}
-		}
-		for {
-			count, readErr := reader.Read(buffer)
-			if count > 0 {
-				pending += string(buffer[:count])
-				flushPending(false)
-			}
-			if readErr != nil {
-				flushPending(true)
-				return
-			}
-		}
+		_ = terminal.ReadLines(reader, func(line string) { routingLines <- line })
 	}
 	streamWG.Add(1)
 	go stream(stdout)
