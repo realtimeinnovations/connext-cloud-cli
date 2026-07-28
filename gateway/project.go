@@ -41,25 +41,28 @@ const (
 type TemplateItem = common.TemplateItem
 
 type GatewayApp struct {
-	WorkDir                  string
-	In                       io.Reader
-	Out                      io.Writer
-	APIGet                   func(path string) (map[string]any, error)
-	APIPost                  func(path string, payload map[string]any) (map[string]any, error)
-	ListResourcesFunc        func() (map[string]map[string]any, map[string]map[string]any, error)
-	GetResourceFunc          func(name string) (map[string]any, error)
-	CurrentZoneFunc          func() string
-	DiscoverConnextInstallFn func(prompt bool) (ConnextInstall, error)
-	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
-	CreateApplicationFunc    func(databusName string, kind string, clientName string) error
-	DownloadArtifactsFunc    func(config map[string]any, force bool) error
-	PIDRunningFunc           func(pid int) bool
-	SelectFunc               func(message string, choices []string) (string, error)
-	InputFunc                func(message string) (string, error)
-	ConfirmReloadFunc        func(message string) (bool, error)
-	InterruptSignalFunc      func() (<-chan os.Signal, func())
-	OpenBrowserFunc          func(url string) error
-	Now                      func() time.Time
+	WorkDir                       string
+	In                            io.Reader
+	Out                           io.Writer
+	APIGet                        func(path string) (map[string]any, error)
+	APIPost                       func(path string, payload map[string]any) (map[string]any, error)
+	ListResourcesFunc             func() (map[string]map[string]any, map[string]map[string]any, error)
+	GetResourceFunc               func(name string) (map[string]any, error)
+	CurrentZoneFunc               func() string
+	DiscoverConnextInstallFn      func(prompt bool) (ConnextInstall, error)
+	GenerateCSRFunc               func(databus string, app string, clientID string) ([]byte, string, error)
+	CreateApplicationFunc         func(databusName string, kind string, clientName string) error
+	DownloadArtifactsFunc         func(config map[string]any, force bool) error
+	PIDRunningFunc                func(pid int) bool
+	SelectFunc                    func(message string, choices []string) (string, error)
+	InputFunc                     func(message string) (string, error)
+	ConfirmReloadFunc             func(message string) (bool, error)
+	InterruptSignalFunc           func() (<-chan os.Signal, func())
+	OpenBrowserFunc               func(url string) error
+	CollectorDiscoverySupportFunc func(executable string) bool
+	Now                           func() time.Time
+	collectorLines                <-chan string
+	collectorDiscoveryEnabled     bool
 }
 
 type RunOptions struct {
@@ -71,10 +74,11 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 		workDir, _ = os.Getwd()
 	}
 	app := &GatewayApp{
-		WorkDir: workDir,
-		In:      os.Stdin,
-		Out:     out,
-		Now:     time.Now,
+		WorkDir:                       workDir,
+		In:                            os.Stdin,
+		Out:                           out,
+		Now:                           time.Now,
+		CollectorDiscoverySupportFunc: collectorSupportsDiscoveryEvents,
 		OpenBrowserFunc: func(url string) error {
 			var command *exec.Cmd
 			switch runtime.GOOS {
@@ -358,6 +362,76 @@ func (app *GatewayApp) collectorEnv(collectorSecure bool) []string {
 	return nil
 }
 
+func collectorSupportsDiscoveryEvents(executable string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	output, _ := exec.CommandContext(ctx, executable, "-help").CombinedOutput()
+	return strings.Contains(string(output), "-logEvent")
+}
+
+func (app *GatewayApp) collectorCommand(executable string, xmlPath string, collectorTemplate string) ([]string, bool) {
+	command := []string{
+		executable,
+		"-cfgFile", xmlPath,
+		"-cfgName", collectorTemplate,
+		"-locationTag", collectorTemplate,
+	}
+	enabled := app.CollectorDiscoverySupportFunc != nil && app.CollectorDiscoverySupportFunc(executable)
+	if enabled {
+		command = append(command, "-logEvent", "ENTITY_DISCOVERY")
+	}
+	return command, enabled
+}
+
+type collectorStreamWriter struct {
+	mu      sync.Mutex
+	logMu   *sync.Mutex
+	logFile io.Writer
+	lines   chan<- string
+	pending string
+}
+
+func (writer *collectorStreamWriter) Write(data []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.logMu.Lock()
+	written, err := writer.logFile.Write(data)
+	writer.logMu.Unlock()
+	writer.pending += string(data)
+	writer.flush(false)
+	return written, err
+}
+
+func (writer *collectorStreamWriter) close() {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.flush(true)
+}
+
+func (writer *collectorStreamWriter) flush(force bool) {
+	writer.pending = strings.ReplaceAll(writer.pending, "\r\n", "\n")
+	writer.pending = strings.ReplaceAll(writer.pending, "\r", "\n")
+	for {
+		index := strings.IndexByte(writer.pending, '\n')
+		if index < 0 {
+			break
+		}
+		writer.sendLine(writer.pending[:index])
+		writer.pending = writer.pending[index+1:]
+	}
+	if force && writer.pending != "" {
+		writer.sendLine(writer.pending)
+		writer.pending = ""
+	}
+}
+
+func (writer *collectorStreamWriter) sendLine(line string) {
+	select {
+	case writer.lines <- line:
+	default:
+	}
+}
+
 // StartCollector launches rticollectorservicelite as a background subprocess.
 // The caller is responsible for stopping the returned process (e.g. via Kill
 // or SendInterrupt) when it is no longer needed.
@@ -371,12 +445,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 		return nil, GatewayError{Message: fmt.Sprintf("rticollectorservicelite not found at %s.\n\nSet NDDSHOME to your Connext installation and rerun:\n  rticloud gateway", collectorExe)}
 	}
 	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
-	command := []string{
-		CollectorExecutable(connext.Path),
-		"-cfgFile", xmlPath,
-		"-cfgName", collectorTemplate,
-		"-locationTag", collectorTemplate,
-	}
+	command, discoveryEnabled := app.collectorCommand(collectorExe, xmlPath, collectorTemplate)
 	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return nil, err
 	}
@@ -387,17 +456,37 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
-	terminal.PrepareProcess(cmd)
 	cmd.Dir = app.CollectorDir()
 	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
+	collectorLines := make(chan string, 256)
+	var logMu sync.Mutex
+	stdoutWriter := &collectorStreamWriter{logMu: &logMu, logFile: logFile, lines: collectorLines}
+	stderrWriter := &collectorStreamWriter{logMu: &logMu, logFile: logFile, lines: collectorLines}
+	stdout, stderr, err := terminal.StartProcess(cmd)
+	if err != nil {
 		logFile.Close()
+		close(collectorLines)
 		return nil, GatewayError{Message: fmt.Sprintf("Failed to start Collector Service: %v", err)}
+	}
+	app.collectorLines = collectorLines
+	app.collectorDiscoveryEnabled = discoveryEnabled
+	var streamWG sync.WaitGroup
+	stream := func(reader io.ReadCloser, writer *collectorStreamWriter) {
+		defer streamWG.Done()
+		defer reader.Close()
+		_, _ = io.Copy(writer, reader)
+		writer.close()
+	}
+	streamWG.Add(1)
+	go stream(stdout, stdoutWriter)
+	if stderr != nil {
+		streamWG.Add(1)
+		go stream(stderr, stderrWriter)
 	}
 	go func() {
 		_ = cmd.Wait()
+		streamWG.Wait()
+		close(collectorLines)
 		logFile.Close()
 	}()
 	_, _ = fmt.Fprintf(app.Out, "Collector Service started (pid %d)\n", cmd.Process.Pid)
@@ -420,12 +509,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 		return 0, GatewayError{Message: fmt.Sprintf("rticollectorservicelite not found at %s.\n\nSet NDDSHOME to your Connext installation and rerun:\n  rticloud gateway", collectorExe)}
 	}
 	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
-	command := []string{
-		collectorExe,
-		"-cfgFile", xmlPath,
-		"-cfgName", collectorTemplate,
-		"-locationTag", collectorTemplate,
-	}
+	command, discoveryEnabled := app.collectorCommand(collectorExe, xmlPath, collectorTemplate)
 	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
 	}
@@ -438,6 +522,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	liveView := NewRoutingLiveView(config)
 	liveView.CollectorStatus = "running"
 	liveView.CollectorSecure = collectorSecure
+	liveView.CollectorDiscovery.Enabled = discoveryEnabled
 	renderer := TerminalRenderer{Out: app.Out}
 	defer func() { _ = renderer.Finish() }()
 	wrapped := terminal.PrepareCommand(command)
@@ -625,6 +710,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	liveView.CollectorName = common.NestedString(config, "templates", "collector")
 	liveView.DatabusSecure = databusSecure
 	liveView.CollectorSecure = collectorSecure
+	liveView.CollectorDiscovery.Enabled = app.collectorDiscoveryEnabled
 	liveView.SeedFromConfig(xmlPath)
 	if collectorPID > 0 {
 		liveView.CollectorStatusFunc = func(config map[string]any, name string) string {
@@ -788,6 +874,18 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 			now := app.Now()
 			if lastLiveRefresh.IsZero() || now.Sub(lastLiveRefresh) >= routingRenderPollInterval {
 				renderCurrentView(now)
+			}
+		case line, ok := <-app.collectorLines:
+			if !ok {
+				app.collectorLines = nil
+				continue
+			}
+			if liveView.updateCollectorDiscovery(line) {
+				pendingLiveRefresh = true
+				now := app.Now()
+				if lastLiveRefresh.IsZero() || now.Sub(lastLiveRefresh) >= routingRenderPollInterval {
+					renderCurrentView(now)
+				}
 			}
 		case <-renderTicker.C:
 			now := app.Now()

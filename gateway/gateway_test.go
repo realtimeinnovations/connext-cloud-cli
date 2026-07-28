@@ -623,6 +623,59 @@ func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
 	}
 }
 
+func TestCollectorDiscoveryUpdatesObservabilityStatus(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "running"
+	view.CollectorDiscovery.Enabled = true
+
+	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1")
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 2")
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "connected · 2 edge apps") {
+		t.Fatalf("unexpected connected status: %s", status)
+	}
+	if status := view.Render(1).Resource.Status; !strings.Contains(status, "◉ connected · 2 edge apps") {
+		t.Fatalf("unexpected collector pulse: %s", status)
+	}
+	if !view.HasActivePulse() {
+		t.Fatal("expected connected collector with edge apps to activate pulse")
+	}
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:UNMATCH | Monitoring Participant from DDS Receiver, total_matched = 0")
+	if status := view.Render(1).Resource.Status; !strings.Contains(status, "● connected · waiting for apps") {
+		t.Fatalf("collector without edge apps must not pulse: %s", status)
+	}
+	if view.HasActivePulse() {
+		t.Fatal("collector without edge apps must not activate pulse")
+	}
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 1")
+
+	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:UNMATCH | Monitoring Participant from DDS Exporter, total_matched = 0")
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:UNMATCH | Monitoring Participant from DDS Receiver, total_matched = 1")
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "disconnected · 1 edge app") {
+		t.Fatalf("unexpected disconnected status: %s", status)
+	}
+	if view.HasActivePulse() {
+		t.Fatal("disconnected collector must not activate pulse")
+	}
+}
+
+func TestCollectorDiscoveryDistinguishesWaitingFromUnavailable(t *testing.T) {
+	config := map[string]any{"observability": "obs", "templates": map[string]any{"collector": "collector"}}
+	view := NewRoutingLiveView(config)
+	view.CollectorStatus = "running"
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "running") {
+		t.Fatalf("expected legacy status when discovery is unavailable: %s", status)
+	}
+	view.CollectorDiscovery.Enabled = true
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "waiting for connections") {
+		t.Fatalf("expected discovery status to wait for measurements: %s", status)
+	}
+}
+
 func TestDiagnosticsPanelAppearsImmediatelyAboveGatewayLog(t *testing.T) {
 	view := NewRoutingLiveView(map[string]any{
 		"databus": "db",

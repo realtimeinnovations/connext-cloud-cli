@@ -9,6 +9,8 @@ package gateway
 import (
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +23,7 @@ const (
 	defaultTerminalWidth  = 120
 	defaultTerminalHeight = 40
 	summaryLabelWidth     = 14
-	summaryStatusWidth    = 24
+	summaryStatusWidth    = 30
 	routeIOWidth          = 4
 	routeTopicMinWidth    = 20
 	routeTopicMaxWidth    = 28
@@ -67,6 +69,7 @@ type RoutingLiveView struct {
 	CollectorName       string
 	DatabusSecure       bool
 	CollectorSecure     bool
+	CollectorDiscovery  CollectorDiscoveryState
 	State               *RoutingState
 	CollectorStatus     string
 	CollectorStatusFunc func(config map[string]any, collectorName string) string
@@ -74,6 +77,16 @@ type RoutingLiveView struct {
 	Enabled             bool
 	Detector            *diagnostics.Detector
 }
+
+type CollectorDiscoveryState struct {
+	Enabled          bool
+	ServiceKnown     bool
+	ServiceConnected bool
+	EdgeAppsKnown    bool
+	EdgeApps         int
+}
+
+var collectorDiscoveryEventRE = regexp.MustCompile(`(MonitoringEventReader_on_subscription_matched|MonitorEventWriter_on_publication_matched):(MATCH|UNMATCH)\b.*\btotal_matched = (\d+)`)
 
 type TerminalRenderer struct {
 	Out    io.Writer
@@ -100,8 +113,29 @@ func (view *RoutingLiveView) HandleCollectorLine(line string) (diagnostics.Findi
 	if trimmed == "" {
 		return diagnostics.Finding{}, false
 	}
+	view.updateCollectorDiscovery(line)
 	view.State.appendLog("collector " + trimmed)
 	return view.Detector.Observe("collector", line)
+}
+
+func (view *RoutingLiveView) updateCollectorDiscovery(line string) bool {
+	match := collectorDiscoveryEventRE.FindStringSubmatch(line)
+	if match == nil {
+		return false
+	}
+	totalMatched, err := strconv.Atoi(match[3])
+	if err != nil {
+		return false
+	}
+	view.CollectorDiscovery.Enabled = true
+	if match[1] == "MonitorEventWriter_on_publication_matched" {
+		view.CollectorDiscovery.ServiceKnown = true
+		view.CollectorDiscovery.ServiceConnected = totalMatched > 0
+		return true
+	}
+	view.CollectorDiscovery.EdgeAppsKnown = true
+	view.CollectorDiscovery.EdgeApps = totalMatched
+	return true
 }
 
 func (view *RoutingLiveView) SeedFromConfig(xmlPath string) {
@@ -116,6 +150,14 @@ func (view *RoutingLiveView) PulseFrame(now ...float64) int {
 }
 
 func (view *RoutingLiveView) HasActivePulse() bool {
+	if view.collectorLiveStatus() == "running" &&
+		view.CollectorDiscovery.Enabled &&
+		view.CollectorDiscovery.ServiceKnown &&
+		view.CollectorDiscovery.ServiceConnected &&
+		view.CollectorDiscovery.EdgeAppsKnown &&
+		view.CollectorDiscovery.EdgeApps > 0 {
+		return true
+	}
 	if view.State.ServiceState() != "running" {
 		return false
 	}
@@ -140,7 +182,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 	if !HasDatabus(view.Config) {
 		collectorStatus := view.collectorLiveStatus()
 		header := GatewayLiveHeader(view.Config, "not configured", 0, pulseFrame)
-		resource := GatewayLiveResources(view.Config, collectorStatus)
+		resource := gatewayLiveResourcesWithDiscovery(view.Config, collectorStatus, view.CollectorDiscovery, pulseFrame)
 		if HasObservability(view.Config) {
 			if view.CollectorSecure {
 				resource.Warning = "secure"
@@ -173,7 +215,7 @@ func (view *RoutingLiveView) Render(pulseFrame int) RenderedView {
 	}
 	collectorStatus := view.collectorLiveStatus()
 	header := GatewayLiveHeader(view.Config, status, activeRoutes, pulseFrame)
-	resource := GatewayLiveResources(view.Config, collectorStatus)
+	resource := gatewayLiveResourcesWithDiscovery(view.Config, collectorStatus, view.CollectorDiscovery, pulseFrame)
 	if HasDatabus(view.Config) {
 		if view.DatabusSecure {
 			header.Warning = "secure"
@@ -290,6 +332,10 @@ func GatewayLiveResources(config map[string]any, collectorStatus string) Rendere
 	return gatewaySummaryLine("observability", collectorSummaryChip(collectorStatus), gatewayResourceTarget(config, "observability"))
 }
 
+func gatewayLiveResourcesWithDiscovery(config map[string]any, collectorStatus string, discovery CollectorDiscoveryState, pulseFrame int) RenderedSummaryLine {
+	return gatewaySummaryLine("observability", collectorDiscoverySummaryChip(collectorStatus, discovery, pulseFrame), gatewayResourceTarget(config, "observability"))
+}
+
 func gatewaySummaryLine(label string, status string, target string) RenderedSummaryLine {
 	return RenderedSummaryLine{Label: label, Status: status, Target: target}
 }
@@ -375,6 +421,37 @@ func collectorSummaryChip(status string) string {
 	default:
 		return fmt.Sprintf("[yellow]◌ %s[/yellow]", status)
 	}
+}
+
+func collectorDiscoverySummaryChip(status string, discovery CollectorDiscoveryState, pulseFrame int) string {
+	if status != "running" || !discovery.Enabled {
+		return collectorSummaryChip(status)
+	}
+	if !discovery.ServiceKnown && !discovery.EdgeAppsKnown {
+		return fmt.Sprintf("[%s]◌ waiting for connections[/]", tui.RTIBlue)
+	}
+	edgeStatus := "waiting for apps"
+	if discovery.EdgeAppsKnown && discovery.EdgeApps > 0 {
+		noun := "edge apps"
+		if discovery.EdgeApps == 1 {
+			noun = "edge app"
+		}
+		edgeStatus = fmt.Sprintf("%d %s", discovery.EdgeApps, noun)
+	}
+	if discovery.ServiceKnown && discovery.ServiceConnected {
+		glyph := "●"
+		if discovery.EdgeAppsKnown && discovery.EdgeApps > 0 {
+			glyph = pulseGlyph(pulseFrame)
+		}
+		return fmt.Sprintf("[green]%s connected · %s[/green]", glyph, edgeStatus)
+	}
+	if discovery.ServiceKnown {
+		return fmt.Sprintf("[yellow]◌ disconnected · %s[/yellow]", edgeStatus)
+	}
+	if !discovery.EdgeAppsKnown || discovery.EdgeApps == 0 {
+		return fmt.Sprintf("[%s]◌ waiting for connections[/]", tui.RTIBlue)
+	}
+	return fmt.Sprintf("[%s]◌ waiting · %s[/]", tui.RTIBlue, edgeStatus)
 }
 
 func (renderer *TerminalRenderer) Render(view RenderedView) error {
