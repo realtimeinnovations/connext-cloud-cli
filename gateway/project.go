@@ -413,6 +413,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	cmd.Dir = app.CollectorDir()
 	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
 	collectorLines := make(chan string, 256)
+	var collectorLinesMu sync.Mutex
 	var logMu sync.Mutex
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
@@ -433,13 +434,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 			logMu.Lock()
 			_, _ = fmt.Fprintf(logFile, "%s [collector] %s\n", app.Now().UTC().Format(time.RFC3339), line)
 			logMu.Unlock()
-			if !collectorDiscoveryEventRE.MatchString(line) {
-				return
-			}
-			select {
-			case collectorLines <- line:
-			default:
-			}
+			enqueueCollectorDiscoveryLine(collectorLines, &collectorLinesMu, line)
 		})
 	}
 	streamWG.Add(1)
@@ -457,6 +452,41 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	}()
 	_, _ = fmt.Fprintf(app.Out, "Collector Service started (pid %d)\n", cmd.Process.Pid)
 	return cmd, nil
+}
+
+// enqueueCollectorDiscoveryLine retains the latest discovery transition for
+// each independently displayed Collector status. This lets the background
+// collector continue streaming without blocking while ensuring a full queue
+// cannot leave the UI with an obsolete connection or edge-app count.
+func enqueueCollectorDiscoveryLine(lines chan string, mu *sync.Mutex, line string) {
+	match := collectorDiscoveryEventRE.FindStringSubmatch(line)
+	if match == nil {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	latest := map[string]string{}
+	for {
+		select {
+		case queued := <-lines:
+			if queuedMatch := collectorDiscoveryEventRE.FindStringSubmatch(queued); queuedMatch != nil {
+				latest[queuedMatch[1]] = queued
+			}
+		default:
+			// The incoming line is newer than every drained queue entry.
+			latest[match[1]] = line
+			for _, event := range []string{
+				"MonitorEventWriter_on_publication_matched",
+				"MonitoringEventReader_on_subscription_matched",
+			} {
+				if queued, ok := latest[event]; ok {
+					lines <- queued
+				}
+			}
+			return
+		}
+	}
 }
 
 func (app *GatewayApp) stopManagedCollector(pid int) bool {

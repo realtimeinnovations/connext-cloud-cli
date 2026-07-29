@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -560,6 +561,36 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	}
 	if expected := "2026-07-28T22:14:12Z [collector] " + collectorLine; !strings.Contains(logContent, expected) {
 		t.Fatalf("collector log missing timestamped output %q: %s", expected, logContent)
+	}
+}
+
+func TestCollectorDiscoveryQueueRetainsLatestStateForEachEventType(t *testing.T) {
+	lines := make(chan string, 2)
+	var mu sync.Mutex
+	serviceConnected := "MonitorEventWriter_on_publication_matched:MATCH | total_matched = 1"
+	serviceDisconnected := "MonitorEventWriter_on_publication_matched:UNMATCH | total_matched = 0"
+	edgeAppsOne := "MonitoringEventReader_on_subscription_matched:MATCH | total_matched = 1"
+	edgeAppsThree := "MonitoringEventReader_on_subscription_matched:MATCH | total_matched = 3"
+
+	enqueueCollectorDiscoveryLine(lines, &mu, serviceConnected)
+	enqueueCollectorDiscoveryLine(lines, &mu, edgeAppsOne)
+	enqueueCollectorDiscoveryLine(lines, &mu, serviceDisconnected)
+	enqueueCollectorDiscoveryLine(lines, &mu, edgeAppsThree)
+
+	got := map[string]string{}
+	for i := 0; i < 2; i++ {
+		line := <-lines
+		match := collectorDiscoveryEventRE.FindStringSubmatch(line)
+		if match == nil {
+			t.Fatalf("unexpected queued line: %q", line)
+		}
+		got[match[1]] = line
+	}
+	if got["MonitorEventWriter_on_publication_matched"] != serviceDisconnected {
+		t.Fatalf("service state was not coalesced to its latest event: %#v", got)
+	}
+	if got["MonitoringEventReader_on_subscription_matched"] != edgeAppsThree {
+		t.Fatalf("edge app state was not coalesced to its latest event: %#v", got)
 	}
 }
 
