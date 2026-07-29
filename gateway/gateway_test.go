@@ -102,6 +102,31 @@ func TestRoutingStateDoesNotShowDiscoveryWithoutRoute(t *testing.T) {
 	}
 }
 
+func TestRoutingStateTracksDatabusDiscoveryLifecycle(t *testing.T) {
+	state := NewRoutingState(RoutingLiveLogLines)
+	discovered := "LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED] name=DDSVirtualSubscription, type_name=DDS_VirtualSubscriptionBuiltinTopicData, connection=cloud"
+	disposed := "LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISPOSED] name=DDSVirtualSubscription, type_name=DDS_VirtualSubscriptionBuiltinTopicData, connection=cloud"
+
+	if discovery := state.DatabusDiscovery(); discovery.Known || discovery.Connected {
+		t.Fatalf("unexpected initial discovery state: %#v", discovery)
+	}
+	state.Update(discovered)
+	if discovery := state.DatabusDiscovery(); !discovery.Known || !discovery.Connected {
+		t.Fatalf("unexpected connected state: %#v", discovery)
+	}
+	state.Update(disposed)
+	if discovery := state.DatabusDiscovery(); !discovery.Known || discovery.Connected {
+		t.Fatalf("unexpected disconnected state: %#v", discovery)
+	}
+	state.Update(discovered)
+	if discovery := state.DatabusDiscovery(); !discovery.Known || !discovery.Connected {
+		t.Fatalf("unexpected reconnected state: %#v", discovery)
+	}
+	if rows := state.TopicRows(); len(rows) != 0 {
+		t.Fatalf("virtual subscription must not create a topic row: %#v", rows)
+	}
+}
+
 func TestGatewayLiveHeaderAndResources(t *testing.T) {
 	config := map[string]any{
 		"databus":       "db",
@@ -113,7 +138,7 @@ func TestGatewayLiveHeaderAndResources(t *testing.T) {
 	}
 	header := GatewayLiveHeader(config, "running, waiting for discovered topics", 0, 0)
 	resources := GatewayLiveResources(config, "running")
-	if header.Label != "databus" || !strings.Contains(header.Status, "waiting topics") || header.Target != "db / gw" {
+	if header.Label != "databus" || !strings.Contains(header.Status, "waiting for topics") || header.Target != "db / gw" {
 		t.Fatalf("unexpected header: %#v", header)
 	}
 	if GatewayPanelTitle() != "[bold] Connext Cloud Gateway  [/bold]" {
@@ -128,6 +153,62 @@ func TestGatewayLiveHeaderShowsRoutedTopicCount(t *testing.T) {
 	header := GatewayLiveHeader(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, "running", 1, 0)
 	if !strings.Contains(header.Status, "routing 1 topic") {
 		t.Fatalf("unexpected header status: %s", header.Status)
+	}
+}
+
+func TestDatabusDiscoverySummaryStates(t *testing.T) {
+	config := map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}
+	cases := []struct {
+		name      string
+		status    string
+		topics    int
+		frame     int
+		discovery DatabusDiscoveryState
+		expected  string
+	}{
+		{"waiting", "running, waiting for discovered topics", 0, 0, DatabusDiscoveryState{}, "waiting for connection"},
+		{"connected waiting topics", "running, waiting for discovered topics", 0, 1, DatabusDiscoveryState{Known: true, Connected: true}, "● connected · waiting for topics"},
+		{"connected routing", "running", 2, 1, DatabusDiscoveryState{Known: true, Connected: true}, "◉ connected · routing 2 topics"},
+		{"disconnected", "running", 2, 1, DatabusDiscoveryState{Known: true}, "◌ disconnected"},
+		{"stopped", "stopped", 2, 1, DatabusDiscoveryState{Known: true, Connected: true}, "[dim]◌ stopped[/dim]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			header := gatewayLiveHeaderWithDiscovery(config, tc.status, tc.topics, tc.frame, tc.discovery)
+			if !strings.Contains(header.Status, tc.expected) {
+				t.Fatalf("expected %q in %q", tc.expected, header.Status)
+			}
+		})
+	}
+}
+
+func TestDatabusPulseRequiresConnectionAndActiveTopic(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}})
+	view.State.serviceState = "running"
+	view.State.routes[routeKey{Route: "route_0_docs_edge_to_cloud", Topic: "docs"}] = &RouteState{
+		Route:     "route_0_docs_edge_to_cloud",
+		Topic:     "docs",
+		Direction: "edge_to_cloud",
+		State:     "RUN",
+	}
+	if view.HasActivePulse() {
+		t.Fatal("route must not pulse before cloud discovery")
+	}
+
+	view.HandleLine("LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISCOVERED] name=DDSVirtualSubscription, type_name=DDS_VirtualSubscriptionBuiltinTopicData, connection=cloud")
+	if !view.HasActivePulse() {
+		t.Fatal("connected Databus with an active topic should pulse")
+	}
+	if status := view.Render(1).Header.Status; !strings.Contains(status, "◉ connected · routing 1 topic") {
+		t.Fatalf("unexpected connected status: %s", status)
+	}
+
+	view.HandleLine("LOCAL [/routing_services/gateway/domain_routes/etc|STREAM_DISPOSED] name=DDSVirtualSubscription, type_name=DDS_VirtualSubscriptionBuiltinTopicData, connection=cloud")
+	if view.HasActivePulse() {
+		t.Fatal("disconnected Databus must not pulse")
+	}
+	if status := view.Render(1).Header.Status; !strings.Contains(status, "◌ disconnected") || strings.Contains(status, "routing 1 topic") {
+		t.Fatalf("unexpected disconnected status: %s", status)
 	}
 }
 
@@ -541,6 +622,7 @@ func TestRoutingLiveViewUsesOrangeBorderAndGatewayRows(t *testing.T) {
 	view.DatabusSecure = false
 	view.CollectorSecure = true
 	view.State.serviceState = "running"
+	view.State.databusDiscovery = DatabusDiscoveryState{Known: true, Connected: true}
 	view.State.routes[routeKey{Route: "route_0_docs_edge_to_cloud", Topic: "docs"}] = &RouteState{
 		Route:     "route_0_docs_edge_to_cloud",
 		Topic:     "docs",
@@ -623,6 +705,59 @@ func TestObservabilityOnlyLiveViewIncludesCollectorLogLines(t *testing.T) {
 	}
 }
 
+func TestCollectorDiscoveryUpdatesObservabilityStatus(t *testing.T) {
+	view := NewRoutingLiveView(map[string]any{
+		"observability": "obs",
+		"templates": map[string]any{
+			"collector": "collector",
+		},
+	})
+	view.CollectorStatus = "running"
+	view.CollectorDiscovery.Enabled = true
+
+	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1")
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 2")
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "connected · 2 edge apps") {
+		t.Fatalf("unexpected connected status: %s", status)
+	}
+	if status := view.Render(1).Resource.Status; !strings.Contains(status, "◉ connected · 2 edge apps") {
+		t.Fatalf("unexpected collector pulse: %s", status)
+	}
+	if !view.HasActivePulse() {
+		t.Fatal("expected connected collector with edge apps to activate pulse")
+	}
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:UNMATCH | Monitoring Participant from DDS Receiver, total_matched = 0")
+	if status := view.Render(1).Resource.Status; !strings.Contains(status, "● connected · waiting for edge apps") {
+		t.Fatalf("collector without edge apps must not pulse: %s", status)
+	}
+	if view.HasActivePulse() {
+		t.Fatal("collector without edge apps must not activate pulse")
+	}
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 1")
+
+	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:UNMATCH | Monitoring Participant from DDS Exporter, total_matched = 0")
+	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:UNMATCH | Monitoring Participant from DDS Receiver, total_matched = 1")
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "disconnected · 1 edge app") {
+		t.Fatalf("unexpected disconnected status: %s", status)
+	}
+	if view.HasActivePulse() {
+		t.Fatal("disconnected collector must not activate pulse")
+	}
+}
+
+func TestCollectorDiscoveryDistinguishesWaitingFromUnavailable(t *testing.T) {
+	config := map[string]any{"observability": "obs", "templates": map[string]any{"collector": "collector"}}
+	view := NewRoutingLiveView(config)
+	view.CollectorStatus = "running"
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "running") {
+		t.Fatalf("expected legacy status when discovery is unavailable: %s", status)
+	}
+	view.CollectorDiscovery.Enabled = true
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "○ waiting for connections") {
+		t.Fatalf("expected discovery status to wait for measurements: %s", status)
+	}
+}
+
 func TestDiagnosticsPanelAppearsImmediatelyAboveGatewayLog(t *testing.T) {
 	view := NewRoutingLiveView(map[string]any{
 		"databus": "db",
@@ -673,6 +808,31 @@ func TestRenderANSIAvoidsFullScreenClear(t *testing.T) {
 	}
 }
 
+func TestSummaryLayoutDropsWarningsBeforeShrinkingColumns(t *testing.T) {
+	lines := []RenderedSummaryLine{
+		{Label: "databus", Status: "[green]● connected · waiting for topics[/green]", Target: "test-alex / gateway_1", Warning: "not secure"},
+		{Label: "observability", Status: "[green]● connected · waiting for edge apps[/green]", Target: "test-obs / test_alex_gateway_1", Warning: "secure"},
+	}
+	if layout := resolveSummaryLayout(lines, 96); layout != (summaryColumns{14, 35, 30, false}) {
+		t.Fatalf("reduced layout = %#v", layout)
+	}
+	if layout := resolveSummaryLayout(lines, 99); layout != (summaryColumns{14, 35, 30, true}) {
+		t.Fatalf("wide layout = %#v", layout)
+	}
+	if layout := resolveSummaryLayout(lines, 76); layout != (summaryColumns{4, 35, 30, false}) {
+		t.Fatalf("compact layout = %#v", layout)
+	}
+	if layout := resolveSummaryLayout(lines, 56); layout != (summaryColumns{4, 35, 13, false}) {
+		t.Fatalf("narrow layout = %#v", layout)
+	}
+	if layout := resolveSummaryLayout(lines, 39); layout != (summaryColumns{4, 33, 0, false}) {
+		t.Fatalf("minimum layout = %#v", layout)
+	}
+	if layout := resolveSummaryLayout(lines, 16); layout != (summaryColumns{4, 10, 0, false}) {
+		t.Fatalf("extreme layout = %#v", layout)
+	}
+}
+
 func TestRenderSetupIntroIncludesWelcomeBoxAndHint(t *testing.T) {
 	rendered := tui.StripANSIEscapes(RenderSetupIntro(2, 1, true))
 	checks := []string{"Connext Cloud Gateway setup", "Databuses available: 2", "Observability services: 1", "Use arrow keys to choose and Enter to confirm."}
@@ -686,8 +846,8 @@ func TestRenderSetupIntroIncludesWelcomeBoxAndHint(t *testing.T) {
 func TestRenderANSIForSizeKeepsSummaryVisibleInShortTerminal(t *testing.T) {
 	view := RenderedView{
 		Title:    GatewayPanelTitle(),
-		Header:   RenderedSummaryLine{Label: "databus", Status: "[green]● routing 4 topics[/green]", Target: "db / gw"},
-		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "none / none"},
+		Header:   RenderedSummaryLine{Label: "databus", Status: "[green]● routing 4 topics[/green]", Target: "db / gw", Warning: "not secure"},
+		Resource: RenderedSummaryLine{Label: "observability", Status: "[dim]◌ not configured[/dim]", Target: "none / none", Warning: "secure"},
 		Routes:   make([]RenderedRoute, 0, 16),
 		LogLines: make([]string, 0, 18),
 	}
@@ -702,11 +862,14 @@ func TestRenderANSIForSizeKeepsSummaryVisibleInShortTerminal(t *testing.T) {
 	if len(lines) > 20 {
 		t.Fatalf("render exceeded terminal height: %d lines\n%s", len(lines), rendered)
 	}
-	checks := []string{"Connext Cloud Gateway", "DATABUS", "OBSERVABILITY", "Routes"}
+	checks := []string{"Connext Cloud Gateway", "DATA", "OBS", "Routes"}
 	for _, check := range checks {
 		if !strings.Contains(rendered, check) {
 			t.Fatalf("missing %q in rendered output: %s", check, rendered)
 		}
+	}
+	if strings.Contains(rendered, "(⚠ not secure)") || strings.Contains(rendered, "(• secure)") {
+		t.Fatalf("expected reduced summary to omit security badges: %s", rendered)
 	}
 	if strings.Contains(rendered, strings.Repeat("log-17 ", 16)) || !strings.Contains(rendered, "…") {
 		t.Fatalf("expected wrapped log line to be truncated: %s", rendered)

@@ -15,11 +15,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
 func TestDefaultSelectFallsBackToNumberedPromptWhenNonInteractive(t *testing.T) {
@@ -507,11 +509,18 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	scriptPath := filepath.Join(binDir, "rticollectorservicelite")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+	collectorLine := "MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1"
+	ttyCheck := ""
+	if supportsRoutingPTY() {
+		ttyCheck = "if [ ! -t 1 ]; then exit 3; fi\n"
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"printf '%s\\n' 'collector started' '"+collectorLine+"'\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
+	app.CollectorDiscoverySupportFunc = func(string) bool { return true }
+	app.Now = func() time.Time { return time.Date(2026, 7, 28, 22, 14, 12, 0, time.UTC) }
 	config := map[string]any{"observability": "obs", "templates": map[string]any{"collector": "coll1"}}
 	cmd, err := app.StartCollector(config, ConnextInstall{Path: install, Version: "7.7.0"}, false)
 	if err != nil {
@@ -520,8 +529,20 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if cmd == nil || cmd.Process == nil || cmd.Process.Pid == 0 {
 		t.Fatal("expected a running process")
 	}
-	_ = cmd.Process.Kill()
-	_, _ = cmd.Process.Wait()
+	select {
+	case line := <-app.collectorLines:
+		if line != collectorLine {
+			t.Fatalf("unexpected collector line: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("collector output was not streamed")
+	}
+	if !app.stopManagedCollector(cmd.Process.Pid) {
+		t.Fatal("expected the managed collector to stop")
+	}
+	if app.pidRunning(cmd.Process.Pid) {
+		t.Fatal("collector process is still running")
+	}
 	if !strings.Contains(out.String(), "Collector Service started") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
@@ -534,8 +555,99 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
 		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
-		!strings.Contains(logLines[0], "-locationTag coll1") {
+		!strings.Contains(logLines[0], "-locationTag coll1") ||
+		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
+	}
+	if expected := "2026-07-28T22:14:12Z [collector] " + collectorLine; !strings.Contains(logContent, expected) {
+		t.Fatalf("collector log missing timestamped output %q: %s", expected, logContent)
+	}
+}
+
+func TestCollectorDiscoveryQueueRetainsLatestStateForEachEventType(t *testing.T) {
+	lines := make(chan string, 2)
+	var mu sync.Mutex
+	serviceConnected := "MonitorEventWriter_on_publication_matched:MATCH | total_matched = 1"
+	serviceDisconnected := "MonitorEventWriter_on_publication_matched:UNMATCH | total_matched = 0"
+	edgeAppsOne := "MonitoringEventReader_on_subscription_matched:MATCH | total_matched = 1"
+	edgeAppsThree := "MonitoringEventReader_on_subscription_matched:MATCH | total_matched = 3"
+
+	enqueueCollectorDiscoveryLine(lines, &mu, serviceConnected)
+	enqueueCollectorDiscoveryLine(lines, &mu, edgeAppsOne)
+	enqueueCollectorDiscoveryLine(lines, &mu, serviceDisconnected)
+	enqueueCollectorDiscoveryLine(lines, &mu, edgeAppsThree)
+
+	got := map[string]string{}
+	for i := 0; i < 2; i++ {
+		line := <-lines
+		match := collectorDiscoveryEventRE.FindStringSubmatch(line)
+		if match == nil {
+			t.Fatalf("unexpected queued line: %q", line)
+		}
+		got[match[1]] = line
+	}
+	if got["MonitorEventWriter_on_publication_matched"] != serviceDisconnected {
+		t.Fatalf("service state was not coalesced to its latest event: %#v", got)
+	}
+	if got["MonitoringEventReader_on_subscription_matched"] != edgeAppsThree {
+		t.Fatalf("edge app state was not coalesced to its latest event: %#v", got)
+	}
+}
+
+func TestRoutingShutdownStopsCollectorBeforeFinalSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
+	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
+	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(routingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(collectorDir, "coll1.xml"), []byte("<collector/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(routingDir, "gw.xml"), []byte("<routing/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	collectorScript := "#!/bin/sh\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"
+	if err := os.WriteFile(filepath.Join(binDir, "rticollectorservicelite"), []byte(collectorScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "rtiroutingservice"), []byte("#!/bin/sh\necho ready\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	app := NewGatewayApp(tmpDir, &out)
+	app.CollectorDiscoverySupportFunc = func(string) bool { return true }
+	config := map[string]any{
+		"databus":       "db",
+		"observability": "obs",
+		"templates": map[string]any{
+			"gateway":   "gw",
+			"collector": "coll1",
+		},
+	}
+	collectorCmd, err := app.StartCollector(config, ConnextInstall{Path: install, Version: "7.7.0"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.RunRoutingService(config, ConnextInstall{Path: install, Version: "7.7.0"}, collectorCmd.Process.Pid, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if app.pidRunning(collectorCmd.Process.Pid) {
+		t.Fatal("collector process is still running after routing shutdown")
+	}
+	output := tui.StripANSIEscapes(out.String())
+	observability := strings.LastIndex(output, "OBSERVABILITY")
+	if observability < 0 || !strings.Contains(output[observability:], "stopped") {
+		t.Fatalf("final observability status is not stopped: %s", output)
 	}
 }
 
@@ -559,6 +671,7 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
+	app.CollectorDiscoverySupportFunc = func(string) bool { return true }
 	rc, err := app.RunCollectorService(map[string]any{"observability": "obs", "templates": map[string]any{"collector": "coll1"}}, ConnextInstall{Path: install, Version: "7.7.0"}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -572,7 +685,8 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
 		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
-		!strings.Contains(logLines[0], "-locationTag coll1") {
+		!strings.Contains(logLines[0], "-locationTag coll1") ||
+		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
 	}
 	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
@@ -613,6 +727,7 @@ wait "$child"
 	interrupts := make(chan os.Signal, 1)
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
+	app.CollectorDiscoverySupportFunc = func(string) bool { return false }
 	app.InterruptSignalFunc = func() (<-chan os.Signal, func()) {
 		return interrupts, func() {}
 	}
@@ -655,6 +770,31 @@ wait "$child"
 	}
 	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
+	}
+}
+
+func TestCollectorCommandOmitsUnsupportedDiscoveryOption(t *testing.T) {
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	app.CollectorDiscoverySupportFunc = func(string) bool { return false }
+	command, enabled := app.collectorCommand("collector", "collector.xml", "collector")
+	if enabled || strings.Contains(strings.Join(command, " "), "-logEvent") {
+		t.Fatalf("unexpected discovery option: %#v", command)
+	}
+}
+
+func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "collector")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\necho '  * ENTITY_DISCOVERY'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !collectorSupportsDiscoveryEvents(executable) {
+		t.Fatal("expected ENTITY_DISCOVERY support")
+	}
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if collectorSupportsDiscoveryEvents(executable) {
+		t.Fatal("generic -logEvent support must not imply ENTITY_DISCOVERY support")
 	}
 }
 
@@ -712,6 +852,48 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
+	if err := os.MkdirAll(routingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(routingDir, "gw.xml"), []byte("<routing/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "rtiroutingservice"), []byte("#!/bin/sh\necho ready\nsleep 0.2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	collectorLines := make(chan string, 2)
+	collectorLines <- "MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1"
+	collectorLines <- "MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 2"
+	close(collectorLines)
+	var out bytes.Buffer
+	app := NewGatewayApp(tmpDir, &out)
+	app.collectorLines = collectorLines
+	app.collectorDiscoveryEnabled = true
+	app.PIDRunningFunc = func(int) bool { return true }
+	config := map[string]any{
+		"databus":       "db",
+		"observability": "obs",
+		"templates": map[string]any{
+			"gateway":   "gw",
+			"collector": "collector",
+		},
+	}
+	if _, err := app.RunRoutingService(config, ConnextInstall{Path: install, Version: "7.7.0"}, 123, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if output := tui.StripANSIEscapes(out.String()); !strings.Contains(output, "connected · 2 edge apps") {
+		t.Fatalf("missing collector discovery status: %s", output)
 	}
 }
 

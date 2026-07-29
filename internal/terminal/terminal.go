@@ -7,12 +7,79 @@
 package terminal
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
 
 	"golang.org/x/term"
 )
+
+// ReadLines reads a stream incrementally and calls handle for each line. It
+// accepts LF, CRLF, and CR delimiters and delivers a final unterminated line.
+func ReadLines(reader io.Reader, handle func(string)) error {
+	if reader == nil || handle == nil {
+		return nil
+	}
+	buffer := make([]byte, 4096)
+	pending := make([]byte, 0, len(buffer))
+	scan := 0
+	flush := func(force bool) {
+		start := 0
+		index := scan
+		for index < len(pending) {
+			switch pending[index] {
+			case '\n':
+				handle(string(pending[start:index]))
+				index++
+				start = index
+			case '\r':
+				if index+1 == len(pending) && !force {
+					if start > 0 {
+						copy(pending, pending[start:])
+						pending = pending[:len(pending)-start]
+						index -= start
+					}
+					scan = index
+					return
+				}
+				handle(string(pending[start:index]))
+				index++
+				if index < len(pending) && pending[index] == '\n' {
+					index++
+				}
+				start = index
+			default:
+				index++
+			}
+		}
+		if start > 0 {
+			copy(pending, pending[start:])
+			pending = pending[:len(pending)-start]
+			index -= start
+		}
+		scan = index
+		if force && len(pending) > 0 {
+			handle(string(pending))
+			pending = pending[:0]
+			scan = 0
+		}
+	}
+	for {
+		count, err := reader.Read(buffer)
+		if count > 0 {
+			pending = append(pending, buffer[:count]...)
+			flush(false)
+		}
+		if err != nil {
+			flush(true)
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
 
 func PlainOutputRequested(out io.Writer) bool {
 	if envOptOut(os.Getenv("NO_COLOR")) || envOptOut(os.Getenv("CI")) || os.Getenv("TERM") == "dumb" {

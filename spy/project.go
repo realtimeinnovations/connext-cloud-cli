@@ -506,39 +506,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	var streamWG sync.WaitGroup
 	stream := func(reader io.Reader) {
 		defer streamWG.Done()
-		if reader == nil {
-			return
-		}
-		buffer := make([]byte, 4096)
-		pending := ""
-		flushPending := func(force bool) {
-			pending = strings.ReplaceAll(pending, "\r\n", "\n")
-			pending = strings.ReplaceAll(pending, "\r", "\n")
-			for {
-				index := strings.IndexByte(pending, '\n')
-				if index < 0 {
-					break
-				}
-				line := pending[:index]
-				pending = pending[index+1:]
-				spyLines <- line
-			}
-			if force && pending != "" {
-				spyLines <- pending
-				pending = ""
-			}
-		}
-		for {
-			count, readErr := reader.Read(buffer)
-			if count > 0 {
-				pending += string(buffer[:count])
-				flushPending(false)
-			}
-			if readErr != nil {
-				flushPending(true)
-				return
-			}
-		}
+		_ = terminal.ReadLines(reader, func(line string) { spyLines <- line })
 	}
 	streamWG.Add(1)
 	go stream(stdout)
