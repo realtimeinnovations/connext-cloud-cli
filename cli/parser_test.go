@@ -167,6 +167,65 @@ func TestParserLoginDeviceRoutesToDeviceLogin(t *testing.T) {
 	}
 }
 
+func TestParserPrintAccessToken(t *testing.T) {
+	var out bytes.Buffer
+	authManager := auth.New(parserAuthConfigProvider{}, filepath.Join(t.TempDir(), "credentials.json"))
+	if err := authManager.SaveAccessToken("token-value", 3600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Execute([]string{"print-access-token"}, &out, io.Discard, &app.Runtime{Auth: authManager}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := out.String(), "token-value\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestParserPrintAccessTokenRequiresExistingLogin(t *testing.T) {
+	var out bytes.Buffer
+	authManager := auth.New(parserAuthConfigProvider{}, filepath.Join(t.TempDir(), "credentials.json"))
+
+	err := Execute([]string{"print-access-token"}, &out, io.Discard, &app.Runtime{Auth: authManager})
+	if err == nil {
+		t.Fatal("expected authentication error")
+	}
+	if !strings.Contains(err.Error(), "Run 'rticloud login'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}
+
+func TestParserPrintAccessTokenExchangesAPIKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got, want := request.URL.Path, "/api/v1/service-accounts/auth/token"; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
+		if got, want := request.Header.Get("X-API-Key"), "service-account-key"; got != want {
+			t.Errorf("X-API-Key = %q, want %q", got, want)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": "service-token", "expires_in": 3600})
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	authManager := auth.New(parserAuthConfigProvider{apiHost: server.URL + "/api/v1"}, filepath.Join(t.TempDir(), "credentials.json"))
+	authManager.Env = func(name string) string {
+		if name == "CONNEXT_CLOUD_API_KEY" {
+			return "service-account-key"
+		}
+		return ""
+	}
+	if err := Execute([]string{"print-access-token"}, &out, io.Discard, &app.Runtime{Auth: authManager}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := out.String(), "service-token\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestParserRejectsUnknownResourceWithoutCommand(t *testing.T) {
 	err := Execute([]string{"databu"}, io.Discard, io.Discard, nil)
 	if err == nil {

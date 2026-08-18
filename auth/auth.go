@@ -277,6 +277,42 @@ func (manager *Manager) GetAccessTokenForCLI() (string, error) {
 	return manager.Login()
 }
 
+// GetAccessTokenForPrint returns an existing access token without starting an
+// interactive login flow. It is intended for commands whose stdout is consumed
+// by another process, such as shell command substitution.
+func (manager *Manager) GetAccessTokenForPrint() (string, error) {
+	token, err := manager.GetAccessTokenFromHomeFile()
+	if err != nil {
+		return "", err
+	}
+	if token != "" {
+		return token, nil
+	}
+
+	apiKey := manager.Env("CONNEXT_CLOUD_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("No valid access token found. Run 'rticloud login' or set CONNEXT_CLOUD_API_KEY.")
+	}
+	configValues, err := manager.Config.GetConfig()
+	if err != nil {
+		return "", err
+	}
+	if configValues["api_host"] == "" {
+		return "", fmt.Errorf("RTI Connext Cloud CLI not configured. Run 'rticloud configure' before using CONNEXT_CLOUD_API_KEY.")
+	}
+	accessToken, expiresIn, err := manager.GetAccessTokenFromAPIKey(apiKey, configValues["api_host"])
+	if err != nil {
+		return "", err
+	}
+	if accessToken == "" {
+		return "", fmt.Errorf("Error authenticating with API key: access token missing from response")
+	}
+	if err := manager.SaveAccessToken(accessToken, expiresIn); err != nil {
+		return "", err
+	}
+	return accessToken, nil
+}
+
 func (manager *Manager) GetAuthHeaders() (map[string]string, error) {
 	accessToken, err := manager.GetAccessTokenForCLI()
 	if err != nil {

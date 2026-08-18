@@ -73,6 +73,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		groupCommand(newConfigureCommand(runtime), "Setup"),
 		groupCommand(newLoginCommand(runtime), "Setup"),
 		groupCommand(newLogoutCommand(runtime), "Setup"),
+		groupCommand(newPrintAccessTokenCommand(runtime), "Setup"),
 		groupCommand(newUpdateCommand(runtime), "Setup"),
 		groupCommand(newDatabusCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newObservabilityCommand(runtime), "Manage Connext Cloud"),
@@ -362,6 +363,26 @@ func newLogoutCommand(runtime *app.Runtime) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runtime.Logout()
+		},
+	}
+}
+
+func newPrintAccessTokenCommand(runtime *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "print-access-token",
+		Short: "Print the current access token",
+		Long: `Print the current access token for use by another command.
+
+This command never starts an interactive login. Run 'rticloud login' first,
+or set CONNEXT_CLOUD_API_KEY to authenticate with a service account.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := runtime.Auth.GetAccessTokenForPrint()
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), token)
+			return err
 		},
 	}
 }
