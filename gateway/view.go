@@ -465,11 +465,11 @@ func collectorDiscoverySummaryChip(status string, discovery CollectorDiscoverySt
 	}
 	edgeStatus := "waiting for edge apps"
 	if discovery.EdgeAppsKnown && discovery.EdgeApps > 0 {
-		noun := "edge apps"
+		noun := "apps"
 		if discovery.EdgeApps == 1 {
-			noun = "edge app"
+			noun = "app"
 		}
-		edgeStatus = fmt.Sprintf("%d %s", discovery.EdgeApps, noun)
+		edgeStatus = fmt.Sprintf("monitoring %d %s", discovery.EdgeApps, noun)
 	}
 	if discovery.ServiceKnown && discovery.ServiceConnected {
 		glyph := "●"

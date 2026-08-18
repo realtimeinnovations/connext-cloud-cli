@@ -79,11 +79,75 @@ function Install-Completions {
 
 function Add-ToUserPath {
     param([string]$Dir)
-    $current = [Environment]::GetEnvironmentVariable("PATH", "User")
-    if ($current -split ";" -contains $Dir) { return }
-    [Environment]::SetEnvironmentVariable("PATH", "$current;$Dir", "User")
-    Write-Host ""
-    Write-Host "$Dir added to your PATH (restart your terminal to take effect)."
+
+    # The user PATH is persisted in the registry and is inherited only by new
+    # processes. Keep that update best-effort: the CLI is usable by its full
+    # path even on managed machines where changing environment variables is
+    # prohibited.
+    $normalizedDir = $Dir.Trim().TrimEnd('\')
+    $persisted = $false
+
+    try {
+        $current = [Environment]::GetEnvironmentVariable("PATH", "User")
+        $entries = if ([string]::IsNullOrWhiteSpace($current)) {
+            @()
+        } else {
+            @($current -split ";" | ForEach-Object { $_.Trim().TrimEnd('\') })
+        }
+
+        if ($entries -notcontains $normalizedDir) {
+            $newPath = if ([string]::IsNullOrWhiteSpace($current)) { $Dir } else { "$current;$Dir" }
+            [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+            Write-Host "$Dir added to your user PATH."
+        } else {
+            Write-Host "$Dir is already in your user PATH."
+        }
+        $persisted = $true
+    } catch {
+        Write-Warning "Could not add $Dir to your user PATH: $($_.Exception.Message)"
+    }
+
+    # Make the command available when this installer is run directly in an
+    # interactive PowerShell session. This cannot alter a parent cmd.exe that
+    # launched PowerShell with `powershell -Command`.
+    try {
+        $sessionEntries = @($env:PATH -split ";" | ForEach-Object { $_.Trim().TrimEnd('\') })
+        if ($sessionEntries -notcontains $normalizedDir) {
+            $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $Dir } else { "$env:PATH;$Dir" }
+        }
+    } catch {
+        Write-Warning "Could not update PATH for this PowerShell session: $($_.Exception.Message)"
+    }
+
+    # Notify Explorer and other interested applications that the persisted
+    # environment changed. Existing terminal processes still need reopening.
+    if ($persisted) {
+        try {
+            if (-not ("RticloudInstaller.NativeMethods" -as [type])) {
+                Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace RticloudInstaller {
+    public static class NativeMethods {
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd, uint msg, UIntPtr wParam, string lParam,
+            uint flags, uint timeout, out UIntPtr result);
+    }
+}
+'@
+            }
+            [UIntPtr]$result = [UIntPtr]::Zero
+            [void][RticloudInstaller.NativeMethods]::SendMessageTimeout(
+                [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result)
+        } catch {
+            # The registry update is already complete; notification failure is
+            # not a reason to fail a successful installation.
+        }
+    }
+
+    return $persisted
 }
 
 $arch    = Get-Arch
@@ -105,14 +169,34 @@ try {
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir | Out-Null
     }
+    $InstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
 
     Copy-Item -Path "$tmp\$Binary.exe" -Destination "$InstallDir\$Binary.exe" -Force
 
     Write-Host "Installed $Binary $tag to $InstallDir\$Binary.exe"
 
-    Add-ToUserPath -Dir $InstallDir
+    $pathPersisted = Add-ToUserPath -Dir $InstallDir
 
-    Install-Completions
+    Write-Host ""
+    Write-Host "Next step:"
+    Write-Host "  $Binary configure"
+    Write-Host ""
+    Write-Host "Other existing terminal windows must be closed and reopened before using $Binary."
+    Write-Host "If this terminal does not recognize $Binary, run it directly:"
+    Write-Host "  & `"$InstallDir\$Binary.exe`" configure"
+    if (-not $pathPersisted) {
+        Write-Host ""
+        Write-Host "To add it manually, add this directory to your user PATH:"
+        Write-Host "  $InstallDir"
+    }
+
+    try {
+        Install-Completions
+    } catch {
+        # Completion setup is optional and must not make a successful CLI
+        # installation appear to have failed.
+        Write-Warning "Could not install PowerShell completions: $($_.Exception.Message)"
+    }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

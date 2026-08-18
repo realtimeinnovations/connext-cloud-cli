@@ -717,10 +717,10 @@ func TestCollectorDiscoveryUpdatesObservabilityStatus(t *testing.T) {
 
 	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1")
 	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:MATCH | Monitoring Participant to DDS Receiver with: total_matched = 2")
-	if status := view.Render(0).Resource.Status; !strings.Contains(status, "connected · 2 edge apps") {
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "connected · monitoring 2 apps") {
 		t.Fatalf("unexpected connected status: %s", status)
 	}
-	if status := view.Render(1).Resource.Status; !strings.Contains(status, "◉ connected · 2 edge apps") {
+	if status := view.Render(1).Resource.Status; !strings.Contains(status, "◉ connected · monitoring 2 apps") {
 		t.Fatalf("unexpected collector pulse: %s", status)
 	}
 	if !view.HasActivePulse() {
@@ -737,7 +737,7 @@ func TestCollectorDiscoveryUpdatesObservabilityStatus(t *testing.T) {
 
 	view.HandleCollectorLine("LOCAL [...] MonitorEventWriter_on_publication_matched:UNMATCH | Monitoring Participant from DDS Exporter, total_matched = 0")
 	view.HandleCollectorLine("LOCAL [...] MonitoringEventReader_on_subscription_matched:UNMATCH | Monitoring Participant from DDS Receiver, total_matched = 1")
-	if status := view.Render(0).Resource.Status; !strings.Contains(status, "disconnected · 1 edge app") {
+	if status := view.Render(0).Resource.Status; !strings.Contains(status, "disconnected · monitoring 1 app") {
 		t.Fatalf("unexpected disconnected status: %s", status)
 	}
 	if view.HasActivePulse() {

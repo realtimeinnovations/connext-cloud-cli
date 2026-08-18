@@ -1,0 +1,1599 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An interactive walkthrough of the simplified V1 RTI Connext 7.7.0.1 release-matrix manifest and CLI user experience.">
+  <title>Connext 7.7.0.1 — V1 Manifest Field Guide</title>
+  <style>
+    :root {
+      --ink: #091820;
+      --ink-2: #102b35;
+      --paper: #f4eedf;
+      --paper-2: #e8dfcb;
+      --paper-3: #d8ccb2;
+      --orange: #ff6534;
+      --orange-dark: #c93e14;
+      --aqua: #51d5c4;
+      --aqua-dark: #087f78;
+      --yellow: #f5ca60;
+      --red: #ef6a67;
+      --muted: #657078;
+      --line: rgba(9, 24, 32, .16);
+      --line-dark: rgba(244, 238, 223, .16);
+      --shadow: 0 24px 70px rgba(5, 19, 25, .16);
+      --radius: 22px;
+      --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+      --display: "Baskerville", "Iowan Old Style", "Palatino Linotype", serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 88% 10%, rgba(81, 213, 196, .16), transparent 22rem),
+        radial-gradient(circle at 8% 30%, rgba(255, 101, 52, .10), transparent 24rem),
+        var(--paper);
+      font-family: var(--body);
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .16;
+      z-index: 20;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+    a { color: inherit; }
+    :focus-visible { outline: 3px solid var(--orange); outline-offset: 4px; }
+
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 100;
+      padding: 10px 14px;
+      color: var(--paper);
+      background: var(--ink);
+      transform: translateY(-160%);
+      transition: transform .2s ease;
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .topbar {
+      position: relative;
+      z-index: 3;
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px clamp(20px, 4vw, 64px);
+      border-bottom: 1px solid var(--line-dark);
+      color: var(--paper);
+      background: var(--ink);
+    }
+
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(244, 238, 223, .5);
+      border-radius: 50%;
+      font: 700 11px/1 var(--mono);
+      letter-spacing: .08em;
+    }
+    .brand-copy strong { display: block; font-size: 13px; letter-spacing: .09em; text-transform: uppercase; }
+    .brand-copy span { display: block; color: rgba(244, 238, 223, .58); font: 11px/1.4 var(--mono); }
+    .topbar-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .mini-chip {
+      padding: 6px 10px;
+      border: 1px solid rgba(244, 238, 223, .18);
+      border-radius: 999px;
+      color: rgba(244, 238, 223, .7);
+      font: 10px/1 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .mini-chip.live { color: var(--aqua); border-color: rgba(81, 213, 196, .36); }
+
+    .hero {
+      position: relative;
+      min-height: 760px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr);
+      align-items: center;
+      gap: clamp(36px, 6vw, 100px);
+      padding: clamp(72px, 10vw, 144px) clamp(24px, 7vw, 112px) 110px;
+      color: var(--paper);
+      background:
+        linear-gradient(116deg, rgba(9, 24, 32, .97) 0 58%, rgba(16, 43, 53, .92)),
+        var(--ink);
+      isolation: isolate;
+      overflow: hidden;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 620px;
+      height: 620px;
+      right: -150px;
+      bottom: -310px;
+      border: 1px solid rgba(81, 213, 196, .25);
+      border-radius: 50%;
+      box-shadow: 0 0 0 80px rgba(81, 213, 196, .025), 0 0 0 160px rgba(81, 213, 196, .02);
+      z-index: -1;
+    }
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 24px;
+      color: var(--aqua);
+      font: 700 11px/1 var(--mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 42px; height: 2px; background: currentColor; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 820px;
+      margin-bottom: 30px;
+      font: 400 clamp(58px, 8.6vw, 132px)/.84 var(--display);
+      letter-spacing: -.06em;
+    }
+    h1 em { color: var(--orange); font-style: italic; }
+    .hero-deck {
+      max-width: 700px;
+      margin-bottom: 36px;
+      color: rgba(244, 238, 223, .72);
+      font-size: clamp(17px, 1.7vw, 22px);
+    }
+    .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    .button {
+      min-height: 48px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 12px 18px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      cursor: pointer;
+      text-decoration: none;
+      font-weight: 700;
+      transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+    .button:hover { transform: translateY(-2px); }
+    .button.primary { color: var(--ink); background: var(--orange); box-shadow: 0 10px 30px rgba(255, 101, 52, .23); }
+    .button.ghost { color: var(--paper); border-color: rgba(244, 238, 223, .28); background: rgba(244, 238, 223, .03); }
+    .button.dark { color: var(--paper); background: var(--ink); }
+    .arrow { font-family: var(--mono); }
+
+    .hero-card {
+      position: relative;
+      width: min(100%, 410px);
+      justify-self: end;
+      padding: 28px;
+      border: 1px solid rgba(244, 238, 223, .2);
+      background: rgba(244, 238, 223, .055);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .26);
+      backdrop-filter: blur(18px);
+      transform: rotate(1.4deg);
+    }
+    .hero-card::before {
+      content: "release slice";
+      position: absolute;
+      top: -12px;
+      right: 18px;
+      padding: 5px 9px;
+      color: var(--ink);
+      background: var(--yellow);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .card-kicker { color: var(--aqua); font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .14em; }
+    .version-lockup { display: flex; align-items: baseline; gap: 12px; margin: 20px 0 28px; }
+    .version-lockup strong { font: 400 clamp(40px, 5vw, 66px)/1 var(--display); letter-spacing: -.045em; }
+    .version-lockup span { color: var(--orange); font: 700 14px/1 var(--mono); }
+    .manifest-stats { display: grid; grid-template-columns: repeat(2, 1fr); border-top: 1px solid var(--line-dark); border-left: 1px solid var(--line-dark); }
+    .manifest-stats div { padding: 16px; border-right: 1px solid var(--line-dark); border-bottom: 1px solid var(--line-dark); }
+    .manifest-stats b { display: block; color: var(--paper); font: 600 17px/1.2 var(--mono); }
+    .manifest-stats small { color: rgba(244, 238, 223, .48); font-size: 11px; }
+    .heartbeat { display: flex; align-items: center; gap: 8px; margin-top: 22px; color: var(--aqua); font: 11px/1 var(--mono); }
+    .heartbeat i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 rgba(81, 213, 196, .4); animation: pulse 2s infinite; }
+
+    .page-shell {
+      position: relative;
+      display: grid;
+      grid-template-columns: 250px minmax(0, 1fr);
+      gap: clamp(28px, 5vw, 78px);
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 0 clamp(20px, 4vw, 60px) 110px;
+    }
+    .chapter-rail {
+      position: sticky;
+      top: 24px;
+      height: max-content;
+      padding-top: 74px;
+      z-index: 4;
+    }
+    .rail-label { margin: 0 0 18px 42px; color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    .chapter-link {
+      position: relative;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 8px 12px 0;
+      border: 0;
+      color: #7d817e;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .chapter-link::before {
+      content: "";
+      position: absolute;
+      left: 13px;
+      top: 38px;
+      width: 1px;
+      height: 18px;
+      background: var(--line);
+    }
+    .chapter-link:last-child::before { display: none; }
+    .chapter-link span:first-child {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      font: 10px/1 var(--mono);
+      transition: all .2s ease;
+    }
+    .chapter-link b { display: block; font-size: 13px; }
+    .chapter-link small { display: block; font: 10px/1.3 var(--mono); }
+    .chapter-link.active { color: var(--ink); }
+    .chapter-link.active span:first-child { color: var(--paper); border-color: var(--orange); background: var(--orange); box-shadow: 0 0 0 5px rgba(255, 101, 52, .12); }
+
+    .chapters { min-width: 0; }
+    .chapter {
+      min-height: 720px;
+      padding: clamp(74px, 9vw, 132px) 0;
+      border-bottom: 1px solid var(--line);
+      scroll-margin-top: 20px;
+    }
+    .chapter:last-child { border-bottom: 0; }
+    .chapter-index { color: var(--orange-dark); font: 700 11px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    h2 { max-width: 940px; margin-bottom: 22px; font: 400 clamp(40px, 5vw, 76px)/.98 var(--display); letter-spacing: -.045em; }
+    h3 { font: 600 clamp(21px, 2vw, 29px)/1.15 var(--display); letter-spacing: -.02em; }
+    .chapter-lead { max-width: 810px; margin-bottom: 48px; color: #556269; font-size: clamp(16px, 1.7vw, 21px); }
+    .note {
+      position: relative;
+      padding: 22px 24px 22px 56px;
+      border: 1px solid rgba(8, 127, 120, .24);
+      background: rgba(81, 213, 196, .08);
+    }
+    .note::before { content: "i"; position: absolute; left: 22px; top: 22px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--paper); background: var(--aqua-dark); font: 700 11px/1 var(--display); }
+    .note strong { color: var(--aqua-dark); }
+
+    .version-equation { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 12px; margin: 42px 0; }
+    .version-part {
+      min-height: 190px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 26px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .28);
+      box-shadow: 0 12px 40px rgba(9, 24, 32, .05);
+    }
+    .version-part.accent { color: var(--paper); border-color: var(--ink); background: var(--ink); transform: translateY(-8px) rotate(-1deg); }
+    .version-part small { font: 10px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .version-part strong { font: 400 clamp(38px, 4vw, 60px)/1 var(--display); }
+    .version-part p { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+    .version-part.accent p { color: rgba(244, 238, 223, .58); }
+    .math-symbol { align-self: center; color: var(--orange); font: 400 34px/1 var(--display); }
+    .compat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .compat-card { padding: 20px; border: 1px solid var(--line); background: rgba(255, 255, 255, .2); }
+    .compat-card .route { font: 700 14px/1.4 var(--mono); }
+    .compat-card p { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+    .compat-card.ok { border-top: 4px solid var(--aqua-dark); }
+    .compat-card.no { border-top: 4px solid var(--red); }
+    .status-word { display: inline-block; margin-top: 16px; padding: 4px 7px; border-radius: 3px; font: 700 9px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+    .ok .status-word { color: var(--aqua-dark); background: rgba(81, 213, 196, .15); }
+    .no .status-word { color: #a52d2a; background: rgba(239, 106, 103, .14); }
+
+    .layer-workbench { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(0, 1.28fr); gap: 22px; align-items: stretch; }
+    .layer-stack { display: flex; flex-direction: column; gap: 8px; }
+    .layer-button {
+      position: relative;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 38px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .24);
+      cursor: pointer;
+      text-align: left;
+      transition: transform .2s ease, background .2s ease, border-color .2s ease;
+    }
+    .layer-button:hover { transform: translateX(5px); }
+    .layer-button.active { color: var(--paper); border-color: var(--ink); background: var(--ink); transform: translateX(8px); }
+    .layer-button .num { color: var(--orange-dark); font: 700 11px/1 var(--mono); }
+    .layer-button.active .num { color: var(--orange); }
+    .layer-button b { font-size: 14px; }
+    .layer-button small { color: var(--muted); font: 10px/1 var(--mono); }
+    .layer-button.active small { color: rgba(244, 238, 223, .5); }
+    .layer-detail { min-width: 0; display: flex; flex-direction: column; padding: clamp(24px, 4vw, 42px); color: var(--paper); background: var(--ink-2); box-shadow: var(--shadow); }
+    .layer-detail header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
+    .layer-detail h3 { margin-bottom: 8px; color: var(--paper); }
+    .layer-detail p { max-width: 650px; color: rgba(244, 238, 223, .62); }
+    .layer-tag { padding: 6px 8px; border: 1px solid rgba(81, 213, 196, .34); color: var(--aqua); font: 9px/1 var(--mono); text-transform: uppercase; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .code-window { position: relative; flex: 1; margin-top: 22px; padding: 42px 20px 20px; border: 1px solid var(--line-dark); background: #061218; overflow: auto; }
+    .code-window::before { content: "manifest.json"; position: absolute; left: 18px; top: 14px; color: rgba(244, 238, 223, .34); font: 10px/1 var(--mono); }
+    .code-window code { color: #d8dfd8; font: 12px/1.7 var(--mono); }
+    .code-window .key { color: var(--aqua); }
+    .code-window .string { color: var(--yellow); }
+
+    .manifest-explorer { border: 1px solid var(--line); background: #07151c; box-shadow: var(--shadow); }
+    .manifest-toolbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--line-dark); color: var(--paper); background: var(--ink-2); }
+    .manifest-path { min-width: 0; display: flex; align-items: center; gap: 10px; font: 11px/1 var(--mono); }
+    .manifest-path span:first-child { color: var(--aqua); }
+    .manifest-path strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .manifest-tools { display: flex; align-items: center; gap: 6px; }
+    .manifest-tool { padding: 8px 10px; border: 1px solid var(--line-dark); color: rgba(244, 238, 223, .72); background: transparent; cursor: pointer; font: 700 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .manifest-tool:hover, .manifest-tool.active { color: var(--ink); border-color: var(--aqua); background: var(--aqua); }
+    .manifest-layout { display: grid; grid-template-columns: 215px minmax(360px, 1fr) 285px; min-height: 680px; }
+    .manifest-index { padding: 14px; border-right: 1px solid var(--line-dark); color: var(--paper); background: #0a1d25; }
+    .manifest-index-label { margin: 8px 8px 14px; color: rgba(244, 238, 223, .36); font: 9px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .manifest-section-button { width: 100%; display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 11px 9px; border: 0; border-left: 2px solid transparent; color: rgba(244, 238, 223, .58); background: transparent; cursor: pointer; text-align: left; font: 11px/1.25 var(--mono); }
+    .manifest-section-button:hover { color: var(--paper); background: rgba(244, 238, 223, .04); }
+    .manifest-section-button.active { color: var(--paper); border-left-color: var(--orange); background: rgba(255, 101, 52, .09); }
+    .manifest-section-button .type { color: var(--aqua); font-size: 9px; }
+    .manifest-code-panel { min-width: 0; background: #061218; }
+    .manifest-code { height: 680px; padding: 24px; overflow: auto; color: #d8dfd8; font: 11px/1.68 var(--mono); white-space: pre; tab-size: 2; }
+    .manifest-code .key { color: var(--aqua); }
+    .manifest-code .string { color: var(--yellow); }
+    .manifest-reference { padding: 24px 20px; border-left: 1px solid var(--line-dark); color: var(--paper); background: #0b2029; overflow: auto; }
+    .manifest-reference .path { display: block; margin-bottom: 14px; color: var(--orange); font: 10px/1.4 var(--mono); }
+    .manifest-reference h3 { margin-bottom: 10px; color: var(--paper); font-size: 24px; }
+    .manifest-reference > p { color: rgba(244, 238, 223, .6); font-size: 12px; }
+    .manifest-field-list { margin: 24px 0 0; padding: 0; list-style: none; }
+    .manifest-field-list li { padding: 13px 0; border-top: 1px solid var(--line-dark); }
+    .manifest-field-list code { display: block; margin-bottom: 5px; color: var(--aqua); font: 10px/1.35 var(--mono); }
+    .manifest-field-list span { display: block; color: rgba(244, 238, 223, .55); font-size: 11px; }
+    .manifest-warning { margin-top: 22px; padding: 12px; border-left: 3px solid var(--yellow); color: rgba(244, 238, 223, .72); background: rgba(245, 202, 96, .07); font-size: 11px; }
+    .manifest-copy-status { min-width: 48px; color: var(--aqua); font: 9px/1 var(--mono); }
+
+    .capability-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+    .pill-button {
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: transparent;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .pill-button.active { color: var(--paper); border-color: var(--ink); background: var(--ink); }
+    .capability-stage { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); gap: 20px; }
+    .requirement-map { position: relative; min-height: 440px; padding: clamp(22px, 4vw, 42px); border: 1px solid var(--line); background: rgba(255, 255, 255, .23); overflow: hidden; }
+    .requirement-map::after { content: ""; position: absolute; width: 300px; height: 300px; right: -160px; bottom: -160px; border: 70px solid rgba(255, 101, 52, .06); border-radius: 50%; }
+    .cap-title { display: flex; align-items: center; gap: 16px; }
+    .cap-glyph { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 50%; color: var(--paper); background: var(--orange); font: 700 17px/1 var(--mono); }
+    .cap-title h3 { margin: 0; }
+    .cap-title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .requirement-chain { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 72px; z-index: 1; }
+    .requirement-node { position: relative; min-height: 115px; display: flex; flex-direction: column; justify-content: space-between; padding: 15px; border: 1px solid var(--line); background: var(--paper); }
+    .requirement-node::after { content: ""; position: absolute; top: 50%; right: -11px; width: 10px; border-top: 1px dashed var(--orange-dark); }
+    .requirement-node:last-child::after { display: none; }
+    .requirement-node b { font-size: 12px; }
+    .requirement-node code { color: var(--orange-dark); font: 9px/1.35 var(--mono); }
+    .requirement-node.unique { color: var(--paper); border-color: var(--ink); background: var(--ink); transform: translateY(-16px); }
+    .requirement-node.unique code { color: var(--aqua); }
+    .requirement-node.unique::before { content: "capability-specific"; position: absolute; left: 0; top: -25px; color: var(--orange-dark); font: 8px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .detector-panel { padding: 26px; color: var(--paper); background: var(--ink); }
+    .detector-panel h3 { color: var(--paper); }
+    .detector-panel > p { color: rgba(244, 238, 223, .58); font-size: 13px; }
+    .detector-list { display: flex; flex-direction: column; gap: 10px; margin-top: 28px; }
+    .detector-row { padding: 14px; border-left: 2px solid var(--aqua); background: rgba(244, 238, 223, .05); }
+    .detector-row small { display: block; margin-bottom: 5px; color: var(--aqua); font: 9px/1 var(--mono); text-transform: uppercase; }
+    .detector-row code { font: 11px/1.5 var(--mono); }
+
+    .channel-switch { width: max-content; display: flex; gap: 4px; padding: 4px; margin-bottom: 26px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .24); }
+    .channel-switch button { padding: 9px 16px; border: 0; border-radius: 999px; background: transparent; cursor: pointer; font-weight: 700; }
+    .channel-switch button.active { color: var(--paper); background: var(--ink); }
+    .target-board { display: grid; grid-template-columns: 1fr 52px 1fr; align-items: stretch; gap: 10px; }
+    .target-card { padding: clamp(22px, 3vw, 34px); border: 1px solid var(--line); background: rgba(255, 255, 255, .25); }
+    .target-card.active { border: 2px solid var(--orange); box-shadow: 0 18px 50px rgba(201, 62, 20, .10); }
+    .target-card.dim { opacity: .5; }
+    .target-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .target-card h3 { margin-bottom: 6px; }
+    .target-card header span { padding: 5px 7px; color: var(--aqua-dark); background: rgba(81, 213, 196, .13); font: 9px/1 var(--mono); text-transform: uppercase; }
+    .target-card ul { margin: 24px 0 0; padding: 0; list-style: none; }
+    .target-card li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+    .target-card li::before { content: "✓"; color: var(--aqua-dark); font-weight: 800; }
+    .target-card.latest li:last-child::before { content: "+"; color: var(--orange-dark); }
+    .inherit-arrow { display: grid; place-items: center; color: var(--orange-dark); font: 700 22px/1 var(--mono); }
+    .target-caption { margin-top: 18px; color: var(--muted); font-size: 13px; }
+
+    .artifact-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 56px 0 18px; }
+    .artifact-toolbar h3 { margin: 0; }
+    .mode-toggle { display: flex; gap: 6px; }
+    .mode-toggle button { padding: 7px 10px; border: 1px solid var(--line); background: transparent; cursor: pointer; font: 700 10px/1 var(--mono); text-transform: uppercase; }
+    .mode-toggle button.active { color: var(--paper); border-color: var(--ink); background: var(--ink); }
+    .artifact-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .artifact-card { min-height: 218px; display: flex; flex-direction: column; padding: 20px; border: 1px solid var(--line); background: rgba(255, 255, 255, .22); transition: opacity .2s ease, transform .2s ease; }
+    .artifact-card.highlight { border-top: 4px solid var(--orange); transform: translateY(-5px); }
+    .artifact-card.muted { opacity: .28; }
+    .artifact-icon { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 22px; border-radius: 50%; color: var(--paper); background: var(--ink); font: 700 10px/1 var(--mono); }
+    .artifact-card h4 { margin: 0 0 7px; font: 700 14px/1.25 var(--body); }
+    .artifact-card p { color: var(--muted); font-size: 12px; }
+    .artifact-meta { margin-top: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+    .artifact-meta span { padding: 4px 6px; color: var(--muted); border: 1px solid var(--line); font: 8px/1 var(--mono); text-transform: uppercase; }
+    .artifact-meta .public { color: var(--aqua-dark); border-color: rgba(8, 127, 120, .3); }
+    .artifact-meta .private { color: var(--orange-dark); border-color: rgba(201, 62, 20, .26); }
+    .package-ledger { margin-top: 22px; border: 1px solid var(--line); background: rgba(255, 255, 255, .24); }
+    .package-ledger summary { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; cursor: pointer; font-weight: 700; }
+    .package-ledger summary::after { content: "+"; color: var(--orange-dark); font: 700 20px/1 var(--mono); }
+    .package-ledger[open] summary::after { content: "−"; }
+    .package-ledger > p { margin: 0; padding: 0 20px 18px; color: var(--muted); font-size: 12px; }
+    .package-list { counter-reset: pkg; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: 0; border-top: 1px solid var(--line); list-style: none; }
+    .package-list li { counter-increment: pkg; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 13px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .package-list li::before { content: counter(pkg, decimal-leading-zero); color: var(--orange-dark); font: 700 9px/1.6 var(--mono); }
+    .package-list code { color: var(--ink-2); font: 10px/1.55 var(--mono); overflow-wrap: anywhere; }
+    .verdict-strip { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; margin-top: 16px; padding: 18px 20px; color: var(--paper); background: var(--ink); }
+    .verdict-strip b { padding: 5px 7px; color: var(--ink); background: var(--yellow); font: 700 9px/1 var(--mono); text-transform: uppercase; }
+    .verdict-strip p { margin: 0; color: rgba(244, 238, 223, .66); font-size: 12px; }
+
+    .resolver { counter-reset: resolver; display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin: 44px 0; }
+    .resolver-step { counter-increment: resolver; position: relative; min-height: 180px; padding: 18px 14px; color: var(--paper); background: var(--ink); overflow: hidden; }
+    .resolver-step:nth-child(even) { background: var(--ink-2); transform: translateY(16px); }
+    .resolver-step::before { content: "0" counter(resolver); display: block; margin-bottom: 35px; color: var(--orange); font: 700 10px/1 var(--mono); }
+    .resolver-step::after { content: "→"; position: absolute; top: 50%; right: -7px; z-index: 2; color: var(--yellow); font: 700 18px/1 var(--mono); }
+    .resolver-step:last-child::after { display: none; }
+    .resolver-step b { display: block; font-size: 12px; }
+    .resolver-step small { display: block; margin-top: 8px; color: rgba(244, 238, 223, .46); font-size: 10px; }
+    .policy-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 64px; }
+    .policy-card { padding: 28px; border: 1px solid var(--line); }
+    .policy-card.good { background: rgba(81, 213, 196, .09); }
+    .policy-card.stop { background: rgba(255, 101, 52, .08); }
+    .policy-card .label { font: 700 9px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .policy-card h3 { margin: 14px 0 10px; }
+    .policy-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .ux-lab { display: grid; grid-template-columns: minmax(290px, .75fr) minmax(0, 1.25fr); gap: 18px; }
+    .lab-controls { padding: clamp(22px, 3vw, 34px); border: 1px solid var(--line); background: rgba(255, 255, 255, .28); }
+    .lab-controls fieldset { margin: 0 0 30px; padding: 0; border: 0; }
+    .lab-controls legend { margin-bottom: 12px; color: var(--muted); font: 700 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .choice-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+    .choice { position: relative; }
+    .choice input { position: absolute; opacity: 0; pointer-events: none; }
+    .choice label { min-height: 72px; display: flex; flex-direction: column; justify-content: center; padding: 11px; border: 1px solid var(--line); cursor: pointer; transition: all .15s ease; }
+    .choice label b { font-size: 11px; }
+    .choice label small { color: var(--muted); font: 9px/1.4 var(--mono); }
+    .choice input:checked + label { color: var(--paper); border-color: var(--ink); background: var(--ink); box-shadow: 0 7px 0 var(--orange); transform: translateY(-4px); }
+    .choice input:checked + label small { color: rgba(244, 238, 223, .52); }
+    .choice input:focus-visible + label { outline: 3px solid var(--orange); outline-offset: 3px; }
+    .dependency-box { display: none; padding: 18px; margin: -10px 0 26px; border: 1px dashed var(--orange-dark); background: rgba(255, 101, 52, .05); }
+    .dependency-box.visible { display: block; animation: reveal .3s ease both; }
+    .check-row { display: flex; align-items: center; gap: 9px; margin: 8px 0; font-size: 12px; }
+    .check-row input { accent-color: var(--aqua-dark); }
+    .lab-hint { margin: 0; color: var(--muted); font-size: 11px; }
+
+    .terminal { min-width: 0; min-height: 610px; display: flex; flex-direction: column; color: #dce8e2; background: #061218; box-shadow: var(--shadow); }
+    .terminal-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid rgba(244, 238, 223, .1); background: #0b2029; }
+    .terminal-dots { display: flex; gap: 6px; }
+    .terminal-dots i { width: 8px; height: 8px; border-radius: 50%; background: #526169; }
+    .terminal-dots i:first-child { background: var(--orange); }
+    .terminal-dots i:nth-child(2) { background: var(--yellow); }
+    .terminal-dots i:nth-child(3) { background: var(--aqua); }
+    .terminal-bar span { color: rgba(244, 238, 223, .4); font: 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .terminal-output { flex: 1; padding: clamp(20px, 3vw, 32px); font: 12px/1.72 var(--mono); overflow: auto; }
+    .term-command { color: var(--paper); }
+    .term-command::before { content: "$ "; color: var(--aqua); }
+    .term-rule { margin: 18px 0; border-top: 1px solid rgba(244, 238, 223, .11); }
+    .term-title { color: var(--yellow); font-weight: 700; }
+    .term-ok { color: var(--aqua); }
+    .term-warn { color: var(--yellow); }
+    .term-action { color: var(--orange); }
+    .term-muted { color: #6f858c; }
+    .terminal-footer { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid rgba(244, 238, 223, .1); }
+    .terminal-footer div { padding: 14px; border-right: 1px solid rgba(244, 238, 223, .1); }
+    .terminal-footer div:last-child { border-right: 0; }
+    .terminal-footer small { display: block; color: #60757c; font: 8px/1 var(--mono); text-transform: uppercase; }
+    .terminal-footer b { color: var(--paper); font: 10px/1.4 var(--mono); }
+
+    .closing {
+      position: relative;
+      padding: clamp(50px, 8vw, 100px);
+      color: var(--paper);
+      background: var(--orange-dark);
+      overflow: hidden;
+    }
+    .closing::after { content: "7.7.0.1"; position: absolute; right: -20px; bottom: -75px; color: rgba(244, 238, 223, .08); font: 400 clamp(110px, 20vw, 300px)/1 var(--display); letter-spacing: -.08em; }
+    .closing > * { position: relative; z-index: 1; }
+    .closing h2 { max-width: 1000px; }
+    .closing p { max-width: 690px; color: rgba(244, 238, 223, .68); font-size: 18px; }
+    .closing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; max-width: 900px; margin-top: 44px; background: rgba(244, 238, 223, .2); }
+    .closing-grid div { padding: 22px; background: var(--orange-dark); }
+    .closing-grid b { display: block; font: 400 22px/1.1 var(--display); }
+    .closing-grid small { color: rgba(244, 238, 223, .55); }
+
+    .reveal { opacity: 1; transform: none; }
+    @keyframes pulse { 70% { box-shadow: 0 0 0 10px rgba(81, 213, 196, 0); } 100% { box-shadow: 0 0 0 0 rgba(81, 213, 196, 0); } }
+    @keyframes reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: 1fr; }
+      .hero-card { justify-self: start; }
+      .page-shell { grid-template-columns: 1fr; }
+      .chapter-rail { top: 0; display: flex; gap: 6px; padding: 8px 0; margin: 0 -20px; overflow-x: auto; background: rgba(244, 238, 223, .94); backdrop-filter: blur(12px); }
+      .rail-label, .chapter-link::before, .chapter-link small { display: none; }
+      .chapter-link { width: auto; grid-template-columns: 24px max-content; padding: 8px 10px; }
+      .chapter-link span:first-child { width: 24px; height: 24px; }
+      .resolver { grid-template-columns: repeat(4, 1fr); }
+      .artifact-grid { grid-template-columns: repeat(2, 1fr); }
+      .manifest-layout { grid-template-columns: 190px 1fr; }
+      .manifest-reference { grid-column: 1 / -1; border-top: 1px solid var(--line-dark); border-left: 0; }
+      .manifest-code { height: 620px; }
+    }
+
+    @media (max-width: 760px) {
+      .topbar-meta .mini-chip:not(.live) { display: none; }
+      .hero { min-height: auto; padding-top: 76px; }
+      .hero-card { transform: none; }
+      .version-equation { grid-template-columns: 1fr; }
+      .math-symbol { transform: rotate(90deg); }
+      .compat-grid, .capability-stage, .target-board, .ux-lab, .policy-pair { grid-template-columns: 1fr; }
+      .inherit-arrow { min-height: 36px; transform: rotate(90deg); }
+      .layer-workbench { grid-template-columns: 1fr; }
+      .layer-button.active { transform: translateX(3px); }
+      .requirement-chain { grid-template-columns: repeat(2, 1fr); margin-top: 48px; }
+      .requirement-node::after { display: none; }
+      .resolver { grid-template-columns: repeat(2, 1fr); }
+      .resolver-step:nth-child(even) { transform: none; }
+      .artifact-grid { grid-template-columns: 1fr; }
+      .manifest-layout { grid-template-columns: 1fr; }
+      .manifest-index { display: flex; gap: 5px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line-dark); }
+      .manifest-index-label { display: none; }
+      .manifest-section-button { min-width: max-content; grid-template-columns: 14px 1fr; }
+      .manifest-code { height: 520px; padding: 18px; font-size: 10px; }
+      .manifest-toolbar { align-items: flex-start; flex-direction: column; }
+      .package-list { grid-template-columns: 1fr; }
+      .artifact-toolbar { align-items: flex-start; flex-direction: column; }
+      .terminal-footer { grid-template-columns: 1fr; }
+      .terminal-footer div { border-right: 0; border-bottom: 1px solid rgba(244, 238, 223, .1); }
+      .closing-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      .reveal { opacity: 1; transform: none; }
+    }
+
+    @media print {
+      body::before, .chapter-rail, .hero-actions { display: none; }
+      .hero { min-height: auto; color: var(--ink); background: white; }
+      .hero-card, .layer-detail, .detector-panel, .resolver-step, .terminal { color: white; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .page-shell { display: block; }
+      .chapter { min-height: auto; page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#walkthrough">Skip to walkthrough</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">RTI</div>
+      <div class="brand-copy"><strong>Connext Manifest</strong><span>V1 technical walkthrough / 7.7.0.1</span></div>
+    </div>
+    <div class="topbar-meta" aria-label="Document status">
+      <span class="mini-chip live">V1 discussion draft</span>
+      <span class="mini-chip">schema v1</span>
+      <span class="mini-chip">macOS ARM64 slice</span>
+    </div>
+  </header>
+
+  <section class="hero" aria-labelledby="hero-title">
+    <div>
+      <p class="eyebrow">Interactive technical walkthrough</p>
+      <h1 id="hero-title"><em>7.7.0.1</em> manifest</h1>
+      <p class="hero-deck">Inspect the complete proposed JSON document, understand every top-level section, and trace how capability, channel, installation mode, and platform produce an exact CLI package plan.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#chapter-2">Inspect the full manifest <span class="arrow">↓</span></a>
+        <a class="button ghost" href="#ux-lab">Jump to UX lab <span class="arrow">↗</span></a>
+      </div>
+    </div>
+    <aside class="hero-card" aria-label="Manifest summary">
+      <span class="card-kicker">Simplified V1 manifest</span>
+      <div class="version-lockup"><strong>7.7.0.1</strong><span>+ ER 745</span></div>
+      <div class="manifest-stats">
+        <div><b>03</b><small>Cloud capabilities</small></div>
+        <div><b>02</b><small>channel rows</small></div>
+        <div><b>11</b><small>ordered LM patch files</small></div>
+        <div><b>09</b><small>non-LM upgrade files</small></div>
+      </div>
+      <div class="heartbeat"><i aria-hidden="true"></i> Small signed matrix → deterministic plan</div>
+    </aside>
+  </section>
+
+  <main id="walkthrough" class="page-shell">
+    <nav class="chapter-rail" aria-label="Walkthrough chapters">
+      <p class="rail-label">Walkthrough</p>
+      <button class="chapter-link active" data-target="chapter-1"><span>01</span><span><b>Version model</b><small>Base and revision</small></span></button>
+      <button class="chapter-link" data-target="chapter-2"><span>02</span><span><b>Full manifest</b><small>Explore the JSON</small></span></button>
+      <button class="chapter-link" data-target="chapter-3"><span>03</span><span><b>Capabilities</b><small>Requirements and detection</small></span></button>
+      <button class="chapter-link" data-target="chapter-4"><span>04</span><span><b>Channels</b><small>Update selection</small></span></button>
+      <button class="chapter-link" data-target="chapter-5"><span>05</span><span><b>Artifacts</b><small>Catalog and behavior</small></span></button>
+      <button class="chapter-link" data-target="chapter-6"><span>06</span><span><b>Planning</b><small>CLI algorithm</small></span></button>
+      <button class="chapter-link" data-target="ux-lab"><span>07</span><span><b>UX lab</b><small>Try the flow</small></span></button>
+    </nav>
+
+    <div class="chapters">
+      <section id="chapter-1" class="chapter reveal" data-chapter="chapter-1">
+        <span class="chapter-index">Chapter 01 · version fields</span>
+        <h2>Version and compatibility model</h2>
+        <p class="chapter-lead"><code>7.7.0</code> is the exact package-compatibility base. Revision <code>1</code> produces the displayed release <code>7.7.0.1</code>. Patch sets may apply only when their declared base, mode, host architecture, and target architecture match the selected installation.</p>
+
+        <div class="version-equation" aria-label="Version normalization equation">
+          <article class="version-part"><small>Display version</small><strong>7.7.0.1</strong><p>What customers and release notes call the product.</p></article>
+          <span class="math-symbol">=</span>
+          <article class="version-part accent"><small>Compatibility base</small><strong>7.7.0</strong><p>The boundary every patch artifact must declare exactly.</p></article>
+          <span class="math-symbol">+</span>
+          <article class="version-part"><small>Revision</small><strong>.1</strong><p>The fourth-component content update, represented as <code>revision: 1</code>.</p></article>
+        </div>
+
+        <div class="compat-grid">
+          <article class="compat-card ok"><div class="route">7.7.0 → 7.7.0.1</div><p>Same three-part family. Apply the explicit 11-package set to the selected installation.</p><span class="status-word">Patch in place</span></article>
+          <article class="compat-card no"><div class="route">7.7.0 → 7.7.1</div><p>Different patch component in the compatibility base. Offer a separate install.</p><span class="status-word">Do not patch</span></article>
+          <article class="compat-card no"><div class="route">7.7.0 → 7.8.0</div><p>Different minor release. Preserve the current installation and offer a new bundle.</p><span class="status-word">Do not patch</span></article>
+        </div>
+
+        <p class="note"><strong>Version detection:</strong> the host may continue to identify the three-part base as <code>7.7.0</code>. The CLI determines the 7.7.0.1 patch state from the installed package/component versions and required executables.</p>
+      </section>
+
+      <section id="chapter-2" class="chapter reveal" data-chapter="chapter-2">
+        <span class="chapter-index">Chapter 02 · complete JSON document</span>
+        <h2>Complete 7.7.0.1 V1 manifest</h2>
+        <p class="chapter-lead">Select a top-level field to inspect its complete JSON value, or switch to the full document. The adjacent reference explains field semantics, validation rules, and CLI behavior.</p>
+
+        <div class="manifest-explorer">
+          <header class="manifest-toolbar">
+            <div class="manifest-path"><span>manifest.json</span><span>/</span><strong id="manifest-current-path">metadata</strong></div>
+            <div class="manifest-tools">
+              <button id="manifest-section-view" class="manifest-tool active" type="button">Selected field</button>
+              <button id="manifest-full-view" class="manifest-tool" type="button">Full manifest</button>
+              <button id="manifest-copy" class="manifest-tool" type="button">Copy JSON</button>
+              <span id="manifest-copy-status" class="manifest-copy-status" aria-live="polite"></span>
+            </div>
+          </header>
+          <div class="manifest-layout">
+            <nav class="manifest-index" aria-label="Manifest top-level fields">
+              <p class="manifest-index-label">Top-level fields</p>
+              <button class="manifest-section-button active" data-manifest-section="metadata"><span class="type">{ }</span><span>metadata</span></button>
+              <button class="manifest-section-button" data-manifest-section="capabilities"><span class="type">{ }</span><span>capabilities</span></button>
+              <button class="manifest-section-button" data-manifest-section="shared_requirements"><span class="type">[ ]</span><span>shared_requirements</span></button>
+              <button class="manifest-section-button" data-manifest-section="channels"><span class="type">{ }</span><span>channels</span></button>
+              <button class="manifest-section-button" data-manifest-section="lm_installers"><span class="type">{ }</span><span>lm_installers</span></button>
+              <button class="manifest-section-button" data-manifest-section="lm_patch_sets"><span class="type">{ }</span><span>lm_patch_sets</span></button>
+              <button class="manifest-section-button" data-manifest-section="public_packages"><span class="type">{ }</span><span>public_packages</span></button>
+              <button class="manifest-section-button" data-manifest-section="non_lm_guidance"><span class="type">{ }</span><span>non_lm_guidance</span></button>
+            </nav>
+            <div class="manifest-code-panel">
+              <pre id="manifest-code" class="manifest-code" tabindex="0" aria-label="Manifest JSON"></pre>
+            </div>
+            <aside class="manifest-reference" aria-live="polite">
+              <code id="manifest-reference-path" class="path">$.metadata</code>
+              <h3 id="manifest-reference-title">Publication and compatibility metadata</h3>
+              <p id="manifest-reference-summary"></p>
+              <ul id="manifest-field-list" class="manifest-field-list"></ul>
+              <div id="manifest-reference-warning" class="manifest-warning"></div>
+            </aside>
+          </div>
+        </div>
+        <p class="note"><strong>Example status:</strong> filenames reflect the current 7.7.0.1 discussion for Apple Silicon. URLs, sizes, SHA-256 values, ER 745 publication data, and the completeness of the non-LM package closure remain Build & Release inputs and are shown as explicit placeholders or validation flags.</p>
+      </section>
+
+      <section id="chapter-3" class="chapter reveal" data-chapter="chapter-3">
+        <span class="chapter-index">Chapter 03 · capability evaluation</span>
+        <h2>Capability requirements and detector mapping</h2>
+        <p class="chapter-lead">Each capability entry names one core requirement and a minimum runnable state. The CLI adds the three shared requirements, then evaluates compiled XML component aliases and executable checks for all four requirements.</p>
+
+        <div class="capability-tabs" role="tablist" aria-label="Cloud capability">
+          <button class="pill-button active" data-capability="gateway">Gateway</button>
+          <button class="pill-button" data-capability="spy">Spy</button>
+          <button class="pill-button" data-capability="observability">Observability</button>
+        </div>
+
+        <div class="capability-stage">
+          <div class="requirement-map">
+            <div class="cap-title"><span id="cap-glyph" class="cap-glyph">GW</span><div><h3 id="cap-name">Gateway</h3><p id="cap-purpose">Routes Cloud traffic into a local DDS system.</p></div></div>
+            <div id="requirement-chain" class="requirement-chain"></div>
+          </div>
+          <aside class="detector-panel">
+            <h3>Compiled detector<br>for the core requirement</h3>
+            <p id="detector-intro">Routing Service is present only when metadata and the executable agree. These rules are compiled into V1.</p>
+            <div id="detector-list" class="detector-list"></div>
+          </aside>
+        </div>
+
+        <div class="verdict-strip"><b>Evaluation</b><p id="capability-evaluation">Gateway requires Routing Service plus WAN, Security Plugins, and OpenSSL. Its minimum runnable base is 7.3.0. The selected channel is evaluated separately to determine whether 7.7.0.1 should be recommended.</p></div>
+
+        <p class="note"><strong>Separation of concerns:</strong> the capability entry determines whether the requested command may run now. The channel entry determines the recommended product state and patch set. For 7.7.0.x, both channels apply globally to Gateway, Spy, and Observability; the explicit <code>capabilities</code> arrays in the channel objects make that scope visible.</p>
+      </section>
+
+      <section id="chapter-4" class="chapter reveal" data-chapter="chapter-4">
+        <span class="chapter-index">Chapter 04 · channel resolution</span>
+        <h2>Channel selection and update references</h2>
+        <p class="chapter-lead">Stable and latest name the recommended product version and the exact patch-set reference. Latest adds Cloud Extras ER 745 after the stable patch set has been installed and verified.</p>
+
+        <div class="channel-switch" aria-label="Channel preview">
+          <button class="active" data-channel-preview="stable">Stable</button>
+          <button data-channel-preview="latest">Latest</button>
+        </div>
+        <div class="target-board">
+          <article class="target-card stable active" data-target-card="stable">
+            <header><div><h3>Stable row</h3><code>channels.stable</code></div><span>7.7.0.1</span></header>
+            <ul><li>Recommended version: 7.7.0.1</li><li>LM patch: 11 exact packages</li><li>Existing installation is patched in place</li></ul>
+          </article>
+          <div class="inherit-arrow" aria-hidden="true">→</div>
+          <article class="target-card latest dim" data-target-card="latest">
+            <header><div><h3>Latest row</h3><code>channels.latest</code></div><span>preview</span></header>
+            <ul><li>Recommended version: 7.7.0.1</li><li>LM patch: the same 11 packages</li><li>Package 12: Cloud Extras ER 745</li></ul>
+          </article>
+        </div>
+        <p id="target-caption" class="target-caption">Stable patches an existing LM 7.7.0 installation with 11 exact <code>.rtipkg</code> files. The single-bundle installer is not part of this path.</p>
+      </section>
+
+      <section id="chapter-5" class="chapter reveal" data-chapter="chapter-5">
+        <span class="chapter-index">Chapter 05 · artifact catalog</span>
+        <h2>Artifact records and CLI delivery behavior</h2>
+        <p class="chapter-lead">LM installers are downloaded and verified but never executed. Public LM patch packages are installed after confirmation. Private non-LM filenames are displayed with retrieval instructions and are never downloaded by the CLI in V1.</p>
+
+        <div class="artifact-toolbar">
+          <h3>Release matrix · macOS ARM64 slice</h3>
+          <div class="mode-toggle" aria-label="Highlight artifact role">
+            <button class="active" data-mode-view="lm">LM installer</button>
+            <button data-mode-view="update">LM patch</button>
+            <button data-mode-view="latest">Latest overlay</button>
+            <button data-mode-view="non_lm">Private list</button>
+          </div>
+        </div>
+
+        <div class="artifact-grid">
+          <article class="artifact-card highlight" data-modes="lm"><span class="artifact-icon">NEW</span><h4>Fresh installations only</h4><p><code>rti_connext_dds-7.7.0.1-lm-arm64Darwin23clang16.0.dmg</code> is used only when no installation exists.</p><div class="artifact-meta"><span class="public">public</span><span>download only</span></div></article>
+          <article class="artifact-card muted" data-modes="update"><span class="artifact-icon">11</span><h4>LM 7.7.0 in-place patch</h4><p>Eleven exact packages are downloaded, verified as a set, and installed in source order into the selected LM root.</p><div class="artifact-meta"><span class="public">public</span><span>patch in place</span></div></article>
+          <article class="artifact-card muted" data-modes="non_lm"><span class="artifact-icon">09</span><h4>Non-LM 7.7.0 upgrade set</h4><p>Pro host, host extras, Pro target, WAN host/target, OpenSSL host/target, and Security Plugins host/target.</p><div class="artifact-meta"><span class="private">private</span><span>instructions only</span></div></article>
+          <article class="artifact-card muted" data-modes="latest"><span class="artifact-icon">ER</span><h4>Cloud Extras ER 745</h4><p><code>rti_connext_dds-7.7.0.1_RTI_ER_745-arm64Darwin-cloud-extras.rtipkg</code>, pending final publication metadata.</p><div class="artifact-meta"><span class="public">public</span><span>preview</span></div></article>
+        </div>
+
+        <details class="package-ledger" open>
+          <summary>Inspect the exact 11-package LM patch</summary>
+          <p>This is the unconditional package list from the 7.7.0.1 LM configuration after substituting the Apple Silicon architecture and OpenSSL 3.5.7 values. The three conditionally appended Cloud Discovery files are outside this Cloud CLI patch.</p>
+          <ol class="package-list">
+            <li><code>rti_connext_dds-7.7.0.1-lm-host-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-lm-host-unlicensed_components-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-lm-host-arm64Darwin-extras.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-lm-target-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-lm-target-unlicensed_components-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>rti_real_time_wan_transport-7.7.0.1-lm-host-unlicensed_components-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_security_plugins-7.7.0.1-lm-host-openssl-3.5-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_security_plugins-7.7.0.1-lm-host-unlicensed_components-openssl-3.5-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_security_plugins-7.7.0.1-lm-target-openssl-3.5-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>openssl-3.5.7-7.7.0.1-host-arm64Darwin.rtipkg</code></li>
+            <li><code>openssl-3.5.7-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg</code></li>
+          </ol>
+        </details>
+        <details class="package-ledger" open>
+          <summary>Inspect the corrected 9-package non-LM upgrade set</summary>
+          <p>The prior four-file list was not a coherent host/target update: it included the Pro host but omitted the Pro target, and included target add-ons without their host packages. This candidate set follows the host and target package definitions registered on <code>origin/release/connextdds/7.7.0.1</code>. Build &amp; Release must confirm the closure and supported order before publication.</p>
+          <ol class="package-list">
+            <li><code>rti_connext_dds-7.7.0.1-pro-host-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-pro-host-arm64Darwin-extras.rtipkg</code></li>
+            <li><code>rti_connext_dds-7.7.0.1-pro-target-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>rti_real_time_wan_transport-7.7.0.1-host-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_real_time_wan_transport-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>openssl-3.5.7-7.7.0.1-host-arm64Darwin.rtipkg</code></li>
+            <li><code>openssl-3.5.7-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg</code></li>
+            <li><code>rti_security_plugins-7.7.0.1-host-openssl-3.5-arm64Darwin.rtipkg</code></li>
+            <li><code>rti_security_plugins-7.7.0.1-target-openssl-3.5-arm64Darwin23clang16.0.rtipkg</code></li>
+          </ol>
+          <p>Pro packages do not have separate <code>unlicensed_components</code> variants in these release definitions; that split is specific to LM packaging.</p>
+        </details>
+        <div class="verdict-strip"><b>Package sets</b><p>LM uses the 11-file public patch set. Non-LM uses a nine-file private set derived from the 7.7.0.1 release package definitions. The <code>.dmg</code> is reserved for a machine with no usable installation.</p></div>
+
+        <p class="note"><strong>No usable installation?</strong> The matrix lookup collapses to one choice: download the public LM single bundle for the platform, verify it, print installation instructions, and ask the user to rerun. On <code>latest</code>, the overlay is offered only after the base installation is discovered.</p>
+      </section>
+
+      <section id="chapter-6" class="chapter reveal" data-chapter="chapter-6">
+        <span class="chapter-index">Chapter 06 · planner inputs and outputs</span>
+        <h2>CLI planning algorithm</h2>
+        <p class="chapter-lead">The planner evaluates capability, channel, installation metadata, host platform, and target architecture. It returns one of four outcomes: continue, install an ordered public patch set, display an ordered private package list, or download an LM installer.</p>
+
+        <div class="resolver" aria-label="Manifest resolution steps">
+          <article class="resolver-step"><b>Load</b><small>Verify signature, schema, dates, revision.</small></article>
+          <article class="resolver-step"><b>Discover</b><small>Read candidate installations and metadata.</small></article>
+          <article class="resolver-step"><b>Classify</b><small>LM, non-LM, or unknown—not a boolean guess.</small></article>
+          <article class="resolver-step"><b>Compose</b><small>Core requirement + three shared requirements.</small></article>
+          <article class="resolver-step"><b>Read row</b><small>Stable or latest names version and packages.</small></article>
+          <article class="resolver-step"><b>Match</b><small>Exact base + platform selects one explicit entry.</small></article>
+          <article class="resolver-step"><b>Act</b><small>Continue, install a package, list files, or download.</small></article>
+        </div>
+
+        <div class="policy-pair">
+          <article class="policy-card good"><span class="label">Existing LM 7.7.0 · 11-package patch</span><h3>Patch the selected root in place.</h3><p>Match exact version, mode, host, and target; show every file; download and verify the whole set; then install in source order.</p></article>
+          <article class="policy-card stop"><span class="label">New installation · LM bundle</span><h3>Download only. Stop safely.</h3><p>Verify the installer, show the authoritative instructions, do not execute it, and tell the user exactly how to resume.</p></article>
+        </div>
+      </section>
+
+      <section id="ux-lab" class="chapter reveal" data-chapter="ux-lab">
+        <span class="chapter-index">Chapter 07 · generated CLI plans</span>
+        <h2>CLI UX scenarios generated from the manifest</h2>
+        <p class="chapter-lead">Change capability, channel, installation state, and installed dependencies. The terminal output shows the exact filenames and actions selected from the manifest.</p>
+
+        <div class="ux-lab">
+          <form class="lab-controls" id="scenario-form">
+            <fieldset>
+              <legend>1 · Capability</legend>
+              <div class="choice-grid">
+                <div class="choice"><input id="ux-gateway" name="ux-capability" value="gateway" type="radio" checked><label for="ux-gateway"><b>Gateway</b><small>route traffic</small></label></div>
+                <div class="choice"><input id="ux-spy" name="ux-capability" value="spy" type="radio"><label for="ux-spy"><b>Spy</b><small>inspect data</small></label></div>
+                <div class="choice"><input id="ux-observability" name="ux-capability" value="observability" type="radio"><label for="ux-observability"><b>Observe</b><small>collect telemetry</small></label></div>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>2 · Channel</legend>
+              <div class="choice-grid" style="grid-template-columns: repeat(2, 1fr)">
+                <div class="choice"><input id="ux-stable" name="ux-channel" value="stable" type="radio" checked><label for="ux-stable"><b>Stable</b><small>7.7.0.1</small></label></div>
+                <div class="choice"><input id="ux-latest" name="ux-channel" value="latest" type="radio"><label for="ux-latest"><b>Latest</b><small>+ ER 745 preview</small></label></div>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>3 · Installation</legend>
+              <div class="choice-grid" style="grid-template-columns: repeat(2, 1fr)">
+                <div class="choice"><input id="ux-none" name="ux-install" value="none" type="radio"><label for="ux-none"><b>None</b><small>first run</small></label></div>
+                <div class="choice"><input id="ux-lm770" name="ux-install" value="lm_770" type="radio" checked><label for="ux-lm770"><b>LM</b><small>7.7.0</small></label></div>
+                <div class="choice"><input id="ux-lm" name="ux-install" value="lm" type="radio"><label for="ux-lm"><b>LM</b><small>7.7.0.1</small></label></div>
+                <div class="choice"><input id="ux-nonlm770" name="ux-install" value="non_lm_770" type="radio"><label for="ux-nonlm770"><b>Non-LM</b><small>7.7.0</small></label></div>
+                <div class="choice"><input id="ux-nonlm" name="ux-install" value="non_lm" type="radio"><label for="ux-nonlm"><b>Non-LM</b><small>7.7.0.1</small></label></div>
+              </div>
+            </fieldset>
+            <div id="dependency-box" class="dependency-box">
+              <legend>Already installed private add-ons</legend>
+              <label class="check-row"><input type="checkbox" name="dependency" value="wan"> WAN Transport</label>
+              <label class="check-row"><input type="checkbox" name="dependency" value="security"> Security Plugins</label>
+              <label class="check-row"><input type="checkbox" name="dependency" value="openssl"> OpenSSL</label>
+            </div>
+            <p class="lab-hint">The output uses exact Apple Silicon artifact names. Missing digests and URLs are publication metadata, never guessed by the CLI.</p>
+          </form>
+
+          <section class="terminal" aria-label="Simulated CLI output">
+            <header class="terminal-bar"><div class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></div><span>rticloud · connext preflight</span><span id="terminal-badge">download only</span></header>
+            <pre id="terminal-output" class="terminal-output" aria-live="polite"></pre>
+            <footer class="terminal-footer">
+              <div><small>installation mode</small><b id="footer-mode">new LM install</b></div>
+              <div><small>channel state</small><b id="footer-target">stable · 7.7.0.1</b></div>
+              <div><small>outcome</small><b id="footer-outcome">installer downloaded</b></div>
+            </footer>
+          </section>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="closing">
+    <span class="chapter-index" style="color: var(--yellow)">V1 implementation boundary</span>
+    <h2>Release metadata is external; installation mechanics remain compiled.</h2>
+    <p>Build & Release publishes versions, filenames, URLs, checksums, package sets, and channel policy. The CLI owns discovery, detector implementation, validation, confirmation, installation commands, and post-install verification.</p>
+    <div class="closing-grid">
+      <div><b>Declarative</b><small>No scripts in the manifest.</small></div>
+      <div><b>Explainable</b><small>Every action traces to a channel row and artifact role.</small></div>
+      <div><b>Mode-safe</b><small>LM and non-LM never silently mix.</small></div>
+    </div>
+  </footer>
+
+  <script id="manifest-data" type="application/json">
+{
+  "schema": 1,
+  "revision": 43,
+  "generated_at": "2026-07-16T00:00:00Z",
+  "expires_at": "2026-10-16T00:00:00Z",
+  "minimum_cli": "1.2.0",
+  "release_family": "7.7.0",
+  "capabilities": {
+    "gateway": {
+      "core": "routing-service",
+      "minimum": {
+        "base": "7.3.0"
+      }
+    },
+    "spy": {
+      "core": "dds-spy",
+      "minimum": {
+        "base": "7.7.0",
+        "package": "cloud-extras-er723"
+      }
+    },
+    "observability": {
+      "core": "collector-lite",
+      "minimum": {
+        "base": "7.7.0",
+        "package": "cloud-extras-er723"
+      }
+    }
+  },
+  "shared_requirements": [
+    "wan",
+    "security",
+    "openssl"
+  ],
+  "channels": {
+    "stable": {
+      "recommended_version": "7.7.0.1",
+      "capabilities": [
+        "gateway",
+        "spy",
+        "observability"
+      ],
+      "lm_patch_set": "lm-770-to-7701-darwin-arm64"
+    },
+    "latest": {
+      "recommended_version": "7.7.0.1",
+      "capabilities": [
+        "gateway",
+        "spy",
+        "observability"
+      ],
+      "lm_patch_set": "lm-770-to-7701-darwin-arm64",
+      "additional_packages": [
+        {
+          "package": "cloud-extras-er745",
+          "capabilities": [
+            "gateway",
+            "spy",
+            "observability"
+          ]
+        }
+      ]
+    }
+  },
+  "lm_installers": {
+    "darwin-arm64": {
+      "version": "7.7.0.1",
+      "filename": "rti_connext_dds-7.7.0.1-lm-arm64Darwin23clang16.0.dmg",
+      "url": "<public-7.7.0.1-lm-installer-url>",
+      "sha256": "<sha256>",
+      "size": 0,
+      "instructions_url": "<lm-installation-instructions-url>"
+    }
+  },
+  "lm_patch_sets": {
+    "lm-770-to-7701-darwin-arm64": {
+      "from_version": "7.7.0",
+      "to_version": "7.7.0.1",
+      "installation_mode": "lm",
+      "host_architecture": "arm64Darwin",
+      "target_architecture": "arm64Darwin23clang16.0",
+      "download_base_url": "<public-7.7.0.1-package-base-url>/",
+      "package_count": 11,
+      "packages": [
+        {
+          "order": 1,
+          "filename": "rti_connext_dds-7.7.0.1-lm-host-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 2,
+          "filename": "rti_connext_dds-7.7.0.1-lm-host-unlicensed_components-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 3,
+          "filename": "rti_connext_dds-7.7.0.1-lm-host-arm64Darwin-extras.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 4,
+          "filename": "rti_connext_dds-7.7.0.1-lm-target-arm64Darwin23clang16.0.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 5,
+          "filename": "rti_connext_dds-7.7.0.1-lm-target-unlicensed_components-arm64Darwin23clang16.0.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 6,
+          "filename": "rti_real_time_wan_transport-7.7.0.1-lm-host-unlicensed_components-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 7,
+          "filename": "rti_security_plugins-7.7.0.1-lm-host-openssl-3.5-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 8,
+          "filename": "rti_security_plugins-7.7.0.1-lm-host-unlicensed_components-openssl-3.5-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 9,
+          "filename": "rti_security_plugins-7.7.0.1-lm-target-openssl-3.5-arm64Darwin23clang16.0.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 10,
+          "filename": "openssl-3.5.7-7.7.0.1-host-arm64Darwin.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        },
+        {
+          "order": 11,
+          "filename": "openssl-3.5.7-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg",
+          "sha256": "<sha256>",
+          "size": 0
+        }
+      ]
+    }
+  },
+  "public_packages": {
+    "cloud-extras-er723": {
+      "version": "7.7.0_RTI_ER_723",
+      "compatible_base": "7.7.0",
+      "platforms": {
+        "darwin-arm64": {
+          "filename": "rti_connext_dds-7.7.0_RTI_ER_723-arm64Darwin-cloud-extras.rtipkg",
+          "url": "<public-er723-url>",
+          "sha256": "<sha256>",
+          "size": 0
+        }
+      }
+    },
+    "cloud-extras-er745": {
+      "version": "7.7.0.1_RTI_ER_745",
+      "compatible_base": "7.7.0",
+      "platforms": {
+        "darwin-arm64": {
+          "filename": "rti_connext_dds-7.7.0.1_RTI_ER_745-arm64Darwin-cloud-extras.rtipkg",
+          "url": "<public-er745-url>",
+          "sha256": "<sha256>",
+          "size": 0
+        }
+      }
+    }
+  },
+  "non_lm_guidance": {
+    "from_version": "7.7.0",
+    "to_version": "7.7.0.1",
+    "installation_mode": "non_lm",
+    "host_architecture": "arm64Darwin",
+    "target_architecture": "arm64Darwin23clang16.0",
+    "validated_package_closure": false,
+    "validation_note": "Build & Release must confirm that this is the complete ordered non-LM upgrade closure.",
+    "base_includes_at_7.7.0.1": [
+      "routing-service",
+      "dds-spy",
+      "collector-lite"
+    ],
+    "packages": [
+      {
+        "order": 1,
+        "name": "Connext Pro host",
+        "filename": "rti_connext_dds-7.7.0.1-pro-host-arm64Darwin.rtipkg"
+      },
+      {
+        "order": 2,
+        "name": "Connext Pro host extras",
+        "filename": "rti_connext_dds-7.7.0.1-pro-host-arm64Darwin-extras.rtipkg"
+      },
+      {
+        "order": 3,
+        "name": "Connext Pro target",
+        "filename": "rti_connext_dds-7.7.0.1-pro-target-arm64Darwin23clang16.0.rtipkg"
+      },
+      {
+        "order": 4,
+        "name": "WAN Transport host",
+        "filename": "rti_real_time_wan_transport-7.7.0.1-host-arm64Darwin.rtipkg"
+      },
+      {
+        "order": 5,
+        "name": "WAN Transport target",
+        "filename": "rti_real_time_wan_transport-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg"
+      },
+      {
+        "order": 6,
+        "name": "OpenSSL host",
+        "filename": "openssl-3.5.7-7.7.0.1-host-arm64Darwin.rtipkg"
+      },
+      {
+        "order": 7,
+        "name": "OpenSSL target",
+        "filename": "openssl-3.5.7-7.7.0.1-target-arm64Darwin23clang16.0.rtipkg"
+      },
+      {
+        "order": 8,
+        "name": "Security Plugins host",
+        "filename": "rti_security_plugins-7.7.0.1-host-openssl-3.5-arm64Darwin.rtipkg"
+      },
+      {
+        "order": 9,
+        "name": "Security Plugins target",
+        "filename": "rti_security_plugins-7.7.0.1-target-openssl-3.5-arm64Darwin23clang16.0.rtipkg"
+      }
+    ],
+    "instructions_url": "<private-repository-instructions-url>"
+  }
+}
+  </script>
+
+  <script>
+    const capabilityContent = {
+      gateway: {
+        name: "Gateway", glyph: "GW", purpose: "Routes Cloud traffic into a local DDS system.",
+        unique: { name: "Routing Service", id: "routing-service" },
+        evaluation: "Gateway requires Routing Service plus WAN, Security Plugins, and OpenSSL. Its minimum runnable base is 7.3.0. The selected channel is evaluated separately to determine whether 7.7.0.1 should be recommended.",
+        detectorIntro: "Routing Service is present only when metadata and the executable agree. These aliases are compiled into V1.",
+        detectors: [
+          ["legacy component", "routing_service_host"],
+          ["new component alias", "services-routing-bin"],
+          ["executable", "bin/rtiroutingservice"]
+        ]
+      },
+      spy: {
+        name: "Spy", glyph: "SPY", purpose: "Inspects DDS data from the Cloud workflow.",
+        unique: { name: "DDS Spy", id: "dds-spy" },
+        evaluation: "Spy requires DDS Spy plus WAN, Security Plugins, and OpenSSL. On base 7.7.0, the minimum also requires the installed Cloud Extras ER 723 package marker. Stable/latest recommendation is evaluated after this run-eligibility check.",
+        detectorIntro: "DDS Spy accepts either metadata vocabulary, then confirms the executable. These aliases are compiled into V1.",
+        detectors: [
+          ["legacy component", "utilities_host"],
+          ["new component alias", "utils-bin"],
+          ["executable", "bin/rtiddsspy"]
+        ]
+      },
+      observability: {
+        name: "Observability", glyph: "OBS", purpose: "Collects lightweight telemetry for Cloud visibility.",
+        unique: { name: "Collector Lite", id: "collector-lite" },
+        evaluation: "Observability requires Collector Service Lite plus WAN, Security Plugins, and OpenSSL. On base 7.7.0, the minimum also requires Cloud Extras ER 723 because Collector Lite is not in that base; it is included in the 7.7.0.1 base host.",
+        detectorIntro: "Starting in 7.7.0.1, the compiled detector must find Collector Lite in both base packages.",
+        detectors: [
+          ["component", "services-collector-bin"],
+          ["executable", "bin/rticollectorservicelite"],
+          ["packaging rule", "included in 7.7.0.1 base"]
+        ]
+      }
+    };
+
+    const escapeHtml = (value) => String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+    function highlightJson(value) {
+      return escapeHtml(value).replace(/(&quot;[^&]*?&quot;)(\s*:)?/g, (match, token, colon) =>
+        colon ? `<span class="key">${token}</span>${colon}` : `<span class="string">${token}</span>`
+      );
+    }
+
+    const manifestData = JSON.parse(document.querySelector("#manifest-data").textContent);
+    const manifestMetadataKeys = ["schema", "revision", "generated_at", "expires_at", "minimum_cli", "release_family"];
+    const manifestSectionReference = {
+      metadata: {
+        title: "Publication and compatibility metadata",
+        summary: "These root fields determine whether the CLI can trust and interpret the document before reading any release policy.",
+        fields: [
+          ["schema", "Exact schema understood by the CLI. V1 accepts only 1."],
+          ["revision", "Monotonically increasing publication revision used for caching and rollback detection."],
+          ["generated_at / expires_at", "Remote-manifest validity window. An expired remote copy cannot replace the last-known-good manifest."],
+          ["minimum_cli", "Old clients reject a manifest whose behavior they cannot implement."],
+          ["release_family", "Exact three-part package compatibility family described by this document."]
+        ],
+        warning: "The detached signature covers the exact JSON bytes. Signing-key identity lives in the signature envelope and the CLI keyring."
+      },
+      capabilities: {
+        title: "Capability-specific run eligibility",
+        summary: "Each capability names one core logical requirement and the oldest state in which that capability may run.",
+        fields: [
+          ["core", "Stable logical requirement evaluated by compiled component and executable detectors."],
+          ["minimum.base", "Oldest supported three-part Connext base for this capability."],
+          ["minimum.package", "Optional exact installed-package marker required in addition to the base and detectors."]
+        ],
+        warning: "This section answers whether a capability can run now. The selected channel determines the recommended update state."
+      },
+      shared_requirements: {
+        title: "Requirements shared by all capabilities",
+        summary: "Gateway, Spy, and Observability all require WAN Transport, Security Plugins, and OpenSSL in addition to their capability-specific core.",
+        fields: [
+          ["wan", "Detected from known WAN component/package metadata."],
+          ["security", "Detected from known Security Plugins component/package metadata."],
+          ["openssl", "Detected from known OpenSSL component/package metadata."]
+        ],
+        warning: "Detector expressions are compiled into the V1 CLI; the manifest contains only stable logical IDs."
+      },
+      channels: {
+        title: "Recommended state and package-set selection",
+        summary: "The channel maps a global 7.7.0.1 recommendation to an explicit LM patch set. Capability arrays make the scope of each recommendation and additional package explicit.",
+        fields: [
+          ["recommended_version", "Product version presented as the recommended state."],
+          ["capabilities", "Capabilities for which this channel row is valid."],
+          ["lm_patch_set", "Exact ordered patch-set key used for a matching LM 7.7.0 installation."],
+          ["additional_packages", "Packages installed after the stable patch, filtered by selected capability."]
+        ],
+        warning: "Latest applies the stable 11-package set first and adds ER 745 only after the stable state is verified."
+      },
+      lm_installers: {
+        title: "Public LM single-bundle installers",
+        summary: "This catalog is used only when no usable Connext installation exists or when an in-place patch cannot cross the selected base boundary.",
+        fields: [
+          ["platform key", "CLI-normalized operating-system and CPU architecture."],
+          ["filename / url", "Exact file displayed to the user and its public download location."],
+          ["sha256 / size", "Integrity values verified before the CLI reports download success."],
+          ["instructions_url", "Authoritative manual installation instructions."]
+        ],
+        warning: "The CLI downloads and verifies the installer but never opens, mounts, or executes it."
+      },
+      lm_patch_sets: {
+        title: "Ordered LM 7.7.0 to 7.7.0.1 patch set",
+        summary: "A patch set is selected only after version, installation mode, host architecture, and target architecture all match.",
+        fields: [
+          ["from_version / to_version", "The only source and destination states accepted for this set."],
+          ["installation_mode", "Prevents LM patch files from being offered to non-LM installations."],
+          ["host_architecture / target_architecture", "Exact architecture pair used to select filenames."],
+          ["packages[].order", "Build & Release-owned installation order. The CLI does not sort filenames."],
+          ["packages[].sha256 / size", "Every file is downloaded and verified before installation begins."]
+        ],
+        warning: "The example contains all 11 discussed Apple Silicon LM patch files. Placeholder digests and zero sizes make it non-publishable until generated values replace them."
+      },
+      public_packages: {
+        title: "Individually referenced public packages",
+        summary: "Cloud Extras packages are referenced by capability minimums or channel additions and selected by exact compatibility base and platform.",
+        fields: [
+          ["version", "Installed package marker expected during post-install verification."],
+          ["compatible_base", "Exact three-part installation base accepted by the package."],
+          ["platforms", "Per-platform filename, URL, SHA-256, and byte count."]
+        ],
+        warning: "ER 745 metadata is a publication placeholder until Build & Release supplies the final artifact."
+      },
+      non_lm_guidance: {
+        title: "Ordered non-LM retrieval guidance",
+        summary: "V1 displays this exact list for an existing non-LM 7.7.0 installation but does not authenticate to or download from the private repository.",
+        fields: [
+          ["validated_package_closure", "Must be true before the list can be treated as an authoritative upgrade procedure."],
+          ["base_includes_at_7.7.0.1", "Core capability executables guaranteed by the updated Pro host package."],
+          ["packages", "Ordered friendly name and exact private filename shown to the user."],
+          ["instructions_url", "Customer-portal retrieval and installation guidance."]
+        ],
+        warning: "The nine-file set is derived from the release/connextdds/7.7.0.1 package definitions. Build & Release must still validate the installation order and complete closure on a clean 7.7.0 Pro installation."
+      }
+    };
+    const manifestFullReference = {
+      title: "Complete proposed V1 document",
+      summary: "This view contains every field used by the 7.7.0.1 walkthrough and UX simulator for the Apple Silicon example.",
+      fields: [
+        ["8 logical sections", "Metadata, capabilities, shared requirements, channels, installers, LM patch sets, public packages, and non-LM guidance."],
+        ["11 LM patch files", "Complete discussed LM package set for arm64Darwin and arm64Darwin23clang16.0."],
+        ["9 non-LM files", "Host and target variants derived from the 7.7.0.1 release package definitions; integration validation remains required."],
+        ["2 channel states", "Stable selects the patch set; latest selects the same patch plus ER 745."]
+      ],
+      warning: "Angle-bracket values, zero byte counts, placeholder digests, and validated_package_closure=false prevent publication."
+    };
+    let selectedManifestSection = "metadata";
+    let manifestFullView = false;
+
+    function manifestSectionValue(section) {
+      if (section === "metadata") {
+        return Object.fromEntries(manifestMetadataKeys.map(key => [key, manifestData[key]]));
+      }
+      return manifestData[section];
+    }
+
+    function currentManifestJson() {
+      return JSON.stringify(manifestFullView ? manifestData : manifestSectionValue(selectedManifestSection), null, 2);
+    }
+
+    function renderManifestExplorer() {
+      const reference = manifestFullView ? manifestFullReference : manifestSectionReference[selectedManifestSection];
+      const path = manifestFullView ? "$" : `$.${selectedManifestSection}`;
+      document.querySelector("#manifest-current-path").textContent = manifestFullView ? "full document" : selectedManifestSection;
+      document.querySelector("#manifest-code").innerHTML = highlightJson(currentManifestJson());
+      document.querySelector("#manifest-reference-path").textContent = path;
+      document.querySelector("#manifest-reference-title").textContent = reference.title;
+      document.querySelector("#manifest-reference-summary").textContent = reference.summary;
+      document.querySelector("#manifest-field-list").innerHTML = reference.fields.map(([field, description]) =>
+        `<li><code>${escapeHtml(field)}</code><span>${escapeHtml(description)}</span></li>`
+      ).join("");
+      document.querySelector("#manifest-reference-warning").textContent = reference.warning;
+      document.querySelector("#manifest-section-view").classList.toggle("active", !manifestFullView);
+      document.querySelector("#manifest-full-view").classList.toggle("active", manifestFullView);
+      document.querySelectorAll("[data-manifest-section]").forEach(button => {
+        button.classList.toggle("active", !manifestFullView && button.dataset.manifestSection === selectedManifestSection);
+      });
+    }
+
+    document.querySelectorAll("[data-manifest-section]").forEach(button => button.addEventListener("click", () => {
+      selectedManifestSection = button.dataset.manifestSection;
+      manifestFullView = false;
+      renderManifestExplorer();
+    }));
+    document.querySelector("#manifest-section-view").addEventListener("click", () => {
+      manifestFullView = false;
+      renderManifestExplorer();
+    });
+    document.querySelector("#manifest-full-view").addEventListener("click", () => {
+      manifestFullView = true;
+      renderManifestExplorer();
+    });
+    document.querySelector("#manifest-copy").addEventListener("click", async () => {
+      const status = document.querySelector("#manifest-copy-status");
+      try {
+        await navigator.clipboard.writeText(currentManifestJson());
+        status.textContent = "copied";
+      } catch {
+        status.textContent = "copy unavailable";
+      }
+      window.setTimeout(() => { status.textContent = ""; }, 1800);
+    });
+    renderManifestExplorer();
+
+    function setCapability(key) {
+      const item = capabilityContent[key];
+      document.querySelector("#cap-glyph").textContent = item.glyph;
+      document.querySelector("#cap-name").textContent = item.name;
+      document.querySelector("#cap-purpose").textContent = item.purpose;
+      document.querySelector("#detector-intro").textContent = item.detectorIntro;
+      document.querySelector("#capability-evaluation").textContent = item.evaluation;
+      const nodes = [item.unique, {name: "WAN", id: "wan"}, {name: "Security", id: "security"}, {name: "OpenSSL", id: "openssl"}];
+      document.querySelector("#requirement-chain").innerHTML = nodes.map((node, index) =>
+        `<div class="requirement-node ${index === 0 ? "unique" : ""}"><b>${escapeHtml(node.name)}</b><code>${escapeHtml(node.id)}</code></div>`
+      ).join("");
+      document.querySelector("#detector-list").innerHTML = item.detectors.map(detector =>
+        `<div class="detector-row"><small>${escapeHtml(detector[0])}</small><code>${escapeHtml(detector[1])}</code></div>`
+      ).join("");
+      document.querySelectorAll(".pill-button").forEach(button => button.classList.toggle("active", button.dataset.capability === key));
+    }
+    document.querySelectorAll(".pill-button").forEach(button => button.addEventListener("click", () => setCapability(button.dataset.capability)));
+    setCapability("gateway");
+
+    document.querySelectorAll("[data-channel-preview]").forEach(button => button.addEventListener("click", () => {
+      const channel = button.dataset.channelPreview;
+      document.querySelectorAll("[data-channel-preview]").forEach(item => item.classList.toggle("active", item === button));
+      document.querySelectorAll("[data-target-card]").forEach(card => {
+        const active = card.dataset.targetCard === channel;
+        card.classList.toggle("active", active);
+        card.classList.toggle("dim", !active);
+      });
+      document.querySelector("#target-caption").textContent = channel === "stable"
+        ? "Stable patches LM 7.7.0 in place with 11 exact packages. The single-bundle installer is not part of this path."
+        : "Latest applies the same 11-package stable patch, then installs Cloud Extras ER 745 as package 12.";
+    }));
+
+    function setArtifactMode(mode) {
+      document.querySelectorAll("[data-mode-view]").forEach(button => button.classList.toggle("active", button.dataset.modeView === mode));
+      document.querySelectorAll(".artifact-card").forEach(card => {
+        const active = card.dataset.modes === mode || (mode === "latest" && card.dataset.modes === "latest");
+        card.classList.toggle("highlight", active);
+        card.classList.toggle("muted", !active);
+      });
+    }
+    document.querySelectorAll("[data-mode-view]").forEach(button => button.addEventListener("click", () => setArtifactMode(button.dataset.modeView)));
+
+    const form = document.querySelector("#scenario-form");
+    const terminalOutput = document.querySelector("#terminal-output");
+    const dependencyBox = document.querySelector("#dependency-box");
+    const capLabels = { gateway: "Gateway", spy: "Spy", observability: "Observability" };
+    const capCommands = { gateway: "gateway", spy: "spy", observability: "observability" };
+    const uniqueRequirements = { gateway: "Routing Service", spy: "DDS Spy", observability: "Collector Service Lite" };
+    const privatePackageNames = { wan: "WAN Transport", security: "Security Plugins", openssl: "OpenSSL" };
+    const manifestPlatform = "darwin-arm64";
+    const nonLmPackageRecords = manifestData.non_lm_guidance.packages;
+    const privatePackageGroups = {
+      wan: nonLmPackageRecords.filter(item => item.name.startsWith("WAN Transport")),
+      security: nonLmPackageRecords.filter(item => item.name.startsWith("Security Plugins")),
+      openssl: nonLmPackageRecords.filter(item => item.name.startsWith("OpenSSL"))
+    };
+    const lmInstallerFile = manifestData.lm_installers[manifestPlatform].filename;
+    const er745File = manifestData.public_packages["cloud-extras-er745"].platforms[manifestPlatform].filename;
+    const lmPatchSetId = manifestData.channels.stable.lm_patch_set;
+    const lmPatchFiles = [...manifestData.lm_patch_sets[lmPatchSetId].packages]
+      .sort((left, right) => left.order - right.order)
+      .map(item => item.filename);
+    const nonLm770PatchFiles = [...nonLmPackageRecords]
+      .sort((left, right) => left.order - right.order)
+      .map(item => item.filename);
+
+    function selected(name) {
+      return form.querySelector(`[name="${name}"]:checked`).value;
+    }
+
+    function line(text, className = "") {
+      return `<span class="${className}">${escapeHtml(text)}</span>`;
+    }
+
+    function updateScenario() {
+      const capability = selected("ux-capability");
+      const channel = selected("ux-channel");
+      const install = selected("ux-install");
+      const selectedDeps = [...form.querySelectorAll('[name="dependency"]:checked')].map(input => input.value);
+      const recommendedVersion = manifestData.channels[channel].recommended_version;
+      const profile = channel === "stable" ? `stable · ${recommendedVersion}` : `latest · ${recommendedVersion} + ER 745`;
+      const out = [];
+      let outcome = "ready";
+      let modeLabel = install === "none" ? "new LM install" : install === "lm_770" ? "LM · 7.7.0" : install === "lm" ? "LM · 7.7.0.1" : install === "non_lm_770" ? "non-LM · 7.7.0" : "non-LM · 7.7.0.1";
+      let badge = "ready";
+
+      dependencyBox.classList.toggle("visible", install === "non_lm");
+      out.push(line(`rticloud ${capCommands[capability]}`, "term-command"));
+      out.push("");
+      out.push(line(`◆ Connext preflight · ${capLabels[capability]} · ${channel}`, "term-title"));
+      out.push('<div class="term-rule"></div>');
+
+      if (install === "none") {
+        outcome = "installer downloaded";
+        badge = "download only";
+        out.push(line("○ No compatible Connext installation found", "term-warn"));
+        out.push(line("  Selected  7.7.0.1 LM single bundle · darwin/arm64", "term-ok"));
+        out.push("");
+        out.push(line("The CLI will download:", "term-title"));
+        out.push(line("  1. RTI Connext DDS LM 7.7.0.1 installer", "term-action"));
+        out.push(line(`     File: ${lmInstallerFile}`, "term-muted"));
+        out.push(line("✓ SHA-256 and size verified", "term-ok"));
+        out.push("");
+        out.push(line("The installer was downloaded but was not opened.", "term-title"));
+        out.push(line("1. Follow the Connext LM installation instructions.", "term-muted"));
+        out.push(line(`2. Rerun: rticloud ${capCommands[capability]}`, "term-muted"));
+        if (channel === "latest") {
+          out.push(line("3. After discovery, the CLI will offer:", "term-muted"));
+          out.push(line(`   ${er745File}`, "term-muted"));
+        }
+      } else if (install === "lm_770") {
+        const total = lmPatchFiles.length + (channel === "latest" ? 1 : 0);
+        outcome = `${total} packages ready`;
+        badge = "confirmation needed";
+        out.push(line("✓ Installation  RTI Connext DDS LM", "term-ok"));
+        out.push(line("✓ Version       7.7.0", "term-ok"));
+        out.push(line("✓ Patch target  arm64Darwin / arm64Darwin23clang16.0", "term-ok"));
+        out.push("");
+        out.push(line(`The CLI will download and install ${total} packages, in order:`, "term-title"));
+        lmPatchFiles.forEach((filename, index) => out.push(line(`  ${String(index + 1).padStart(2, " ")}. ${filename}`, "term-muted")));
+        if (channel === "latest") out.push(line(`  12. ${er745File}`, "term-muted"));
+        out.push("");
+        out.push(line("All files are downloaded and verified before installation starts.", "term-muted"));
+        out.push(line("The selected LM 7.7.0 installation will be patched in place.", "term-action"));
+        out.push(line(`? Download and install these ${total} packages?  [y/N]`, "term-warn"));
+      } else if (install === "lm") {
+        out.push(line("✓ Installation  RTI Connext DDS LM", "term-ok"));
+        out.push(line("✓ Version       7.7.0.1", "term-ok"));
+        out.push(line(`✓ ${uniqueRequirements[capability].padEnd(13)} detected`, "term-ok"));
+        out.push(line("✓ WAN / Security / OpenSSL included", "term-ok"));
+        if (channel === "latest") {
+          outcome = "1 package ready";
+          badge = "confirmation needed";
+          out.push("");
+          out.push(line("The CLI will download and install 1 package:", "term-title"));
+          out.push(line("  1. Connext Cloud Extras 7.7.0.1 ER 745", "term-action"));
+          out.push(line(`     File: ${er745File}`, "term-muted"));
+          out.push(line("     Action: download → verify → install → recheck", "term-muted"));
+          out.push(line("? Download and install this package?  [y/N]", "term-warn"));
+        } else {
+          out.push("");
+          out.push(line("✓ Stable channel state satisfied — continuing", "term-title"));
+        }
+      } else if (install === "non_lm_770") {
+        outcome = `${nonLm770PatchFiles.length} private packages required`;
+        badge = "manual action";
+        out.push(line("✓ Installation  RTI Connext DDS Pro (non-LM)", "term-ok"));
+        out.push(line("✓ Version       7.7.0", "term-ok"));
+        out.push(line("✓ Routing Service / DDS Spy included in base host", "term-ok"));
+        if (capability === "observability") {
+          out.push(line("✗ Collector Service Lite is not in the 7.7.0 base host", "term-warn"));
+        }
+        out.push("");
+        out.push(line("Retrieve these 7.7.0.1 packages from the RTI customer portal:", "term-title"));
+        nonLm770PatchFiles.forEach((filename, index) => out.push(line(`  ${index + 1}. ${filename}`, "term-muted")));
+        out.push("");
+        out.push(line("The CLI will not download or install these private packages.", "term-muted"));
+        if (channel === "latest") {
+          out.push(line("After they are detected, the CLI will offer:", "term-title"));
+          out.push(line(`  ${nonLm770PatchFiles.length + 1}. ${er745File}`, "term-muted"));
+        } else if (capability !== "observability") {
+          out.push(line(`${uniqueRequirements[capability]} may already satisfy its capability minimum.`, "term-ok"));
+          out.push(line("The 7.7.0.1 package list is the channel recommendation.", "term-muted"));
+        }
+      } else {
+        const missing = ["wan", "openssl", "security"].filter(dep => !selectedDeps.includes(dep));
+        const missingPackageRecords = missing.flatMap(dep => privatePackageGroups[dep]);
+        out.push(line("✓ Installation  RTI Connext DDS Pro (non-LM)", "term-ok"));
+        out.push(line("  License       LM license check skipped", "term-muted"));
+        out.push(line(`✓ ${uniqueRequirements[capability].padEnd(13)} included in 7.7.0.1 host`, "term-ok"));
+        if (missing.length) {
+          outcome = `${missingPackageRecords.length} private packages required`;
+          badge = "manual action";
+          out.push("");
+          out.push(line(`Install ${missingPackageRecords.length} packages from the RTI customer portal:`, "term-warn"));
+          let packageIndex = 1;
+          missing.forEach(dep => {
+            out.push(line(`  ${privatePackageNames[dep]} · host and target`, "term-action"));
+            privatePackageGroups[dep].forEach(item => {
+              out.push(line(`    ${packageIndex}. ${item.filename}`, "term-muted"));
+              packageIndex += 1;
+            });
+          });
+          out.push(line("The CLI will not download or install these packages.", "term-muted"));
+        } else {
+          out.push(line("✓ WAN / Security / OpenSSL detected", "term-ok"));
+          if (channel === "stable") out.push(line("✓ Stable channel state satisfied — continuing", "term-title"));
+        }
+        if (channel === "latest") {
+          out.push("");
+          out.push(line(missing.length ? "After those packages are detected, the CLI will download and install:" : "The CLI will download and install 1 package:", "term-title"));
+          out.push(line("  1. Connext Cloud Extras 7.7.0.1 ER 745", "term-action"));
+          out.push(line(`     File: ${er745File}`, "term-muted"));
+          if (!missing.length) {
+            outcome = "1 package ready";
+            badge = "confirmation needed";
+            out.push(line("     Action: download → verify → install → recheck", "term-muted"));
+            out.push(line("? Download and install this package?  [y/N]", "term-warn"));
+          }
+        }
+      }
+
+      terminalOutput.innerHTML = out.join("\n");
+      document.querySelector("#terminal-badge").textContent = badge;
+      document.querySelector("#footer-mode").textContent = modeLabel;
+      document.querySelector("#footer-target").textContent = profile;
+      document.querySelector("#footer-outcome").textContent = outcome;
+    }
+    form.addEventListener("change", updateScenario);
+    updateScenario();
+
+    document.querySelectorAll(".chapter-link").forEach(button => button.addEventListener("click", () => {
+      document.getElementById(button.dataset.target).scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+
+    const revealObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add("visible"); });
+    }, { threshold: .08 });
+    document.querySelectorAll(".reveal").forEach(element => revealObserver.observe(element));
+
+    const chapterObserver = new IntersectionObserver(entries => {
+      const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      document.querySelectorAll(".chapter-link").forEach(button => button.classList.toggle("active", button.dataset.target === visible.target.id));
+    }, { rootMargin: "-18% 0px -58% 0px", threshold: [0, .2, .5] });
+    document.querySelectorAll("[data-chapter]").forEach(section => chapterObserver.observe(section));
+  </script>
+</body>
+</html>

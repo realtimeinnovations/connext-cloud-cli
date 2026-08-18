@@ -29,6 +29,7 @@ Install with Homebrew (recommended):
 
 ```sh
 brew tap realtimeinnovations/tap
+brew trust --tap realtimeinnovations/tap
 brew install rticloud
 ```
 

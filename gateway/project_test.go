@@ -892,7 +892,7 @@ func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
 	if _, err := app.RunRoutingService(config, ConnextInstall{Path: install, Version: "7.7.0"}, 123, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if output := tui.StripANSIEscapes(out.String()); !strings.Contains(output, "connected · 2 edge apps") {
+	if output := tui.StripANSIEscapes(out.String()); !strings.Contains(output, "connected · monitoring 2 apps") {
 		t.Fatalf("missing collector discovery status: %s", output)
 	}
 }
