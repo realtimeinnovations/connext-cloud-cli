@@ -200,7 +200,7 @@ func TestParserPrintAccessTokenRequiresExistingLogin(t *testing.T) {
 
 func TestParserPrintAccessTokenExchangesAPIKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if got, want := request.URL.Path, "/service-accounts/auth/token"; got != want {
+		if got, want := request.URL.Path, "/api/v1/service-accounts/auth/token"; got != want {
 			t.Errorf("path = %q, want %q", got, want)
 		}
 		if got, want := request.Header.Get("X-API-Key"), "service-account-key"; got != want {
@@ -211,7 +211,7 @@ func TestParserPrintAccessTokenExchangesAPIKey(t *testing.T) {
 	defer server.Close()
 
 	var out bytes.Buffer
-	authManager := auth.New(parserAuthConfigProvider{apiHost: server.URL}, filepath.Join(t.TempDir(), "credentials.json"))
+	authManager := auth.New(parserAuthConfigProvider{apiHost: server.URL + "/api/v1"}, filepath.Join(t.TempDir(), "credentials.json"))
 	authManager.Env = func(name string) string {
 		if name == "CONNEXT_CLOUD_API_KEY" {
 			return "service-account-key"
