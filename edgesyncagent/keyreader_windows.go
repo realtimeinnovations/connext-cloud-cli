@@ -15,13 +15,16 @@ import (
 	"golang.org/x/term"
 )
 
-// AgentSupported reports whether the long-running agent is supported on this
-// platform.
-func AgentSupported() bool { return false }
-
-// startKeyReader restores canonical mode and disables raw keyboard handling.
-// As with the other CLI prompts, Windows does not use raw escape sequences:
-// ConPTY does not reliably deliver arrow-key input in that mode.
+// startKeyReader disables raw keyboard handling on Windows: the agent still
+// runs, renders its live dashboard, renews artifacts and processes the
+// enrollment inbox, but the in-dashboard key actions (arrow navigation,
+// Enter-to-renew, Ctrl+A add) are not wired up. As with the other CLI prompts,
+// Windows does not use raw escape sequences here: ConPTY does not reliably
+// deliver arrow-key input in that mode. Returning (nil, nil) makes runDisplay
+// fall back to its never-fires key channel, so the dashboard refreshes on the
+// timer and stops on context cancellation (Ctrl+C is delivered as an OS signal;
+// see Agent.Run). Adding a participant is still possible via `rticloud agent
+// enroll`, which drops a request into the inbox.
 func startKeyReader(_ context.Context, inFile *os.File, oldState *term.State) (<-chan keyEvent, func()) {
 	if oldState != nil {
 		_ = term.Restore(int(inFile.Fd()), oldState)

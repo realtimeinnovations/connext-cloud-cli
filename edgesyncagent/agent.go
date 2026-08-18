@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
 
@@ -544,6 +546,21 @@ func (a *Agent) Run(ctx context.Context) error {
 	// relying on OS signal delivery (which is suppressed in raw-terminal mode).
 	ctx, a.stopFunc = context.WithCancel(ctx)
 	defer a.stopFunc()
+
+	// On platforms/paths without the raw key reader (Windows), the terminal never produces
+	// the 0x03 byte the TUI listens for, so an OS interrupt is the only stop
+	// signal. In the Unix raw TUI, term.MakeRaw disables ISIG, so Ctrl+C arrives
+	// as a byte (handled by the key reader) and this handler stays dormant.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, terminal.InterruptSignals()...)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			a.stopFunc()
+		case <-ctx.Done():
+		}
+	}()
 
 	// Preserve the original writer for TUI rendering (it must be an *os.File
 	// for terminal detection). Log output goes through a.Out which may be
