@@ -39,7 +39,7 @@ const (
 	EnterConnextPathLabel       = "Enter Connext path"
 	DownloadConnextLabel        = "Download Connext Professional"
 	CancelConnextSelectionLabel = "Cancel"
-	installerVersion            = "7.7.0"
+	installerVersion            = "7.7.0.1"
 )
 
 func nonStandardDirWarning() string {
