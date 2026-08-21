@@ -191,13 +191,13 @@ func TestDiscoverInstallWithPromptDownloadsInstaller(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), filepath.Join(tmpDir, "rti_connext_dds-7.7.0-lm-x64Linux4gcc8.5.0.run")) {
+	if !strings.Contains(err.Error(), filepath.Join(tmpDir, "rti_connext_dds-7.7.0.1-lm-x64Linux4gcc8.5.0.run")) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(err.Error(), "Downloaded Connext Professional installer") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(tmpDir, "rti_connext_dds-7.7.0-lm-x64Linux4gcc8.5.0.run")); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "rti_connext_dds-7.7.0.1-lm-x64Linux4gcc8.5.0.run")); statErr != nil {
 		t.Fatalf("expected downloaded installer: %v", statErr)
 	}
 }
