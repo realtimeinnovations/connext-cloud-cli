@@ -192,6 +192,26 @@ func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
 	}
 }
 
+func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
+		"client_data": map[string]any{"kind": "app"},
+	})}}
+	runner := New(api, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var createdDir string
+	runner.MkdirAll = func(dir string, _ os.FileMode) error {
+		createdDir = dir
+		return nil
+	}
+	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
+	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
+		t.Fatal(err)
+	}
+	if createdDir != "configs" {
+		t.Fatalf("created directory = %q, want configs", createdDir)
+	}
+}
+
 func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
 		"client_data": map[string]any{"kind": "app"},

@@ -77,6 +77,15 @@ func (runner *Runner) printResponseBody(body []byte) {
 	_, _ = fmt.Fprintln(runner.Out, string(body))
 }
 
+func (runner *Runner) writeOutputFile(filePath string, data []byte, mode os.FileMode) error {
+	if dir := filepath.Dir(filePath); dir != "." {
+		if err := runner.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return runner.WriteFile(filePath, data, mode)
+}
+
 func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
 	response, err := runner.API.Get("/databuses/" + name)
 	if err != nil {
@@ -554,16 +563,13 @@ func CreateClientBundleDirectory(databusName string, appName string, clientName 
 func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
 	filePath := fileName
 	if targetDir != "" {
-		if err := runner.MkdirAll(targetDir, 0o755); err != nil {
-			return false, err
-		}
 		filePath = filepath.Join(targetDir, fileName)
 	}
 	if _, err := runner.Stat(filePath); err == nil && !forceOverwrite {
 		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
 		return false, nil
 	}
-	if err := runner.WriteFile(filePath, data, clientFileMode(fileName)); err != nil {
+	if err := runner.writeOutputFile(filePath, data, clientFileMode(fileName)); err != nil {
 		return false, err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", filePath)
@@ -811,13 +817,7 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		runner.printResponseBody(body)
 		return nil
 	}
-	dir := filepath.Dir(output)
-	if dir != "." {
-		if err := runner.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	if err := runner.WriteFile(output, body, 0o644); err != nil {
+	if err := runner.writeOutputFile(output, body, 0o644); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
@@ -1308,11 +1308,8 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantID, node)
-			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
-				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
-			}
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
@@ -1398,7 +1395,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	// key for the operator's current certificate. Kept ahead of the store block,
 	// which is skipped when no store is configured and would lose the only copy.
 	if generatedKey != nil && keyFile != "" {
-		if err := runner.WriteFile(keyFile, generatedKey, 0o600); err != nil {
+		if err := runner.writeOutputFile(keyFile, generatedKey, 0o600); err != nil {
 			_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
 		}
 	}
@@ -1444,11 +1441,8 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantTemplateID, node)
-			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
-				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
-			}
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
