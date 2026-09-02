@@ -212,6 +212,31 @@ func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
 	}
 }
 
+func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
+	runner := New(&fakeAPI{}, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var createdDir string
+	var createdMode os.FileMode
+	var fileMode os.FileMode
+	runner.MkdirAll = func(dir string, mode os.FileMode) error {
+		createdDir, createdMode = dir, mode
+		return nil
+	}
+	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
+		fileMode = mode
+		return nil
+	}
+	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
+		t.Fatal(err)
+	}
+	if createdDir != "keys" || createdMode != 0o700 {
+		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
+	}
+	if fileMode != 0o600 {
+		t.Fatalf("file mode = %#o, want 0600", fileMode)
+	}
+}
+
 func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
 		"client_data": map[string]any{"kind": "app"},

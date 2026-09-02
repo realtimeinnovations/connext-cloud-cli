@@ -77,13 +77,19 @@ func (runner *Runner) printResponseBody(body []byte) {
 	_, _ = fmt.Fprintln(runner.Out, string(body))
 }
 
-func (runner *Runner) writeOutputFile(filePath string, data []byte, mode os.FileMode) error {
+func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
+	fileMode := os.FileMode(0o644)
+	dirMode := os.FileMode(0o755)
+	if sensitive {
+		fileMode = 0o600
+		dirMode = 0o700
+	}
 	if dir := filepath.Dir(filePath); dir != "." {
-		if err := runner.MkdirAll(dir, 0o755); err != nil {
+		if err := runner.MkdirAll(dir, dirMode); err != nil {
 			return err
 		}
 	}
-	return runner.WriteFile(filePath, data, mode)
+	return runner.WriteFile(filePath, data, fileMode)
 }
 
 func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
@@ -569,18 +575,12 @@ func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []b
 		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
 		return false, nil
 	}
-	if err := runner.writeOutputFile(filePath, data, clientFileMode(fileName)); err != nil {
+	sensitive := strings.HasSuffix(fileName, ".key")
+	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
 		return false, err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", filePath)
 	return true, nil
-}
-
-func clientFileMode(fileName string) os.FileMode {
-	if strings.HasSuffix(fileName, ".key") {
-		return 0o600
-	}
-	return 0o644
 }
 
 func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
@@ -817,7 +817,7 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		runner.printResponseBody(body)
 		return nil
 	}
-	if err := runner.writeOutputFile(output, body, 0o644); err != nil {
+	if err := runner.writeOutputFile(output, body, false); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
@@ -1309,7 +1309,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantID, node)
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), false); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
@@ -1395,7 +1395,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	// key for the operator's current certificate. Kept ahead of the store block,
 	// which is skipped when no store is configured and would lose the only copy.
 	if generatedKey != nil && keyFile != "" {
-		if err := runner.writeOutputFile(keyFile, generatedKey, 0o600); err != nil {
+		if err := runner.writeOutputFile(keyFile, generatedKey, true); err != nil {
 			_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
 		}
 	}
@@ -1442,7 +1442,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantTemplateID, node)
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), false); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
