@@ -77,8 +77,6 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		groupCommand(newUpdateCommand(runtime), "Setup"),
 		groupCommand(newDatabusCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newObservabilityCommand(runtime), "Manage Connext Cloud"),
-		groupCommand(newClientCommand(runtime), "Manage Connext Cloud"),
-		groupCommand(newAppClientCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newNetworkCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newLicenseCommand(runtime), "Manage Connext Cloud"),
 		groupCommand(newEdgeProvisioningCommand(runtime), "Manage Connext Cloud"),
@@ -410,6 +408,7 @@ func newUpdateCommand(runtime *app.Runtime) *cobra.Command {
 
 func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("databus", "Manage Databuses")
+	cmd.Use = "databus [command]"
 
 	{ // create
 		var name, obsService, networkName string
@@ -606,6 +605,8 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 		cmd.AddCommand(c)
 	}
 
+	cmd.AddCommand(newApplicationCommand(runtime))
+
 	return cmd
 }
 
@@ -681,92 +682,101 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-func newClientCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("client", "Manage Databus client configurations")
+func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("app", "Manage Databus applications")
 
 	{ // create
-		var name, clientName, kind string
+		var name, appName, kind, configFile string
 		var port int
 		c := &cobra.Command{
 			Use:   "create",
-			Short: "Create a Databus client configuration",
+			Short: "Create a Databus application",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return fmt.Errorf("--name is required")
 				}
-				if clientName == "" {
-					return fmt.Errorf("--client-name is required")
+				if appName == "" {
+					return fmt.Errorf("--app-name is required")
 				}
-				if kind != "app" && kind != "gateway" && kind != "observability-collector" {
+				if configFile != "" && cmd.Flags().Changed("kind") {
+					return fmt.Errorf("--kind cannot be used with --config")
+				}
+				if configFile == "" && kind != "app" && kind != "gateway" && kind != "observability-collector" {
 					return fmt.Errorf("invalid --kind %q; expected app, gateway, or observability-collector", kind)
 				}
-				return runtime.Commands.CreateClientConfig(name, port, kind, clientName)
+				return runtime.Commands.CreateApplication(name, appName, port, kind, configFile, cmd.Flags().Changed("port"))
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
-		c.Flags().StringVar(&clientName, "client-name", "", "Client configuration name")
+		c.Flags().StringVar(&appName, "app-name", "", "Application name")
 		c.Flags().IntVar(&port, "port", 7777, "Local port")
-		c.Flags().StringVar(&kind, "kind", "app", "Client kind: app, gateway, or observability-collector")
+		c.Flags().StringVar(&kind, "kind", "app", "Application kind: app, gateway, or observability-collector")
+		c.Flags().StringVar(&configFile, "config", "", "Path to application configuration JSON file")
 		cmd.AddCommand(c)
 	}
 
 	{ // get
-		var name, clientName string
+		var name, appName, output string
 		var example, force bool
 		c := &cobra.Command{
 			Use:   "get",
-			Short: "Get a Databus client configuration",
+			Short: "Get a Databus application",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return fmt.Errorf("--name is required")
 				}
-				if clientName == "" {
-					return fmt.Errorf("--client-name is required")
+				if appName == "" {
+					return fmt.Errorf("--app-name is required")
 				}
-				return runtime.Commands.GetClientConfig(name, clientName, example, force, "")
+				if output != "" && example {
+					return fmt.Errorf("--example cannot be used with --output")
+				}
+				return runtime.Commands.GetApplication(name, appName, example, force, "", output)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
-		c.Flags().StringVar(&clientName, "client-name", "", "Client configuration name")
+		c.Flags().StringVar(&appName, "app-name", "", "Application name")
 		c.Flags().BoolVar(&example, "example", false, "Include example configuration")
+		c.Flags().StringVarP(&output, "output", "o", "", "Write application configuration JSON to this file")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
 		cmd.AddCommand(c)
 	}
 
 	{ // delete
-		var name, clientName string
+		var name, appName string
 		c := &cobra.Command{
 			Use:   "delete",
-			Short: "Delete a Databus client configuration",
+			Short: "Delete a Databus application",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return fmt.Errorf("--name is required")
 				}
-				if clientName == "" {
-					return fmt.Errorf("--client-name is required")
+				if appName == "" {
+					return fmt.Errorf("--app-name is required")
 				}
-				return runtime.Commands.DeleteClientConfig(name, clientName)
+				return runtime.Commands.DeleteApplication(name, appName)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
-		c.Flags().StringVar(&clientName, "client-name", "", "Client configuration name")
+		c.Flags().StringVar(&appName, "app-name", "", "Application name")
 		cmd.AddCommand(c)
 	}
 
+	cmd.AddCommand(newApplicationClientCommand(runtime))
 	return cmd
 }
 
-func newAppClientCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("app-client", "Manage application template clients")
+func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("client", "Manage application clients")
 
 	{ // list
 		var name, appName string
 		c := &cobra.Command{
 			Use:   "list",
-			Short: "List application template clients",
+			Short: "List application clients",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
@@ -788,7 +798,7 @@ func newAppClientCommand(runtime *app.Runtime) *cobra.Command {
 		var genPrivateKey, force bool
 		c := &cobra.Command{
 			Use:   "register",
-			Short: "Register an application template client",
+			Short: "Register an application client",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
@@ -819,7 +829,7 @@ func newAppClientCommand(runtime *app.Runtime) *cobra.Command {
 		var name, appName, clientID string
 		c := &cobra.Command{
 			Use:   "revoke",
-			Short: "Revoke an application template client",
+			Short: "Revoke an application client",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {

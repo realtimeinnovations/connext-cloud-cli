@@ -73,16 +73,214 @@ func newTextResponse(status int, payload string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(payload))}
 }
 
-func TestCreateClientConfigMapsObservabilityCollectorKind(t *testing.T) {
+func TestCreateApplicationMapsObservabilityCollectorKind(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/obs/applications": newTextResponse(http.StatusCreated, "ok")}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateClientConfig("obs", 7777, "observability-collector", "collector"); err != nil {
+	if err := runner.CreateApplication("obs", "collector", 7777, "observability-collector", "", false); err != nil {
 		t.Fatal(err)
 	}
 	payload, ok := api.lastPayload.(map[string]any)
 	if !ok || payload["kind"] != "telemetry-service-collector" {
 		t.Fatalf("unexpected payload: %#v", api.lastPayload)
+	}
+}
+
+func TestCreateApplicationPrintsJSONResponse(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newJSONResponse(http.StatusCreated, map[string]any{
+		"client_config": nil,
+		"message":       "gateway config generated and saved",
+	})}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	if err := runner.CreateApplication("db", "gateway", 7777, "gateway", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\n  \"message\": \"gateway config generated and saved\"\n") {
+		t.Fatalf("expected formatted JSON output, got: %s", out.String())
+	}
+}
+
+func TestCreateApplicationReadsManifest(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(fileName string) ([]byte, error) {
+		if fileName != "application.json" {
+			t.Fatalf("unexpected configuration file: %s", fileName)
+		}
+		return []byte(`{"port": 9000, "kind": "gateway", "topic_data": {"0": {"domainId": 0}}}`), nil
+	}
+	if err := runner.CreateApplication("db", "gateway", 8000, "", "application.json", true); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["port"] != 8000 || payload["kind"] != "gateway" || payload["client_name"] != "gateway" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	topicData, ok := payload["topic_data"].(map[string]any)
+	if !ok || topicData["0"] == nil {
+		t.Fatalf("unexpected topic data: %#v", payload)
+	}
+}
+
+func TestCreateApplicationAcceptsStringPort(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
+	runner := New(api, io.Discard)
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"port": "9000"}`), nil }
+	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["port"] != 9000 {
+		t.Fatalf("unexpected port: %#v", payload)
+	}
+}
+
+func TestCreateApplicationDefaultsOptionalManifestFields(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{}`), nil }
+	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["port"] != 7777 || payload["kind"] != "app" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if topicData, ok := payload["topic_data"].(map[string]any); !ok || len(topicData) != 0 {
+		t.Fatalf("unexpected topic data: %#v", payload)
+	}
+}
+
+func TestCreateApplicationRejectsNonObjectTopicData(t *testing.T) {
+	runner := New(&fakeAPI{}, io.Discard)
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"topic_data": []}`), nil }
+	err := runner.CreateApplication("db", "application", 7777, "", "application.json", false)
+	if err == nil || !strings.Contains(err.Error(), "topic_data must be a JSON object") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
+		"client_config": "<participant/>",
+		"client_data":   map[string]any{"port": "7777", "kind": "app", "topics": map[string]any{"0": map[string]any{"domainId": 0}}},
+	})}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	var savedName string
+	var savedData []byte
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	runner.WriteFile = func(fileName string, data []byte, _ os.FileMode) error {
+		savedName, savedData = fileName, data
+		return nil
+	}
+	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
+		t.Fatal(err)
+	}
+	if savedName != "application.json" || bytes.Contains(savedData, []byte("client_config")) {
+		t.Fatalf("unexpected saved manifest %q: %s", savedName, savedData)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(savedData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest["kind"] != "app" || manifest["port"].(float64) != 7777 || manifest["topic_data"] == nil {
+		t.Fatalf("unexpected manifest: %#v", manifest)
+	}
+}
+
+func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
+		"client_data": map[string]any{"kind": "app"},
+	})}}
+	runner := New(api, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var createdDir string
+	runner.MkdirAll = func(dir string, _ os.FileMode) error {
+		createdDir = dir
+		return nil
+	}
+	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
+	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
+		t.Fatal(err)
+	}
+	if createdDir != "configs" {
+		t.Fatalf("created directory = %q, want configs", createdDir)
+	}
+}
+
+func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
+	runner := New(&fakeAPI{}, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var createdDir string
+	var createdMode os.FileMode
+	var fileMode os.FileMode
+	runner.MkdirAll = func(dir string, mode os.FileMode) error {
+		createdDir, createdMode = dir, mode
+		return nil
+	}
+	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
+		fileMode = mode
+		return nil
+	}
+	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
+		t.Fatal(err)
+	}
+	if createdDir != "keys" || createdMode != 0o700 {
+		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
+	}
+	if fileMode != 0o600 {
+		t.Fatalf("file mode = %#o, want 0600", fileMode)
+	}
+}
+
+func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
+		"client_data": map[string]any{"kind": "app"},
+	})}}
+	runner := New(api, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var savedData []byte
+	runner.WriteFile = func(_ string, data []byte, _ os.FileMode) error {
+		savedData = data
+		return nil
+	}
+	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(savedData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if topicData, ok := manifest["topic_data"].(map[string]any); !ok || len(topicData) != 0 {
+		t.Fatalf("unexpected topic data: %#v", manifest)
+	}
+}
+
+func TestGetApplicationDownloadsXMLWithoutManifestOutput(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
+		"client_config": "<participant/>",
+		"client_data":   map[string]any{"kind": "app"},
+	})}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	var savedName string
+	runner.WriteFile = func(fileName string, _ []byte, _ os.FileMode) error {
+		savedName = fileName
+		return nil
+	}
+	if err := runner.GetApplication("db", "subscriber", false, false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if savedName != "subscriber.xml" {
+		t.Fatalf("saved file = %q, want subscriber.xml", savedName)
+	}
+	if strings.Contains(out.String(), "map[") {
+		t.Fatalf("unexpected application data output: %s", out.String())
 	}
 }
 
@@ -248,6 +446,18 @@ func TestGetLicenseWritesOutputFile(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "License saved to "+target) {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestGetLicensePrintsJSONResponse(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"POST /licenses": newJSONResponse(http.StatusOK, map[string]any{"status": "issued"})}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	if err := runner.GetLicense(nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "{\n  \"status\": \"issued\"\n}") {
+		t.Fatalf("expected formatted JSON output, got: %s", out.String())
 	}
 }
 

@@ -257,10 +257,40 @@ func TestParserVersionFlag(t *testing.T) {
 	}
 }
 
-func TestParserRejectsInvalidClientKind(t *testing.T) {
-	err := Execute([]string{"client", "create", "--name", "db", "--client-name", "app", "--kind", "collector"}, io.Discard, io.Discard, nil)
+func TestParserRejectsInvalidApplicationKind(t *testing.T) {
+	err := Execute([]string{"databus", "app", "create", "--name", "db", "--app-name", "app", "--kind", "collector"}, io.Discard, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected invalid kind error")
+	}
+}
+
+func TestParserRejectsDeprecatedApplicationCommands(t *testing.T) {
+	for _, args := range [][]string{{"client"}, {"app-client"}} {
+		err := Execute(args, io.Discard, io.Discard, nil)
+		if err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("expected deprecated command error for %q, got %v", args, err)
+		}
+	}
+}
+
+func TestParserRejectsExampleWithApplicationManifestOutput(t *testing.T) {
+	err := Execute([]string{"databus", "app", "get", "--name", "db", "--app-name", "app", "--output", "app.json", "--example"}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--example cannot be used with --output") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParserRejectsKindWithApplicationManifest(t *testing.T) {
+	err := Execute([]string{"databus", "app", "create", "--name", "db", "--app-name", "app", "--config", "app.json", "--kind", "app"}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--kind cannot be used with --config") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParserRecognizesNestedApplicationClientCommands(t *testing.T) {
+	err := Execute([]string{"databus", "app", "client", "list"}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--name is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

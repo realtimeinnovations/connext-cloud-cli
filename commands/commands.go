@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,29 @@ func New(api API, out io.Writer) *Runner {
 
 func (runner *Runner) printResponseError(prefix string, statusCode int, body []byte) {
 	_, _ = fmt.Fprintf(runner.Out, "%s%s\n", prefix, httputil.FormatError(statusCode, body))
+}
+
+func (runner *Runner) printResponseBody(body []byte) {
+	var payload any
+	if json.Unmarshal(body, &payload) == nil {
+		body, _ = json.MarshalIndent(payload, "", "  ")
+	}
+	_, _ = fmt.Fprintln(runner.Out, string(body))
+}
+
+func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
+	fileMode := os.FileMode(0o644)
+	dirMode := os.FileMode(0o755)
+	if sensitive {
+		fileMode = 0o600
+		dirMode = 0o700
+	}
+	if dir := filepath.Dir(filePath); dir != "." {
+		if err := runner.MkdirAll(dir, dirMode); err != nil {
+			return err
+		}
+	}
+	return runner.WriteFile(filePath, data, fileMode)
 }
 
 func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
@@ -344,13 +368,72 @@ func (runner *Runner) UpdateDatabusStatus(name string, status string) error {
 	return nil
 }
 
-func (runner *Runner) CreateClientConfig(name string, port int, kind string, clientName string) error {
+type applicationManifest struct {
+	Port      json.RawMessage `json:"port"`
+	Kind      string          `json:"kind"`
+	TopicData json.RawMessage `json:"topic_data"`
+}
+
+func parseApplicationPort(rawPort json.RawMessage) (int, bool, error) {
+	if len(rawPort) == 0 || string(rawPort) == "null" {
+		return 0, false, nil
+	}
+	var port int
+	if err := json.Unmarshal(rawPort, &port); err == nil {
+		return port, true, nil
+	}
+	var portText string
+	if err := json.Unmarshal(rawPort, &portText); err != nil {
+		return 0, false, fmt.Errorf("port must be a number or numeric string")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return 0, false, fmt.Errorf("port must be a number or numeric string")
+	}
+	return port, true, nil
+}
+
+func (runner *Runner) CreateApplication(name string, appName string, port int, kind string, configFile string, portOverridden bool) error {
+	var topicData map[string]any
+	if configFile != "" {
+		data, err := runner.ReadFile(configFile)
+		if err != nil {
+			return fmt.Errorf("read application configuration: %w", err)
+		}
+		var manifest applicationManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return fmt.Errorf("parse application configuration: %w", err)
+		}
+		kind = manifest.Kind
+		manifestPort, hasManifestPort, err := parseApplicationPort(manifest.Port)
+		if err != nil {
+			return fmt.Errorf("parse application configuration: %w", err)
+		}
+		if hasManifestPort && !portOverridden {
+			port = manifestPort
+		}
+		topicData = map[string]any{}
+		if len(manifest.TopicData) > 0 {
+			if err := json.Unmarshal(manifest.TopicData, &topicData); err != nil || topicData == nil {
+				return fmt.Errorf("application configuration topic_data must be a JSON object")
+			}
+		}
+	}
+	if kind == "" {
+		kind = "app"
+	}
 	if kind == "observability-collector" {
 		kind = "telemetry-service-collector"
 	}
+	if kind != "app" && kind != "gateway" && kind != "telemetry-service-collector" {
+		return fmt.Errorf("invalid application kind %q; expected app, gateway, or observability-collector", kind)
+	}
 	payload := map[string]any{"port": port, "kind": kind}
-	if clientName != "" {
-		payload["client_name"] = clientName
+	if appName != "" {
+		payload["client_name"] = appName
+	}
+	if configFile != "" {
+		payload["topic_data"] = topicData
 	}
 	response, err := runner.API.Post("/databuses/"+name+"/applications", payload)
 	if err != nil {
@@ -359,15 +442,15 @@ func (runner *Runner) CreateClientConfig(name string, port int, kind string, cli
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusCreated {
-		_, _ = fmt.Fprintln(runner.Out, string(body))
+		runner.printResponseBody(body)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
 	return nil
 }
 
-func (runner *Runner) GetClientConfig(name string, clientName string, generateExample bool, forceOverwrite bool, targetDir string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + clientName)
+func (runner *Runner) GetApplication(name string, appName string, generateExample bool, forceOverwrite bool, targetDir string, manifestOutput string) error {
+	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName)
 	if err != nil {
 		return err
 	}
@@ -381,20 +464,54 @@ func (runner *Runner) GetClientConfig(name string, clientName string, generateEx
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return err
 	}
-	clientConfig, _ := payload["client_config"].(string)
-	if clientConfig == "" {
-		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected client configuration for '%s'\n", clientName)
-		return nil
-	}
-	if _, err := fmt.Fprintln(runner.Out, payload["client_data"]); err != nil {
+	if manifestOutput != "" {
+		clientData, ok := payload["client_data"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("unexpected application configuration for %q", appName)
+		}
+		topicData := map[string]any{}
+		if rawTopics, exists := clientData["topics"]; exists {
+			var topicsOK bool
+			topicData, topicsOK = rawTopics.(map[string]any)
+			if !topicsOK || topicData == nil {
+				return fmt.Errorf("unexpected topic data for application %q", appName)
+			}
+		}
+		manifest := map[string]any{"topic_data": topicData}
+		if kind, ok := clientData["kind"].(string); ok && kind != "" {
+			manifest["kind"] = kind
+		}
+		if rawPort, exists := clientData["port"]; exists {
+			encodedPort, err := json.Marshal(rawPort)
+			if err != nil {
+				return err
+			}
+			port, hasPort, err := parseApplicationPort(encodedPort)
+			if err != nil {
+				return fmt.Errorf("unexpected port for application %q", appName)
+			}
+			if hasPort {
+				manifest["port"] = port
+			}
+		}
+		data, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = runner.SaveClientFile("", manifestOutput, append(data, '\n'), forceOverwrite)
 		return err
 	}
-	if _, err := runner.SaveClientFile(targetDir, clientName+".xml", []byte(clientConfig), forceOverwrite); err != nil {
+	clientConfig, _ := payload["client_config"].(string)
+	if clientConfig == "" {
+		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected application configuration for '%s'\n", appName)
+		return nil
+	}
+	if _, err := runner.SaveClientFile(targetDir, appName+".xml", []byte(clientConfig), forceOverwrite); err != nil {
 		return err
 	}
 	if generateExample {
 		if example, ok := payload["client_example"].(string); ok && example != "" {
-			_, err := runner.SaveClientFile(targetDir, clientName+".py", []byte(example), forceOverwrite)
+			_, err := runner.SaveClientFile(targetDir, appName+".py", []byte(example), forceOverwrite)
 			if err != nil {
 				return err
 			}
@@ -403,15 +520,15 @@ func (runner *Runner) GetClientConfig(name string, clientName string, generateEx
 	return nil
 }
 
-func (runner *Runner) DeleteClientConfig(name string, clientName string) error {
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + clientName)
+func (runner *Runner) DeleteApplication(name string, appName string) error {
+	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Client '%s' successfully deleted from databus '%s'\n", clientName, name)
+		_, _ = fmt.Fprintf(runner.Out, "Application '%s' successfully deleted from databus '%s'\n", appName, name)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
@@ -452,27 +569,18 @@ func CreateClientBundleDirectory(databusName string, appName string, clientName 
 func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
 	filePath := fileName
 	if targetDir != "" {
-		if err := runner.MkdirAll(targetDir, 0o755); err != nil {
-			return false, err
-		}
 		filePath = filepath.Join(targetDir, fileName)
 	}
 	if _, err := runner.Stat(filePath); err == nil && !forceOverwrite {
 		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
 		return false, nil
 	}
-	if err := runner.WriteFile(filePath, data, clientFileMode(fileName)); err != nil {
+	sensitive := strings.HasSuffix(fileName, ".key")
+	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
 		return false, err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", filePath)
 	return true, nil
-}
-
-func clientFileMode(fileName string) os.FileMode {
-	if strings.HasSuffix(fileName, ".key") {
-		return 0o600
-	}
-	return 0o644
 }
 
 func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
@@ -551,7 +659,7 @@ func (runner *Runner) RegisterAppClient(name string, appName string, clientID st
 	if err != nil {
 		return err
 	}
-	if err := runner.GetClientConfig(name, appName, true, forceOverwrite, targetDir); err != nil {
+	if err := runner.GetApplication(name, appName, true, forceOverwrite, targetDir, ""); err != nil {
 		return err
 	}
 	return runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, targetDir)
@@ -706,16 +814,10 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		return nil
 	}
 	if output == "" {
-		_, _ = fmt.Fprintln(runner.Out, string(body))
+		runner.printResponseBody(body)
 		return nil
 	}
-	dir := filepath.Dir(output)
-	if dir != "." {
-		if err := runner.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	if err := runner.WriteFile(output, body, 0o644); err != nil {
+	if err := runner.writeOutputFile(output, body, false); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
@@ -1206,11 +1308,8 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantID, node)
-			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
-				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
-			}
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), false); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
@@ -1296,7 +1395,7 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	// key for the operator's current certificate. Kept ahead of the store block,
 	// which is skipped when no store is configured and would lose the only copy.
 	if generatedKey != nil && keyFile != "" {
-		if err := runner.WriteFile(keyFile, generatedKey, 0o600); err != nil {
+		if err := runner.writeOutputFile(keyFile, generatedKey, true); err != nil {
 			_, _ = fmt.Fprintf(runner.Out, "Warning: could not write key file %s: %v\n", keyFile, err)
 		}
 	}
@@ -1342,11 +1441,8 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		if leaseData := enrollExtractLease(result); len(leaseData) > 0 {
 			leaseJSON, _ := json.MarshalIndent(leaseData, "", "  ")
 			nodeDir := runner.EdgeStore.NodeDir(service, domain, participantTemplateID, node)
-			if err := runner.MkdirAll(nodeDir, 0o755); err != nil {
-				_, _ = fmt.Fprintf(runner.Out, "Warning: could not create node dir: %v\n", err)
-			}
 			leaseDest := filepath.Join(nodeDir, "enroll.lease.json")
-			if err := runner.WriteFile(leaseDest, append(leaseJSON, '\n'), 0o644); err != nil {
+			if err := runner.writeOutputFile(leaseDest, append(leaseJSON, '\n'), false); err != nil {
 				_, _ = fmt.Fprintf(runner.Out, "Warning: could not save enrollment lease: %v\n", err)
 			}
 		}
