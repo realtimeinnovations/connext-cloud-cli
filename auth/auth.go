@@ -46,6 +46,8 @@ type Manager struct {
 	OpenBrowser  BrowserOpener
 	Stdout       io.Writer
 	migratedPath string
+	pathErr      error
+	defaultPath  bool
 }
 
 type tokenFile struct {
@@ -115,9 +117,15 @@ const authSuccessHTML = `<html>
 </html>`
 
 func New(configProvider ConfigProvider, tokenPath string) *Manager {
+	defaultPath := tokenPath == ""
+	var pathErr error
 	if tokenPath == "" {
-		tokenPath = config.DefaultCredentialsPath()
+		tokenPath, pathErr = config.DefaultCredentialsPath()
 	}
+	return newManager(configProvider, tokenPath, defaultPath, pathErr)
+}
+
+func newManager(configProvider ConfigProvider, tokenPath string, defaultPath bool, pathErr error) *Manager {
 	return &Manager{
 		Config:      configProvider,
 		TokenPath:   tokenPath,
@@ -127,6 +135,8 @@ func New(configProvider ConfigProvider, tokenPath string) *Manager {
 		Sleep:       time.Sleep,
 		OpenBrowser: defaultOpenBrowser,
 		Stdout:      os.Stdout,
+		pathErr:     pathErr,
+		defaultPath: defaultPath,
 	}
 }
 
@@ -135,10 +145,12 @@ func NewEvaluationManager(tokenPath string) *Manager {
 }
 
 func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Manager {
+	defaultPath := tokenPath == ""
+	var pathErr error
 	if tokenPath == "" {
-		tokenPath = DefaultWorkspacesCredentialsPath()
+		tokenPath, pathErr = DefaultWorkspacesCredentialsPath()
 	}
-	manager := New(fixedConfigProvider{
+	manager := newManager(fixedConfigProvider{
 		clientID: config.GetWorkspacesClientID(env),
 		values: map[string]string{
 			"api_host":     EvaluationBaseURL + "/api/v1",
@@ -146,13 +158,17 @@ func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Man
 			"audience":     workspacesAuth0Audience,
 			"scope":        workspacesAuth0Scope,
 		},
-	}, tokenPath)
+	}, tokenPath, defaultPath, pathErr)
 	manager.Env = func(string) string { return "" }
 	return manager
 }
 
-func DefaultWorkspacesCredentialsPath() string {
-	return filepath.Join(config.DefaultDir(), "auth", workspacesCredentialsFile)
+func DefaultWorkspacesCredentialsPath() (string, error) {
+	root, err := config.DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "auth", workspacesCredentialsFile), nil
 }
 
 func EvaluationAPIURL() (string, error) {
@@ -173,7 +189,10 @@ func defaultOpenBrowser(target string) error {
 }
 
 func (manager *Manager) migrateLegacy() error {
-	if (manager.TokenPath == config.DefaultCredentialsPath() || manager.TokenPath == DefaultWorkspacesCredentialsPath()) && manager.migratedPath != manager.TokenPath {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	if manager.usesDefaultPath() && manager.migratedPath != manager.TokenPath {
 		if err := rtipaths.MigrateLegacy(); err != nil {
 			return err
 		}
@@ -236,13 +255,29 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 }
 
 func (manager *Manager) Logout() error {
-	if manager.TokenPath == config.DefaultCredentialsPath() || manager.TokenPath == DefaultWorkspacesCredentialsPath() {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	if manager.usesDefaultPath() {
 		return rtipaths.ClearCredentials(manager.TokenPath)
 	}
 	if err := os.Remove(manager.TokenPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
+}
+
+func (manager *Manager) usesDefaultPath() bool {
+	if manager.defaultPath {
+		return true
+	}
+	if path, err := config.DefaultCredentialsPath(); err == nil && manager.TokenPath == path {
+		return true
+	}
+	if path, err := DefaultWorkspacesCredentialsPath(); err == nil && manager.TokenPath == path {
+		return true
+	}
+	return false
 }
 
 func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (string, int, error) {

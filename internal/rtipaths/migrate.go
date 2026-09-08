@@ -20,13 +20,13 @@ var migrationMu sync.Mutex
 // MigrateLegacy moves only the three known user files. A completion marker
 // prevents retained legacy credentials from being restored after logout.
 func MigrateLegacy() error {
-	home, err := os.UserHomeDir()
+	home, root, err := resolveHomeAndCloudRoot()
 	if err != nil {
 		return err
 	}
 	migrationMu.Lock()
 	defer migrationMu.Unlock()
-	return migrateLegacy(filepath.Join(home, ".rticloud"), CloudRoot())
+	return migrateLegacy(filepath.Join(home, ".rticloud"), root)
 }
 
 func migrateLegacy(legacy, root string) error {
@@ -131,25 +131,24 @@ func credentialMigrationMarker(root, name string) string {
 // ClearCredentials must work even if migration of unrelated legacy files fails.
 // The per-credential marker also prevents a retained legacy token from returning.
 func ClearCredentials(target string) error {
+	home, root, err := resolveHomeAndCloudRoot()
+	if err != nil {
+		return err
+	}
 	migrationMu.Lock()
 	defer migrationMu.Unlock()
 	name := filepath.Base(target)
-	if target != filepath.Join(CloudRoot(), "auth", name) || (name != "credentials.json" && name != "workspaces_credentials.json") {
+	if target != filepath.Join(root, "auth", name) || (name != "credentials.json" && name != "workspaces_credentials.json") {
 		return fmt.Errorf("not a default credential path: %s", target)
 	}
 	var errs []error
-	marker := credentialMigrationMarker(CloudRoot(), name)
+	marker := credentialMigrationMarker(root, name)
 	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		errs = append(errs, err)
 	} else if err := os.WriteFile(marker, []byte("Legacy credential migration disabled by logout.\n"), 0o600); err != nil {
 		errs = append(errs, err)
 	}
-	paths := []string{target}
-	if home, err := os.UserHomeDir(); err != nil {
-		errs = append(errs, err)
-	} else {
-		paths = append(paths, filepath.Join(home, ".rticloud", name))
-	}
+	paths := []string{target, filepath.Join(home, ".rticloud", name)}
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, err)

@@ -52,29 +52,49 @@ type Manager struct {
 	HTTPClient   *http.Client
 	cache        map[string]string
 	migratedPath string
+	pathErr      error
+	defaultPath  bool
 }
 
-func DefaultDir() string {
+func DefaultDir() (string, error) {
 	return rtipaths.CloudRoot()
 }
 
-func DefaultConfigPath() string {
-	return filepath.Join(DefaultDir(), "configuration", "config.json")
+func DefaultConfigPath() (string, error) {
+	root, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "configuration", "config.json"), nil
 }
 
-func DefaultCredentialsPath() string {
-	return filepath.Join(DefaultDir(), "auth", "credentials.json")
+func DefaultCredentialsPath() (string, error) {
+	root, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "auth", "credentials.json"), nil
 }
 
 func New(path string) *Manager {
+	defaultPath := path == ""
+	var pathErr error
 	if path == "" {
-		path = DefaultConfigPath()
+		path, pathErr = DefaultConfigPath()
 	}
-	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}}
+	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}, pathErr: pathErr, defaultPath: defaultPath}
 }
 
 func (manager *Manager) migrateLegacy() error {
-	if manager.Path == DefaultConfigPath() && manager.migratedPath != manager.Path {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	defaultPath := manager.defaultPath
+	if !defaultPath {
+		path, err := DefaultConfigPath()
+		defaultPath = err == nil && manager.Path == path
+	}
+	if defaultPath && manager.migratedPath != manager.Path {
 		if err := rtipaths.MigrateLegacy(); err != nil {
 			return err
 		}

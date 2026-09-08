@@ -7,11 +7,41 @@
 package rtipaths
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
+
+func TestCloudRootAndCredentialCleanupRejectUnavailableHome(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	previous := UserHomeDir
+	t.Cleanup(func() { UserHomeDir = previous })
+
+	for _, test := range []struct {
+		name    string
+		resolve func() (string, error)
+	}{
+		{"error", func() (string, error) { return "", errors.New("home unavailable") }},
+		{"empty", func() (string, error) { return "", nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			UserHomeDir = test.resolve
+			if root, err := CloudRoot(); err == nil || root != "" {
+				t.Fatalf("CloudRoot() = %q, %v; want empty path and error", root, err)
+			}
+			target := filepath.Join(".rti", "rticloud", "auth", "credentials.json")
+			if err := ClearCredentials(target); err == nil {
+				t.Fatal("ClearCredentials() succeeded without a user home")
+			}
+			if _, err := os.Lstat(filepath.Join(work, ".rti")); !os.IsNotExist(err) {
+				t.Fatalf("credential cleanup changed the working directory: %v", err)
+			}
+		})
+	}
+}
 
 func TestMigrationMovesKnownFilesAndPreservesConflicts(t *testing.T) {
 	for _, conflict := range []bool{false, true} {

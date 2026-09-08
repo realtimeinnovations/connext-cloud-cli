@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 )
 
 type stubConfigProvider struct{}
@@ -43,14 +44,41 @@ func (staticConfigProvider) RequireConfiguration(io.Writer) bool { return true }
 
 func TestNewUsesRticloudCredentialsPath(t *testing.T) {
 	manager := New(stubConfigProvider{}, "")
-	if got, want := manager.TokenPath, config.DefaultCredentialsPath(); got != want {
+	want, err := config.DefaultCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.TokenPath; got != want {
 		t.Fatalf("TokenPath = %q, want %q", got, want)
 	}
 }
 
 func TestDefaultWorkspacesCredentialsPath(t *testing.T) {
-	if got := DefaultWorkspacesCredentialsPath(); !strings.HasSuffix(got, filepath.Join(".rti", "rticloud", "auth", "workspaces_credentials.json")) {
+	got, err := DefaultWorkspacesCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, filepath.Join(".rti", "rticloud", "auth", "workspaces_credentials.json")) {
 		t.Fatalf("DefaultWorkspacesCredentialsPath() = %q", got)
+	}
+}
+
+func TestDefaultLogoutRejectsUnavailableHomeWithoutWriting(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	homeErr := errors.New("home unavailable")
+	previous := rtipaths.UserHomeDir
+	rtipaths.UserHomeDir = func() (string, error) { return "", homeErr }
+	t.Cleanup(func() { rtipaths.UserHomeDir = previous })
+
+	managers := []*Manager{New(stubConfigProvider{}, ""), NewEvaluationManager("")}
+	for _, manager := range managers {
+		if err := manager.Logout(); !errors.Is(err, homeErr) {
+			t.Fatalf("Logout() error = %v, want %v", err, homeErr)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(work, ".rti")); !os.IsNotExist(err) {
+		t.Fatalf("logout wrote beneath the working directory: %v", err)
 	}
 }
 
@@ -977,7 +1005,15 @@ func TestLogoutDoesNotDependOnUnrelatedLegacyMigration(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(legacy, "config.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{config.DefaultCredentialsPath(), DefaultWorkspacesCredentialsPath()} {
+	cloudCredentials, err := config.DefaultCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceCredentials, err := DefaultWorkspacesCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{cloudCredentials, workspaceCredentials} {
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1002,7 +1038,7 @@ func TestLogoutDoesNotDependOnUnrelatedLegacyMigration(t *testing.T) {
 	if err := os.Remove(filepath.Join(legacy, "config.json")); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{config.DefaultCredentialsPath(), DefaultWorkspacesCredentialsPath()} {
+	for _, target := range []string{cloudCredentials, workspaceCredentials} {
 		token, err := New(stubConfigProvider{}, target).GetAccessTokenFromHomeFile()
 		if err != nil || token != "" {
 			t.Fatal("legacy credential restored after logout")
