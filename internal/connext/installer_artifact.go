@@ -8,9 +8,10 @@ package connext
 
 import (
 	"fmt"
-	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"path/filepath"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 )
 
 // installerArtifact is a value snapshot of one pinned release artifact. Fields

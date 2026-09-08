@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 )
 
 const installerVersion = "7.7.0.1"
