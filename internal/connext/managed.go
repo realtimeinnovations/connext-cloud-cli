@@ -218,7 +218,7 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if install, err := validateManaged(directory, artifact.version, options); err == nil {
 		return install, nil
 	}
-	message := fmt.Sprintf("%s\nrticloud will download and install Connext Professional %s.\n\nInstallation folder:\n  %s\n\nChoosing ‘Accept license and install’ accepts the RTI License Agreement\non behalf of all users of the installed software.\n  https://www.rti.com/downloads/license-agreement.html\n\n%s\n\nContinue with installation?", tui.StyleStrong("Set up Connext Professional"), artifact.version, directory, tui.Dim(alternativeInstallationHint()))
+	message := fmt.Sprintf("%s\nrticloud will install the Connext Professional %s components it needs to operate.\nThese do not modify your own Connext installation.\n\nInstallation folder:\n  %s\n\nChoosing ‘Accept license and install’ accepts the RTI License Agreement\non behalf of all users of the installed software.\n  https://www.rti.com/downloads/license-agreement.html\n\n%s\n\nContinue with installation?", tui.StyleStrong("Install required Connext components"), artifact.version, directory, tui.Dim(alternativeInstallationHint()))
 	if options.Confirmations == nil {
 		return Install{}, fmt.Errorf("%s\n\nRun interactively to confirm the download and license acceptance.", tui.StripANSIEscapes(message))
 	}

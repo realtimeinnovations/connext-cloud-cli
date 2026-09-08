@@ -16,8 +16,8 @@ import (
 func TestPruneManagedInstallationPreservesRuntime(t *testing.T) {
 	root := managedTestEnvironment(t)
 	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
-	removed := []string{"doc", "lib", "resource/app/eclipse", "resource/app/node-18", "resource/app/node-20", "resource/app/app_support/system_designer", "resource/app/app_support/admin_console"}
-	preserved := []string{"bin", "third_party", "resource/scripts", "resource/app/node", "resource/app/other", "resource/app/app_support/other"}
+	removed := []string{"doc", "lib", "third_party/protobuf-32.0", "third_party/protobuf-33.0", "resource/python_api", "resource/app/eclipse", "resource/app/node-18", "resource/app/node-20", "resource/app/app_support/system_designer", "resource/app/app_support/admin_console"}
+	preserved := []string{"bin", "third_party", "resource/jre", "resource/scripts", "resource/app/node", "resource/app/other", "resource/app/app_support/other"}
 	for _, name := range append(append([]string{}, removed...), preserved...) {
 		path := filepath.Join(directory, filepath.FromSlash(name))
 		if err := os.MkdirAll(path, 0o755); err != nil {

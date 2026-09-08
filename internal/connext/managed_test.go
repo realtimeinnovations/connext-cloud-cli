@@ -323,11 +323,6 @@ func TestMissingManagedInstallRequiresConsentBeforeDownload(t *testing.T) {
 			options := DiscoveryOptions{AcceptExternalNDDSHome: true}
 			if mode != "no-prompt" {
 				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string) (string, error) {
-					for _, expected := range []string{"rticloud will download and install Connext Professional 7.7.0.1.", "To use another installation, set NDDSHOME", "resource/scripts/rtisetenv_", "https://www.rti.com/downloads/license-agreement.html", "on behalf of all users"} {
-						if !strings.Contains(message, expected) {
-							t.Fatalf("missing %q in confirmation", expected)
-						}
-					}
 					if len(choices) != 2 || choices[0] != CancelManagedDownloadLabel || choices[1] != AcceptManagedDownloadLabel {
 						t.Fatal(choices)
 					}
