@@ -281,3 +281,44 @@ func TestPackageInstallerUsesSelectedEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHasLicenseAvailableFallsBackFromInvalidLocalLicense(t *testing.T) {
+	for _, kind := range []string{"directory", "symlink", "broken-symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			install := Install{Path: t.TempDir()}
+			fallback := filepath.Join(t.TempDir(), LicenseFileName)
+			if err := os.WriteFile(fallback, []byte("license-body"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			local := LicenseFilePath(install)
+			if kind == "directory" {
+				if err := os.Mkdir(local, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				target := fallback
+				if kind == "broken-symlink" {
+					target += ".missing"
+				}
+				if err := os.Symlink(target, local); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("symlink privileges unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("RTI_LICENSE_FILE", fallback)
+			if !HasLicenseAvailable(install) {
+				t.Fatal("valid environment license was blocked by invalid local entry")
+			}
+			t.Setenv("RTI_LICENSE_FILE", fallback+".missing")
+			if HasLicenseAvailable(install) {
+				t.Fatal("accepted an invalid local entry and missing environment license")
+			}
+			t.Setenv("RTI_LICENSE_FILE", filepath.Dir(fallback))
+			if HasLicenseAvailable(install) {
+				t.Fatal("accepted a directory as environment license")
+			}
+		})
+	}
+}
