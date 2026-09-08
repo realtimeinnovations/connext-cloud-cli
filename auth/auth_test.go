@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 )
 
 type stubConfigProvider struct{}
@@ -43,14 +44,41 @@ func (staticConfigProvider) RequireConfiguration(io.Writer) bool { return true }
 
 func TestNewUsesRticloudCredentialsPath(t *testing.T) {
 	manager := New(stubConfigProvider{}, "")
-	if got, want := manager.TokenPath, config.DefaultCredentialsPath(); got != want {
+	want, err := config.DefaultCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.TokenPath; got != want {
 		t.Fatalf("TokenPath = %q, want %q", got, want)
 	}
 }
 
 func TestDefaultWorkspacesCredentialsPath(t *testing.T) {
-	if got := DefaultWorkspacesCredentialsPath(); !strings.HasSuffix(got, filepath.Join(".rticloud", "workspaces_credentials.json")) {
+	got, err := DefaultWorkspacesCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, filepath.Join(".rti", "rticloud", "auth", "workspaces_credentials.json")) {
 		t.Fatalf("DefaultWorkspacesCredentialsPath() = %q", got)
+	}
+}
+
+func TestDefaultLogoutRejectsUnavailableHomeWithoutWriting(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	homeErr := errors.New("home unavailable")
+	previous := rtipaths.UserHomeDir
+	rtipaths.UserHomeDir = func() (string, error) { return "", homeErr }
+	t.Cleanup(func() { rtipaths.UserHomeDir = previous })
+
+	managers := []*Manager{New(stubConfigProvider{}, ""), NewEvaluationManager("")}
+	for _, manager := range managers {
+		if err := manager.Logout(); !errors.Is(err, homeErr) {
+			t.Fatalf("Logout() error = %v, want %v", err, homeErr)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(work, ".rti")); !os.IsNotExist(err) {
+		t.Fatalf("logout wrote beneath the working directory: %v", err)
 	}
 }
 
@@ -896,4 +924,124 @@ func equalStrings(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+func TestDefaultCredentialsMigrationAndLogout(t *testing.T) {
+	for _, workspaces := range []bool{false, true} {
+		t.Run(fmt.Sprint(workspaces), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+			legacy := filepath.Join(home, ".rticloud")
+			if err := os.MkdirAll(legacy, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			filename := "credentials.json"
+			if workspaces {
+				filename = workspacesCredentialsFile
+			}
+			data, err := json.Marshal(tokenFile{AccessToken: "legacy-test-token", ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339Nano)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(legacy, filename), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manager := New(stubConfigProvider{}, "")
+			if workspaces {
+				manager = NewEvaluationManager("")
+			}
+			token, err := manager.GetAccessTokenFromHomeFile()
+			if err != nil || token != "legacy-test-token" {
+				t.Fatalf("legacy token not migrated: %v", err)
+			}
+			if err := manager.Logout(); err != nil {
+				t.Fatal(err)
+			}
+			if token, err := manager.GetAccessTokenFromHomeFile(); err != nil || token != "" {
+				t.Fatal("logout did not clear migrated token")
+			}
+			if err := manager.SaveAccessToken("new-test-token", 3600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(manager.TokenPath); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(legacy, filename)); !os.IsNotExist(err) {
+				t.Fatal("legacy token remains active")
+			}
+		})
+	}
+}
+
+func TestLogoutMigratesBeforeRemovingCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	legacy := filepath.Join(home, ".rticloud")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "credentials.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(stubConfigProvider{}, "").Logout(); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := New(stubConfigProvider{}, "").GetAccessTokenFromHomeFile(); err != nil || token != "" {
+		t.Fatal("legacy token restored after logout")
+	}
+}
+
+func TestLogoutDoesNotDependOnUnrelatedLegacyMigration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	legacy := filepath.Join(home, ".rticloud")
+	// A directory in place of config.json prevents global migration.
+	if err := os.MkdirAll(filepath.Join(legacy, "config.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cloudCredentials, err := config.DefaultCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceCredentials, err := DefaultWorkspacesCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{cloudCredentials, workspaceCredentials} {
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range []string{target, filepath.Join(legacy, filepath.Base(target))} {
+			if err := os.WriteFile(file, []byte("test-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := New(stubConfigProvider{}, target).Logout(); err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range []string{target, filepath.Join(legacy, filepath.Base(target))} {
+			if _, err := os.Stat(file); !os.IsNotExist(err) {
+				t.Fatal("credential survived logout")
+			}
+		}
+		// Even a retained/recreated legacy credential cannot migrate after logout.
+		if err := os.WriteFile(filepath.Join(legacy, filepath.Base(target)), []byte("old-test-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(legacy, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{cloudCredentials, workspaceCredentials} {
+		token, err := New(stubConfigProvider{}, target).GetAccessTokenFromHomeFile()
+		if err != nil || token != "" {
+			t.Fatal("legacy credential restored after logout")
+		}
+	}
 }

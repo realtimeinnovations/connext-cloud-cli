@@ -50,14 +50,17 @@ func IsLicenseManaged(install Install) bool {
 	}
 }
 
+// HasLicenseAvailable checks external-installation license sources independently.
+// Managed license ownership and source precedence belong to ProvisionManagedLicense.
 func HasLicenseAvailable(install Install) bool {
-	if envLicenseFile := os.Getenv("RTI_LICENSE_FILE"); envLicenseFile != "" {
-		if _, err := os.Stat(envLicenseFile); err == nil {
-			return true
-		}
+	if _, err := readCopyableLicense(LicenseFilePath(install)); err == nil {
+		return true
 	}
-	_, err := os.Stat(LicenseFilePath(install))
-	return err == nil
+	if path := os.Getenv("RTI_LICENSE_FILE"); path != "" {
+		_, err := readCopyableLicense(path)
+		return err == nil
+	}
+	return false
 }
 
 func LicenseFilePath(install Install) string {
@@ -65,5 +68,15 @@ func LicenseFilePath(install Install) string {
 }
 
 func WriteLicenseFile(install Install, content []byte) error {
+	if IsManagedInstallation(install) {
+		canonical, err := managedLicensePath()
+		if err != nil {
+			return err
+		}
+		if err := writeVerifiedLicense(canonical, content); err != nil {
+			return err
+		}
+		return writeVerifiedLicense(LicenseFilePath(install), content)
+	}
 	return os.WriteFile(LicenseFilePath(install), content, 0o600)
 }

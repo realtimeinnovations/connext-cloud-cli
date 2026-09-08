@@ -66,9 +66,9 @@ func (selector Selector) Select(message string, choices []string) (string, error
 func (selector Selector) numberedSelect(message string, choices []string) (string, error) {
 	reader := bufferedReader(selector.input())
 	for {
-		_, _ = fmt.Fprintln(selector.Out, message)
+		_, _ = fmt.Fprintln(selector.Out, tui.StripANSIEscapes(message))
 		for idx, choice := range choices {
-			selector.printNumberedChoice(idx+1, selector.SelectionLabel(choice))
+			selector.printNumberedChoice(idx+1, tui.StripANSIEscapes(selector.SelectionLabel(choice)))
 		}
 		_, _ = fmt.Fprint(selector.Out, selector.selectionPrompt(choices))
 		line, err := reader.ReadString('\n')
@@ -157,7 +157,7 @@ func (selector Selector) printNumberedChoice(index int, label string) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(selector.Out, "%s%s\n", indent, tui.Dim(strings.TrimSpace(line)))
+		_, _ = fmt.Fprintf(selector.Out, "%s%s\n", indent, strings.TrimSpace(line))
 	}
 }
 

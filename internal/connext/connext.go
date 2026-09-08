@@ -7,20 +7,17 @@
 package connext
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
 
 type Install struct {
@@ -30,23 +27,14 @@ type Install struct {
 }
 
 type DiscoveryOptions struct {
-	MinVersion     string
-	ExecutableName string
-	CommandName    string
-}
-
-const (
-	EnterConnextPathLabel       = "Enter Connext path"
-	DownloadConnextLabel        = "Download Connext Professional"
-	CancelConnextSelectionLabel = "Cancel"
-	installerVersion            = "7.7.0.1"
-)
-
-func nonStandardDirWarning() string {
-	if runtime.GOOS == "windows" {
-		return "To use an installation in a non-standard directory, set NDDSHOME before running rticloud."
-	}
-	return "To use an installation in a non-standard directory, export NDDSHOME before."
+	Context                context.Context
+	Output                 io.Writer
+	HTTPClient             *http.Client
+	MinVersion             string
+	ExecutableName         string
+	CommandName            string
+	AcceptExternalNDDSHome bool
+	Confirmations          Confirmer
 }
 
 func nddshomeSetCommand(minVersion string) string {
@@ -58,22 +46,8 @@ func nddshomeSetCommand(minVersion string) string {
 	return fmt.Sprintf("  export NDDSHOME=/path/to/rti_connext_dds-%s", minVersion)
 }
 
-func defaultInstallPatterns(base []string) []string {
-	home, err := UserHomeDir()
-	if err != nil || home == "" {
-		return base
-	}
-	return append(base, filepath.Join(home, "rti_connext_dds-*"))
-}
-
 var (
-	UserHomeDir     = os.UserHomeDir
-	InstallPatterns = defaultInstallPatterns([]string{
-		"/Applications/rti_connext_dds-*",
-		"/opt/rti.com/rti_connext_dds-*",
-		`C:\Program Files\rti_connext_dds-*`,
-	})
-	Glob           = filepath.Glob
+	UserHomeDir    = os.UserHomeDir
 	HTTPGet        = http.Get
 	CurrentWorkDir = os.Getwd
 	Platform       = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
@@ -150,7 +124,11 @@ func ValidateInstall(path string, options DiscoveryOptions) (Install, error) {
 	if err != nil {
 		return Install{}, err
 	}
-	version := VersionFromPath(resolved)
+	version := VersionFromPath(filepath.Base(resolved))
+	// The directory name omits the patch version; metadata is authoritative.
+	if host, err := readInstallHost(resolved); err == nil && exactVersionRE.MatchString(host.Version) {
+		version = host.Version
+	}
 	executable := Executable(resolved, options.ExecutableName)
 	if _, err := os.Stat(executable); err != nil {
 		return Install{}, common.UserError{Message: fmt.Sprintf("%s\n\nExpected executable not found:\n  %s\n\nSet NDDSHOME to your Connext installation and rerun:\n%s\n  rticloud %s", missingInstallTitle(options), executable, nddshomeSetCommand(options.MinVersion), options.CommandName)}
@@ -161,186 +139,80 @@ func ValidateInstall(path string, options DiscoveryOptions) (Install, error) {
 	return Install{Path: resolved, Version: version}, nil
 }
 
+// DiscoverInstall uses managed Connext unless the user confirms NDDSHOME.
 func DiscoverInstall(env map[string]string, options DiscoveryOptions) (Install, error) {
-	return DiscoverInstallWithPrompt(env, false, nil, nil, options)
-}
-
-func DiscoverInstallWithPrompt(env map[string]string, prompt bool, selectFunc func(message string, choices []string) (string, error), inputFunc func(message string) (string, error), options DiscoveryOptions) (Install, error) {
 	options = normalizeOptions(options)
+	home := ""
 	if env == nil {
-		env = map[string]string{}
-		for _, item := range os.Environ() {
-			parts := strings.SplitN(item, "=", 2)
-			if len(parts) == 2 {
-				env[parts[0]] = parts[1]
+		home = os.Getenv("NDDSHOME")
+	} else {
+		home = env["NDDSHOME"]
+	}
+	if home != "" {
+		managed, err := ManagedInstallationPath()
+		// External installations remain usable on platforms without a bundled installer.
+		if err != nil || !sameInstallationPath(home, managed) {
+			useOverride := options.AcceptExternalNDDSHome
+			if !useOverride {
+				if options.Confirmations == nil {
+					return Install{}, common.UserError{Message: "NDDSHOME points to an external Connext installation. Run interactively to confirm it, unset NDDSHOME to use the rticloud-managed Connext installation, or use --skip-preflight to accept NDDSHOME."}
+				}
+				answer, err := options.Confirmations.Confirm(Confirmation{Message: fmt.Sprintf("NDDSHOME is set to %s.\n\nUse this installation instead of rticloud-managed Connext under your .rti directory?", home), DeclineLabel: UseManagedConnextLabel, AcceptLabel: UseNDDSHOMELabel})
+				if err != nil {
+					return Install{}, err
+				}
+				useOverride = answer
+			}
+			if useOverride {
+				install, err := ValidateInstall(home, options)
+				if err == nil {
+					install.Reason = "selected via $NDDSHOME"
+				}
+				return install, err
 			}
 		}
 	}
-	if home := env["NDDSHOME"]; home != "" {
-		install, err := ValidateInstall(home, options)
-		if err == nil {
-			install.Reason = "selected via $NDDSHOME"
-		}
-		return install, err
-	}
-	if home := env["CONNEXTDDS_DIR"]; home != "" {
-		install, err := ValidateInstall(home, options)
-		if err == nil {
-			install.Reason = "selected via $CONNEXTDDS_DIR"
-		}
-		return install, err
-	}
-	candidates := commonInstalls(options)
-	if len(candidates) == 0 {
-		if prompt && selectFunc != nil && inputFunc != nil {
-			return resolveMissingInstall(selectFunc, inputFunc, options)
-		}
-		return Install{}, common.UserError{Message: missingInstallMessage(options)}
-	}
-	if !prompt || selectFunc == nil {
-		if len(candidates) == 1 {
-			candidates[0].Reason = "only compatible installation found"
-			return candidates[0], nil
-		}
-		candidates[0].Reason = "highest version automatically selected"
-		return candidates[0], nil
-	}
-	message := "Select Connext installation:"
-	choices := make([]string, 0, len(candidates)+2)
-	for _, candidate := range candidates {
-		choices = append(choices, candidate.Path)
-	}
-	choices = append(choices, EnterConnextPathLabel, DownloadConnextLabel)
-	for {
-		selected, err := selectFunc(message, choices)
-		if err != nil {
-			return Install{}, err
-		}
-		switch selected {
-		case EnterConnextPathLabel:
-			if inputFunc == nil {
-				return Install{}, common.UserError{Message: "Connext path entry is not configured."}
-			}
-			install, err := promptForInstallPath(inputFunc, options)
-			if err == nil {
-				return install, nil
-			}
-			var userErr common.UserError
-			if errors.As(err, &userErr) {
-				message = fmt.Sprintf("%s\n\nSelect Connext installation:", userErr.Message)
-				continue
-			}
-			return Install{}, err
-		case DownloadConnextLabel:
-			return Install{}, downloadInstallerMessage(options)
-		default:
-			return ValidateInstall(selected, options)
-		}
-	}
+	return ManagedInstaller(options)
 }
 
-func missingInstallMessage(options DiscoveryOptions) string {
-	return fmt.Sprintf("%s\n\n%s\n\nSet NDDSHOME to your Connext installation and rerun:\n%s\n  rticloud %s", missingInstallTitle(options), nonStandardDirWarning(), nddshomeSetCommand(options.MinVersion), options.CommandName)
-}
+const (
+	UseManagedConnextLabel = "No, use rticloud-managed Connext [recommended]"
+	UseNDDSHOMELabel       = "Yes, use NDDSHOME"
+)
 
-func resolveMissingInstall(selectFunc func(message string, choices []string) (string, error), inputFunc func(message string) (string, error), options DiscoveryOptions) (Install, error) {
-	message := fmt.Sprintf("%s\n\n%s\n\nSelect how to continue:", missingInstallTitle(options), nonStandardDirWarning())
-	for {
-		selected, err := selectFunc(message, []string{EnterConnextPathLabel, DownloadConnextLabel, CancelConnextSelectionLabel})
-		if err != nil {
-			return Install{}, err
-		}
-		switch selected {
-		case EnterConnextPathLabel:
-			install, err := promptForInstallPath(inputFunc, options)
-			if err == nil {
-				return install, nil
-			}
-			var userErr common.UserError
-			if errors.As(err, &userErr) {
-				// Validation failed — go back to the selection menu with the error shown.
-				message = fmt.Sprintf("%s\n\nSelect how to continue:", userErr.Message)
-				continue
-			}
-			return Install{}, err
-		case DownloadConnextLabel:
-			return Install{}, downloadInstallerMessage(options)
-		case CancelConnextSelectionLabel:
-			return Install{}, common.UserError{Message: "Connext selection cancelled."}
-		default:
-			return Install{}, common.UserError{Message: fmt.Sprintf("Unsupported selection: %s", selected)}
-		}
-	}
-}
-
-func downloadInstallerMessage(options DiscoveryOptions) error {
-	installerPath, err := DownloadInstaller()
+func ManagedInstallationPath() (string, error) {
+	root, err := managedRoot()
 	if err != nil {
-		return err
+		return "", err
 	}
-	return common.UserError{Message: fmt.Sprintf("Downloaded Connext Professional installer to:\n  %s\n\nRun the installer, then rerun:\n  rticloud %s", installerPath, options.CommandName)}
+	artifact, err := bundledInstaller(Platform())
+	if err != nil {
+		return "", err
+	}
+	return artifact.installationPath(root), nil
+}
+
+func sameInstallationPath(left, right string) bool {
+	canonical := func(value string) string {
+		absolute, err := filepath.Abs(value)
+		if err == nil {
+			value = absolute
+		}
+		if resolved, err := filepath.EvalSymlinks(value); err == nil {
+			value = resolved
+		}
+		return filepath.Clean(value)
+	}
+	left, right = canonical(left), canonical(right)
+	platform, _ := Platform()
+	if platform == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func missingInstallTitle(options DiscoveryOptions) string {
 	return fmt.Sprintf("Connext Pro %s or newer with %s was not found.", options.MinVersion, options.ExecutableName)
-}
-
-func promptForInstallPath(inputFunc func(message string) (string, error), options DiscoveryOptions) (Install, error) {
-	for {
-		value, err := inputFunc("Enter Connext installation path")
-		if err != nil {
-			return Install{}, err
-		}
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		return ValidateInstall(trimmed, options)
-	}
-}
-
-func DownloadInstaller() (string, error) {
-	url, err := installerURL()
-	if err != nil {
-		return "", err
-	}
-	workDir, err := CurrentWorkDir()
-	if err != nil {
-		return "", err
-	}
-	fileName := path.Base(url)
-	targetPath := uniqueDownloadPath(filepath.Join(workDir, fileName))
-	stopSpinner := terminal.StartSpinner(os.Stdout, "Downloading Connext Professional installer...")
-	defer stopSpinner()
-	if err := downloadFile(url, targetPath); err != nil {
-		return "", err
-	}
-	if strings.HasSuffix(strings.ToLower(targetPath), ".run") {
-		_ = os.Chmod(targetPath, 0o755)
-	}
-	return targetPath, nil
-}
-
-func installerURL() (string, error) {
-	goos, goarch := Platform()
-	switch goos {
-	case "linux":
-		switch goarch {
-		case "amd64":
-			return fmt.Sprintf("https://s3.amazonaws.com/RTI/Bundles/%s/Evaluation/rti_connext_dds-%s-lm-x64Linux4gcc8.5.0.run", installerVersion, installerVersion), nil
-		case "arm64":
-			return fmt.Sprintf("https://s3.amazonaws.com/RTI/Bundles/%s/Evaluation/rti_connext_dds-%s-lm-armv8Linux4gcc8.5.0.run", installerVersion, installerVersion), nil
-		}
-	case "darwin":
-		if goarch == "arm64" {
-			return fmt.Sprintf("https://s3.amazonaws.com/RTI/Bundles/%s/Evaluation/rti_connext_dds-%s-lm-arm64Darwin23clang16.0.dmg", installerVersion, installerVersion), nil
-		}
-	case "windows":
-		if goarch == "amd64" {
-			return fmt.Sprintf("https://s3.amazonaws.com/RTI/Bundles/%s/Evaluation/rti_connext_dds-%s-lm-x64Win64VS2017.exe", installerVersion, installerVersion), nil
-		}
-	}
-	return "", common.UserError{Message: fmt.Sprintf("Automatic Connext Professional download is not available for %s/%s.", goos, goarch)}
 }
 
 func uniqueDownloadPath(targetPath string) string {
@@ -379,29 +251,6 @@ func downloadFileWithDescription(url string, targetPath string, description stri
 		return err
 	}
 	return nil
-}
-
-func commonInstalls(options DiscoveryOptions) []Install {
-	results := make([]Install, 0)
-	seen := map[string]bool{}
-	for _, pattern := range InstallPatterns {
-		matches, err := Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, match := range matches {
-			candidate, err := ValidateInstall(match, options)
-			if err != nil || seen[candidate.Path] {
-				continue
-			}
-			seen[candidate.Path] = true
-			results = append(results, candidate)
-		}
-	}
-	sort.Slice(results, func(i int, j int) bool {
-		return CompareVersion(results[i].Version, results[j].Version) > 0
-	})
-	return results
 }
 
 func normalizeOptions(options DiscoveryOptions) DiscoveryOptions {

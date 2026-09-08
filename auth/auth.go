@@ -24,6 +24,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"golang.org/x/oauth2"
 )
 
@@ -36,14 +37,17 @@ type ConfigProvider interface {
 type BrowserOpener func(string) error
 
 type Manager struct {
-	Config      ConfigProvider
-	TokenPath   string
-	HTTPClient  *http.Client
-	Env         func(string) string
-	Now         func() time.Time
-	Sleep       func(time.Duration)
-	OpenBrowser BrowserOpener
-	Stdout      io.Writer
+	Config       ConfigProvider
+	TokenPath    string
+	HTTPClient   *http.Client
+	Env          func(string) string
+	Now          func() time.Time
+	Sleep        func(time.Duration)
+	OpenBrowser  BrowserOpener
+	Stdout       io.Writer
+	migratedPath string
+	pathErr      error
+	defaultPath  bool
 }
 
 type tokenFile struct {
@@ -113,9 +117,15 @@ const authSuccessHTML = `<html>
 </html>`
 
 func New(configProvider ConfigProvider, tokenPath string) *Manager {
+	defaultPath := tokenPath == ""
+	var pathErr error
 	if tokenPath == "" {
-		tokenPath = config.DefaultCredentialsPath()
+		tokenPath, pathErr = config.DefaultCredentialsPath()
 	}
+	return newManager(configProvider, tokenPath, defaultPath, pathErr)
+}
+
+func newManager(configProvider ConfigProvider, tokenPath string, defaultPath bool, pathErr error) *Manager {
 	return &Manager{
 		Config:      configProvider,
 		TokenPath:   tokenPath,
@@ -125,6 +135,8 @@ func New(configProvider ConfigProvider, tokenPath string) *Manager {
 		Sleep:       time.Sleep,
 		OpenBrowser: defaultOpenBrowser,
 		Stdout:      os.Stdout,
+		pathErr:     pathErr,
+		defaultPath: defaultPath,
 	}
 }
 
@@ -133,10 +145,12 @@ func NewEvaluationManager(tokenPath string) *Manager {
 }
 
 func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Manager {
+	defaultPath := tokenPath == ""
+	var pathErr error
 	if tokenPath == "" {
-		tokenPath = DefaultWorkspacesCredentialsPath()
+		tokenPath, pathErr = DefaultWorkspacesCredentialsPath()
 	}
-	manager := New(fixedConfigProvider{
+	manager := newManager(fixedConfigProvider{
 		clientID: config.GetWorkspacesClientID(env),
 		values: map[string]string{
 			"api_host":     EvaluationBaseURL + "/api/v1",
@@ -144,13 +158,17 @@ func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Man
 			"audience":     workspacesAuth0Audience,
 			"scope":        workspacesAuth0Scope,
 		},
-	}, tokenPath)
+	}, tokenPath, defaultPath, pathErr)
 	manager.Env = func(string) string { return "" }
 	return manager
 }
 
-func DefaultWorkspacesCredentialsPath() string {
-	return filepath.Join(config.DefaultDir(), workspacesCredentialsFile)
+func DefaultWorkspacesCredentialsPath() (string, error) {
+	root, err := config.DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "auth", workspacesCredentialsFile), nil
 }
 
 func EvaluationAPIURL() (string, error) {
@@ -170,7 +188,23 @@ func defaultOpenBrowser(target string) error {
 	return command.Start()
 }
 
+func (manager *Manager) migrateLegacy() error {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	if manager.usesDefaultPath() && manager.migratedPath != manager.TokenPath {
+		if err := rtipaths.MigrateLegacy(); err != nil {
+			return err
+		}
+		manager.migratedPath = manager.TokenPath
+	}
+	return nil
+}
+
 func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
+	if err := manager.migrateLegacy(); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(manager.TokenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -200,6 +234,9 @@ func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
 }
 
 func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
+	if err := manager.migrateLegacy(); err != nil {
+		return err
+	}
 	expiresAt := manager.Now().Add(time.Hour)
 	if expiresIn > 0 {
 		expiresAt = manager.Now().Add(time.Duration(expiresIn-15) * time.Second)
@@ -218,10 +255,29 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 }
 
 func (manager *Manager) Logout() error {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	if manager.usesDefaultPath() {
+		return rtipaths.ClearCredentials(manager.TokenPath)
+	}
 	if err := os.Remove(manager.TokenPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
+}
+
+func (manager *Manager) usesDefaultPath() bool {
+	if manager.defaultPath {
+		return true
+	}
+	if path, err := config.DefaultCredentialsPath(); err == nil && manager.TokenPath == path {
+		return true
+	}
+	if path, err := DefaultWorkspacesCredentialsPath(); err == nil && manager.TokenPath == path {
+		return true
+	}
+	return false
 }
 
 func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (string, int, error) {

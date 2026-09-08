@@ -22,6 +22,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
@@ -46,33 +47,66 @@ const NotConfiguredMessage = "RTI Connext Cloud CLI not configured.\n\nFirst run
 var ErrNotConfigured = errors.New(NotConfiguredMessage)
 
 type Manager struct {
-	Path       string
-	Env        func(string) string
-	HTTPClient *http.Client
-	cache      map[string]string
+	Path         string
+	Env          func(string) string
+	HTTPClient   *http.Client
+	cache        map[string]string
+	migratedPath string
+	pathErr      error
+	defaultPath  bool
 }
 
-func DefaultDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".rticloud")
+func DefaultDir() (string, error) {
+	return rtipaths.CloudRoot()
 }
 
-func DefaultConfigPath() string {
-	return filepath.Join(DefaultDir(), "config.json")
+func DefaultConfigPath() (string, error) {
+	root, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "configuration", "config.json"), nil
 }
 
-func DefaultCredentialsPath() string {
-	return filepath.Join(DefaultDir(), "credentials.json")
+func DefaultCredentialsPath() (string, error) {
+	root, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "auth", "credentials.json"), nil
 }
 
 func New(path string) *Manager {
+	defaultPath := path == ""
+	var pathErr error
 	if path == "" {
-		path = DefaultConfigPath()
+		path, pathErr = DefaultConfigPath()
 	}
-	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}}
+	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}, pathErr: pathErr, defaultPath: defaultPath}
+}
+
+func (manager *Manager) migrateLegacy() error {
+	if manager.pathErr != nil {
+		return manager.pathErr
+	}
+	defaultPath := manager.defaultPath
+	if !defaultPath {
+		path, err := DefaultConfigPath()
+		defaultPath = err == nil && manager.Path == path
+	}
+	if defaultPath && manager.migratedPath != manager.Path {
+		if err := rtipaths.MigrateLegacy(); err != nil {
+			return err
+		}
+		manager.migratedPath = manager.Path
+	}
+	return nil
 }
 
 func (manager *Manager) GetConfig() (map[string]string, error) {
+	if err := manager.migrateLegacy(); err != nil {
+		return nil, err
+	}
 	if manager.cache != nil {
 		return copyMap(manager.cache), nil
 	}
@@ -95,6 +129,9 @@ func (manager *Manager) GetConfig() (map[string]string, error) {
 }
 
 func (manager *Manager) WriteConfig(config map[string]string) error {
+	if err := manager.migrateLegacy(); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
@@ -110,14 +147,20 @@ func (manager *Manager) WriteConfig(config map[string]string) error {
 }
 
 func (manager *Manager) GetAPIURL() (string, error) {
-	if !manager.IsConfigured() {
-		return "", ErrNotConfigured
-	}
-	config, err := manager.GetConfig()
+	values, err := manager.GetConfig()
 	if err != nil {
 		return "", err
 	}
-	return config["api_host"], nil
+	if _, err := os.Stat(manager.Path); err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrNotConfigured
+		}
+		return "", err
+	}
+	if values["api_host"] == "" {
+		return "", ErrNotConfigured
+	}
+	return values["api_host"], nil
 }
 
 func (manager *Manager) GetAPIURLSafe() string {
@@ -159,23 +202,20 @@ func GetWorkspacesClientID(env func(string) string) string {
 }
 
 func (manager *Manager) IsConfigured() bool {
-	_, err := os.Stat(manager.Path)
-	if err != nil {
-		return false
-	}
-	config, err := manager.GetConfig()
-	if err != nil {
-		return false
-	}
-	apiHost := config["api_host"]
-	return apiHost != ""
+	_, err := manager.GetAPIURL()
+	return err == nil
 }
 
 func (manager *Manager) RequireConfiguration(out io.Writer) bool {
-	if manager.IsConfigured() {
+	_, err := manager.GetAPIURL()
+	if err == nil {
 		return true
 	}
-	_, _ = fmt.Fprintln(out, NotConfiguredMessage)
+	if errors.Is(err, ErrNotConfigured) {
+		_, _ = fmt.Fprintln(out, NotConfiguredMessage)
+	} else {
+		_, _ = fmt.Fprintf(out, "Unable to read CLI configuration: %v\n", err)
+	}
 	return false
 }
 

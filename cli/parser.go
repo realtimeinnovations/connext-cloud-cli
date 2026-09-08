@@ -929,7 +929,7 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",
@@ -974,7 +974,7 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip Connext Cloud API preflight checks and use existing local .connext artifacts")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",

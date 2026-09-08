@@ -57,7 +57,7 @@ type App struct {
 	ListResourcesFunc        func() (map[string]map[string]any, map[string]map[string]any, error)
 	GetResourceFunc          func(name string) (map[string]any, error)
 	CurrentZoneFunc          func() string
-	DiscoverConnextInstallFn func(prompt bool) (ConnextInstall, error)
+	DiscoverConnextInstallFn func() (ConnextInstall, error)
 	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
 	DownloadArtifactsFunc    func(config map[string]any, force bool) error
 	PIDRunningFunc           func(pid int) bool
@@ -185,8 +185,10 @@ func DiscoverConnextInstall(env map[string]string) (ConnextInstall, error) {
 	return connext.DiscoverInstall(env, connextOptions())
 }
 
-func DiscoverConnextInstallWithPrompt(env map[string]string, prompt bool, selectFunc func(message string, choices []string) (string, error), inputFunc func(message string) (string, error)) (ConnextInstall, error) {
-	return connext.DiscoverInstallWithPrompt(env, prompt, selectFunc, inputFunc, connextOptions())
+func DiscoverConnextInstallWithConfirmation(env map[string]string, confirmations connext.Confirmer) (ConnextInstall, error) {
+	options := connextOptions()
+	options.Confirmations = confirmations
+	return connext.DiscoverInstall(env, options)
 }
 
 func EnsureEnhancedDDSSpy(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
@@ -197,7 +199,7 @@ func connextOptions() connext.DiscoveryOptions {
 	return connext.DiscoveryOptions{MinVersion: MinConnextVersion, ExecutableName: "rtiddsspy", CommandName: "spy"}
 }
 
-func (app *App) ConfigureFirstRun(prompt bool) (map[string]any, error) {
+func (app *App) ConfigureFirstRun() (map[string]any, error) {
 	databuses, _, err := app.listResources()
 	if err != nil {
 		return nil, err
@@ -206,7 +208,7 @@ func (app *App) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 		return nil, UserError{Message: "No Databuses found."}
 	}
 	_, _ = fmt.Fprint(app.Out, RenderSetupIntro(len(databuses)))
-	connext, err := app.discoverConnextInstall(prompt)
+	connext, err := app.discoverConnextInstall()
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +474,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
-	cmd.Env = mergeEnv(os.Environ(), app.spyEnv()...)
+	cmd.Env = mergeEnv(os.Environ(), append(app.spyEnv(), connext.EnvironmentOverrides()...)...)
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
 		return 0, err
@@ -480,8 +482,10 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	defer closeIfNotNil(stdout)
 	defer closeIfNotNil(stderr)
 	if err := app.WriteRuntimeState(map[string]any{
-		"spy_pid":    cmd.Process.Pid,
-		"started_at": app.Now().UTC().Format(time.RFC3339),
+		"connext_home":    connext.Path,
+		"connext_version": connext.Version,
+		"spy_pid":         cmd.Process.Pid,
+		"started_at":      app.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		return 0, err
 	}
@@ -680,15 +684,13 @@ func (app *App) Status() error {
 		state = fmt.Sprintf("stopped (stale pid %d)", pid)
 	}
 	_, _ = fmt.Fprintf(app.Out, "DDS Spy: %s\n", state)
-	connextHome := common.NestedString(config, "runtime", "connext_home")
+	connextHome := common.StringValue(runtimeState, "connext_home")
 	if connextHome != "" {
-		connext, err := ValidateConnextInstall(connextHome)
-		if err != nil {
-			_, _ = fmt.Fprintf(app.Out, "Connext: unavailable (%s)\n", connextHome)
-		} else {
-			_, _ = fmt.Fprintf(app.Out, "Connext: %s (%s)\n", connext.Version, connext.Path)
-		}
+		_, _ = fmt.Fprintf(app.Out, "Connext (last run): %s (%s)\n", common.StringValue(runtimeState, "connext_version"), connextHome)
+	} else {
+		_, _ = fmt.Fprintln(app.Out, "Connext: no recorded installation; resolved on next run")
 	}
+
 	return nil
 }
 
@@ -976,11 +978,11 @@ func (app *App) currentZone() string {
 	return "unknown"
 }
 
-func (app *App) discoverConnextInstall(prompt bool) (ConnextInstall, error) {
+func (app *App) discoverConnextInstall() (ConnextInstall, error) {
 	if app.DiscoverConnextInstallFn == nil {
 		return ConnextInstall{}, fmt.Errorf("Connext discovery is not configured")
 	}
-	return app.DiscoverConnextInstallFn(prompt)
+	return app.DiscoverConnextInstallFn()
 }
 
 func (app *App) choose(message string, choices []string) (string, error) {
@@ -998,7 +1000,13 @@ func (app *App) confirmReload(message string) (bool, error) {
 }
 
 func (app *App) defaultSelect(message string, choices []string) (string, error) {
-	return app.selector().Select(message, choices)
+	selector := app.selector()
+	if len(choices) == 2 && choices[0] == connext.UseManagedConnextLabel && choices[1] == connext.UseNDDSHOMELabel {
+		selector.DefaultChoice = connext.UseManagedConnextLabel
+	} else if len(choices) == 2 && choices[0] == connext.CancelManagedDownloadLabel && choices[1] == connext.AcceptManagedDownloadLabel {
+		selector.DefaultChoice = connext.CancelManagedDownloadLabel
+	}
+	return selector.Select(message, choices)
 }
 
 func (app *App) defaultInput(message string) (string, error) {

@@ -136,7 +136,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 		}
 		return map[string]any{"name": "inventory", "clients": map[string]any{"app_1": map[string]any{"kind": "app"}, "gw": map[string]any{"kind": "gateway"}}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
@@ -161,7 +161,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 			return "", UserError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
 		return map[string]any{"name": "inventory", "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
@@ -223,7 +223,7 @@ func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
 			return "", UserError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestConfigureFirstRunDoesNotOfferCreateWhenRTICloudSpyExists(t *testing.T) 
 			"app_1":            map[string]any{"kind": "app"},
 		}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
@@ -270,7 +270,7 @@ func TestConfigureFirstRunDoesNotOfferCreateWhenRTICloudSpyExists(t *testing.T) 
 			return "", UserError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,6 +471,10 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	}
 	if !common.FileExists(filepath.Join(tmpDir, ".connext", "spy", "runtime.json")) {
 		t.Fatal("runtime.json not written")
+	}
+	recorded, stateErr := app.RuntimeState()
+	if stateErr != nil || common.StringValue(recorded, "connext_home") != install || common.StringValue(recorded, "connext_version") != "7.7.0" {
+		t.Fatalf("incorrect recorded Connext: %v %v", recorded, stateErr)
 	}
 	logContent := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "logs", "spy.log"))
 	logLines := strings.Split(logContent, "\n")
@@ -734,4 +738,46 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestConnextConfirmationDefaultsToManagedOnEnter(t *testing.T) {
+	var out bytes.Buffer
+	app := NewApp(t.TempDir(), &out)
+	app.In = strings.NewReader("\n")
+	got, err := app.defaultSelect("Use NDDSHOME?", []string{"No, use rticloud-managed Connext [recommended]", "Yes, use NDDSHOME"})
+	if err != nil || got != "No, use rticloud-managed Connext [recommended]" {
+		t.Fatalf("choice=%q error=%v", got, err)
+	}
+	if !strings.Contains(out.String(), "No, use rticloud-managed Connext [recommended]") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
+	var out bytes.Buffer
+	app := NewApp(t.TempDir(), &out)
+	// Observability-only also needs to report its selected Connext installation.
+	values := map[string]any{"observability": "obs", "runtime": map[string]any{"connext_home": "obsolete"}}
+	if err := app.WriteConfig(values); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.WriteRuntimeState(map[string]any{"connext_home": "selected-managed", "connext_version": "7.7.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Status(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Connext (last run): 7.7.0.1 (selected-managed)") || strings.Contains(out.String(), "obsolete") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestDownloadConfirmationDefaultsToCancel(t *testing.T) {
+	var out bytes.Buffer
+	app := NewApp(t.TempDir(), &out)
+	app.In = strings.NewReader("\n")
+	got, err := app.defaultSelect("Download and accept the license?", []string{"Cancel", "Accept license and install"})
+	if err != nil || got != "Cancel" {
+		t.Fatalf("choice=%q error=%v", got, err)
+	}
 }
