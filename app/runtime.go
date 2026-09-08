@@ -87,8 +87,8 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return decodeCommandJSON(response, err, "POST", path, configManager.GetAPIURLSafe(), "gateway")
 	}
 	gatewayApp.CurrentZoneFunc = func() string { return currentZone(configManager) }
-	gatewayApp.DiscoverConnextInstallFn = func(prompt bool) (gateway.ConnextInstall, error) {
-		return gateway.DiscoverConnextInstallWithPrompt(nil, prompt, gatewayApp.SelectFunc, gatewayApp.InputFunc)
+	gatewayApp.DiscoverConnextInstallFn = func() (gateway.ConnextInstall, error) {
+		return internalconnext.DiscoverInstall(nil, internalconnext.DiscoveryOptions{Confirmations: internalconnext.ConfirmationFromSelector(gatewayApp.SelectFunc), Output: out, MinVersion: gateway.MinConnextVersion, ExecutableName: "rtiroutingservice", CommandName: "gateway"})
 	}
 	gatewayApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
 	spyApp := spy.NewApp(workDir, out)
@@ -101,8 +101,8 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		return decodeCommandJSON(response, err, "POST", path, configManager.GetAPIURLSafe(), "spy")
 	}
 	spyApp.CurrentZoneFunc = func() string { return currentZone(configManager) }
-	spyApp.DiscoverConnextInstallFn = func(prompt bool) (spy.ConnextInstall, error) {
-		return spy.DiscoverConnextInstallWithPrompt(nil, prompt, spyApp.SelectFunc, spyApp.InputFunc)
+	spyApp.DiscoverConnextInstallFn = func() (spy.ConnextInstall, error) {
+		return internalconnext.DiscoverInstall(nil, internalconnext.DiscoveryOptions{Confirmations: internalconnext.ConfirmationFromSelector(spyApp.SelectFunc), Output: out, MinVersion: spy.MinConnextVersion, ExecutableName: "rtiddsspy", CommandName: "spy"})
 	}
 	spyApp.GenerateCSRFunc = mgcrypto.GeneratePrivateKeyAndCSR
 	edgeProvisionRunner := edgeprovision.NewRunner(out)
@@ -163,17 +163,14 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 }
 
 func (runtime *Runtime) Logout() error {
+	var errs []error
 	if runtime.Auth != nil {
-		if err := runtime.Auth.Logout(); err != nil {
-			return err
-		}
+		errs = append(errs, runtime.Auth.Logout())
 	}
 	if runtime.WorkAuth != nil {
-		if err := runtime.WorkAuth.Logout(); err != nil {
-			return err
-		}
+		errs = append(errs, runtime.WorkAuth.Logout())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // generateAgentKeyAndCSR generates a fresh ECDSA P-256 private key and a CSR
@@ -306,7 +303,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 		if skipPreflight {
 			return common.UserError{Message: "No spy configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud spy"}
 		}
-		configValues, err = runtime.Spy.ConfigureFirstRun(!runtime.liveTextOutput(format))
+		configValues, err = runtime.Spy.ConfigureFirstRun()
 		if err != nil {
 			return err
 		}
@@ -333,14 +330,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 			return err
 		}
 	}
-	runtimeConfig, _ := configValues["runtime"].(map[string]any)
-	connextHome, _ := runtimeConfig["connext_home"].(string)
-	var connext spy.ConnextInstall
-	if connextHome != "" {
-		connext, err = spy.ValidateConnextInstall(connextHome)
-	} else {
-		connext, err = spy.DiscoverConnextInstall(nil)
-	}
+	connext, err := resolveRuntimeConnext(configValues, existingConfig, skipPreflight, internalconnext.ConfirmationFromSelector(runtime.Spy.SelectFunc), internalconnext.DiscoveryOptions{Output: runtime.Out, MinVersion: spy.MinConnextVersion, ExecutableName: "rtiddsspy", CommandName: "spy"})
 	if err != nil {
 		return err
 	}
@@ -365,7 +355,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if skipPreflight {
 			return gateway.GatewayError{Message: "No gateway configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud gateway"}
 		}
-		configValues, err = runtime.Gateway.ConfigureFirstRun(!runtime.liveTextOutput(format))
+		configValues, err = runtime.Gateway.ConfigureFirstRun()
 		if err != nil {
 			return err
 		}
@@ -393,15 +383,9 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 			return err
 		}
 	}
-	runtimeConfig, _ := configValues["runtime"].(map[string]any)
-	connextHome, _ := runtimeConfig["connext_home"].(string)
 	var connext gateway.ConnextInstall
 	if gateway.HasDatabus(configValues) {
-		if connextHome != "" {
-			connext, err = gateway.ValidateConnextInstall(connextHome)
-		} else {
-			connext, err = gateway.DiscoverConnextInstall(nil)
-		}
+		connext, err = resolveRuntimeConnext(configValues, existingConfig, skipPreflight, internalconnext.ConfirmationFromSelector(runtime.Gateway.SelectFunc), internalconnext.DiscoveryOptions{Output: runtime.Out, MinVersion: gateway.MinConnextVersion, ExecutableName: "rtiroutingservice", CommandName: "gateway"})
 		if err != nil {
 			return err
 		}
@@ -433,11 +417,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	}
 	// Observability-only: discover a base Connext install, patch collector lite if needed, and run it in the foreground.
 	if gateway.HasObservability(configValues) {
-		if connextHome != "" {
-			connext, err = gateway.ValidateConnextInstall(connextHome)
-		} else {
-			connext, err = gateway.DiscoverConnextInstall(nil)
-		}
+		connext, err = resolveRuntimeConnext(configValues, existingConfig, skipPreflight, internalconnext.ConfirmationFromSelector(runtime.Gateway.SelectFunc), internalconnext.DiscoveryOptions{Output: runtime.Out, MinVersion: gateway.MinConnextVersion, ExecutableName: "rtiroutingservice", CommandName: "gateway"})
 		if err != nil {
 			return err
 		}
@@ -454,12 +434,34 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	return nil
 }
 
+// First-run setup has already resolved and confirmed the installation for this
+// invocation. Returning projects must resolve again rather than trust a stale
+// saved path, so managed version upgrades and NDDSHOME changes take effect.
+func resolveRuntimeConnext(values map[string]any, existingConfig, skipPreflight bool, confirm internalconnext.Confirmer, options internalconnext.DiscoveryOptions) (internalconnext.Install, error) {
+	if !existingConfig {
+		if home := common.NestedString(values, "runtime", "connext_home"); home != "" {
+			return internalconnext.ValidateInstall(home, options)
+		}
+	}
+	options.AcceptExternalNDDSHome = skipPreflight
+	options.Confirmations = confirm
+	return internalconnext.DiscoverInstall(nil, options)
+}
+
 func (runtime *Runtime) liveTextOutput(format string) bool {
 	return format == "text" || terminal.PlainOutputRequested(runtime.Out)
 }
 
 func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error)) error {
-	if !internalconnext.IsLicenseManaged(install) || internalconnext.HasLicenseAvailable(install) {
+	if internalconnext.IsManagedInstallation(install) {
+		available, err := internalconnext.ProvisionManagedLicense(install)
+		if err != nil {
+			return err
+		}
+		if available {
+			return nil
+		}
+	} else if !internalconnext.IsLicenseManaged(install) || internalconnext.HasLicenseAvailable(install) {
 		return nil
 	}
 	if selectFunc == nil {

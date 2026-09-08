@@ -89,8 +89,10 @@ func DiscoverConnextInstall(env map[string]string) (ConnextInstall, error) {
 	return connext.DiscoverInstall(env, connextOptions())
 }
 
-func DiscoverConnextInstallWithPrompt(env map[string]string, prompt bool, selectFunc func(message string, choices []string) (string, error), inputFunc func(message string) (string, error)) (ConnextInstall, error) {
-	return connext.DiscoverInstallWithPrompt(env, prompt, selectFunc, inputFunc, connextOptions())
+func DiscoverConnextInstallWithConfirmation(env map[string]string, confirmations connext.Confirmer) (ConnextInstall, error) {
+	options := connextOptions()
+	options.Confirmations = confirmations
+	return connext.DiscoverInstall(env, options)
 }
 
 func ValidateCollectorInstall(path string) (ConnextInstall, error) {

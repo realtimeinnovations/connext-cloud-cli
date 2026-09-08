@@ -285,3 +285,67 @@ func (api *runtimeFakeAPI) response(method string, path string) *http.Response {
 func runtimeTextResponse(statusCode int, body string) *http.Response {
 	return &http.Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Body: io.NopCloser(strings.NewReader(body))}
 }
+
+func TestReturningProjectIgnoresSavedConnextPath(t *testing.T) {
+	t.Setenv("NDDSHOME", "")
+	old := internalconnext.ManagedInstaller
+	t.Cleanup(func() { internalconnext.ManagedInstaller = old })
+	internalconnext.ManagedInstaller = func(options internalconnext.DiscoveryOptions) (internalconnext.Install, error) {
+		return internalconnext.Install{Path: "current-managed", Version: "7.7.0.1"}, nil
+	}
+	values := map[string]any{"runtime": map[string]any{"connext_home": "obsolete-installation"}}
+	for _, skip := range []bool{false, true} {
+		result, err := resolveRuntimeConnext(values, true, skip, internalconnext.ConfirmationFromSelector(func(string, []string) (string, error) { t.Fatal("unexpected selector"); return "", nil }), internalconnext.DiscoveryOptions{})
+		if err != nil || result.Path != "current-managed" {
+			t.Fatalf("%#v %v", result, err)
+		}
+	}
+}
+
+func TestRuntimeNDDSHOMEConfirmationAndSkipPreflight(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
+	if err := os.MkdirAll(filepath.Join(directory, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(internalconnext.Executable(directory, "rtiroutingservice"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NDDSHOME", directory)
+	for _, skip := range []bool{false, true} {
+		calls := 0
+		result, err := resolveRuntimeConnext(nil, true, skip, internalconnext.ConfirmationFromSelector(func(string, []string) (string, error) { calls++; return internalconnext.UseNDDSHOMELabel, nil }), internalconnext.DiscoveryOptions{})
+		if err != nil || result.Path != directory {
+			t.Fatalf("%#v %v", result, err)
+		}
+		if (skip && calls != 0) || (!skip && calls != 1) {
+			t.Fatalf("skip=%v prompts=%d", skip, calls)
+		}
+	}
+	// Initial setup has already asked, so do not ask again before launch.
+	values := map[string]any{"runtime": map[string]any{"connext_home": directory}}
+	result, err := resolveRuntimeConnext(values, false, false, internalconnext.ConfirmationFromSelector(func(string, []string) (string, error) { t.Fatal("duplicate confirmation"); return "", nil }), internalconnext.DiscoveryOptions{})
+	if err != nil || result.Path != directory {
+		t.Fatalf("%#v %v", result, err)
+	}
+}
+
+func TestLogoutAttemptsBothStoresOnFailure(t *testing.T) {
+	invalid := filepath.Join(t.TempDir(), "not-a-token")
+	if err := os.MkdirAll(invalid, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalid, "keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	valid := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(valid, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{Auth: auth.New(nil, invalid), WorkAuth: auth.New(nil, valid)}
+	if err := runtime.Logout(); err == nil {
+		t.Fatal("expected first store error")
+	}
+	if _, err := os.Stat(valid); !os.IsNotExist(err) {
+		t.Fatal("second store was not cleared")
+	}
+}

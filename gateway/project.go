@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -49,7 +50,7 @@ type GatewayApp struct {
 	ListResourcesFunc             func() (map[string]map[string]any, map[string]map[string]any, error)
 	GetResourceFunc               func(name string) (map[string]any, error)
 	CurrentZoneFunc               func() string
-	DiscoverConnextInstallFn      func(prompt bool) (ConnextInstall, error)
+	DiscoverConnextInstallFn      func() (ConnextInstall, error)
 	GenerateCSRFunc               func(databus string, app string, clientID string) ([]byte, string, error)
 	CreateApplicationFunc         func(databusName string, kind string, clientName string) error
 	DownloadArtifactsFunc         func(config map[string]any, force bool) error
@@ -411,7 +412,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.CollectorDir()
-	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
+	cmd.Env = mergeEnv(os.Environ(), append(app.collectorEnv(collectorSecure), connext.EnvironmentOverrides()...)...)
 	collectorLines := make(chan string, 256)
 	var collectorLinesMu sync.Mutex
 	var logMu sync.Mutex
@@ -535,7 +536,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.CollectorDir()
-	cmd.Env = mergeEnv(os.Environ(), app.collectorEnv(collectorSecure)...)
+	cmd.Env = mergeEnv(os.Environ(), append(app.collectorEnv(collectorSecure), connext.EnvironmentOverrides()...)...)
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
 		return 0, err
@@ -543,8 +544,10 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	defer closeIfNotNil(stdout)
 	defer closeIfNotNil(stderr)
 	if err := app.WriteRuntimeState(map[string]any{
-		"collector_pid": cmd.Process.Pid,
-		"started_at":    app.Now().UTC().Format(time.RFC3339),
+		"connext_home":    connext.Path,
+		"connext_version": connext.Version,
+		"collector_pid":   cmd.Process.Pid,
+		"started_at":      app.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		return 0, err
 	}
@@ -706,7 +709,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.RoutingDir()
-	cmd.Env = mergeEnv(os.Environ(), app.routingEnv()...)
+	cmd.Env = mergeEnv(os.Environ(), append(app.routingEnv(), connext.EnvironmentOverrides()...)...)
 	stdout, stderr, err := startRoutingProcess(cmd)
 	if err != nil {
 		return 0, err
@@ -714,9 +717,11 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	defer closeIfNotNil(stdout)
 	defer closeIfNotNil(stderr)
 	if err := app.WriteRuntimeState(map[string]any{
-		"routing_pid":   cmd.Process.Pid,
-		"started_at":    app.Now().UTC().Format(time.RFC3339),
-		"collector_pid": collectorPID,
+		"connext_home":    connext.Path,
+		"connext_version": connext.Version,
+		"routing_pid":     cmd.Process.Pid,
+		"started_at":      app.Now().UTC().Format(time.RFC3339),
+		"collector_pid":   collectorPID,
 	}); err != nil {
 		return 0, err
 	}
@@ -1015,15 +1020,13 @@ func (app *GatewayApp) Status() error {
 	}
 	_, _ = fmt.Fprintf(app.Out, "Routing Service: %s\n", routing)
 	_, _ = fmt.Fprintf(app.Out, "Collector: %s\n", collector)
-	connextHome := common.NestedString(config, "runtime", "connext_home")
-	if connextHome != "" && HasDatabus(config) {
-		connext, err := ValidateConnextInstall(connextHome)
-		if err != nil {
-			_, _ = fmt.Fprintf(app.Out, "Connext: unavailable (%s)\n", connextHome)
-		} else {
-			_, _ = fmt.Fprintf(app.Out, "Connext: %s (%s)\n", connext.Version, connext.Path)
-		}
+	connextHome := common.StringValue(runtimeState, "connext_home")
+	if connextHome != "" {
+		_, _ = fmt.Fprintf(app.Out, "Connext (last run): %s (%s)\n", common.StringValue(runtimeState, "connext_version"), connextHome)
+	} else {
+		_, _ = fmt.Fprintln(app.Out, "Connext: no recorded installation; resolved on next run")
 	}
+
 	return nil
 }
 
@@ -1084,7 +1087,7 @@ func (app *GatewayApp) OpenObservabilityDashboard() error {
 	return nil
 }
 
-func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
+func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
 	databuses, observabilityServices, err := app.listResources()
 	if err != nil {
 		return nil, err
@@ -1094,7 +1097,7 @@ func (app *GatewayApp) ConfigureFirstRun(prompt bool) (map[string]any, error) {
 	}
 	_, _, cursorSelection := app.promptTerminal()
 	_, _ = fmt.Fprint(app.Out, RenderSetupIntro(len(databuses), len(observabilityServices), cursorSelection))
-	connext, err := app.discoverConnextInstall(prompt)
+	connext, err := app.discoverConnextInstall()
 	if err != nil {
 		return nil, err
 	}
@@ -1490,11 +1493,11 @@ func (app *GatewayApp) currentZone() string {
 	return "unknown"
 }
 
-func (app *GatewayApp) discoverConnextInstall(prompt bool) (ConnextInstall, error) {
+func (app *GatewayApp) discoverConnextInstall() (ConnextInstall, error) {
 	if app.DiscoverConnextInstallFn == nil {
 		return ConnextInstall{}, fmt.Errorf("Connext discovery is not configured")
 	}
-	return app.DiscoverConnextInstallFn(prompt)
+	return app.DiscoverConnextInstallFn()
 }
 
 func (app *GatewayApp) choose(message string, choices []string) (string, error) {
@@ -1512,7 +1515,13 @@ func (app *GatewayApp) confirmReload(message string) (bool, error) {
 }
 
 func (app *GatewayApp) defaultSelect(message string, choices []string) (string, error) {
-	return app.selector().Select(message, choices)
+	selector := app.selector()
+	if len(choices) == 2 && choices[0] == internalconnext.UseManagedConnextLabel && choices[1] == internalconnext.UseNDDSHOMELabel {
+		selector.DefaultChoice = internalconnext.UseManagedConnextLabel
+	} else if len(choices) == 2 && choices[0] == internalconnext.CancelManagedDownloadLabel && choices[1] == internalconnext.AcceptManagedDownloadLabel {
+		selector.DefaultChoice = internalconnext.CancelManagedDownloadLabel
+	}
+	return selector.Select(message, choices)
 }
 
 func (app *GatewayApp) defaultInput(message string) (string, error) {

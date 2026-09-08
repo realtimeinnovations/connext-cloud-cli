@@ -151,3 +151,15 @@ func TestFitItemsToWidth_NonPositiveWidthNoOp(t *testing.T) {
 		t.Fatal("width 0 must leave labels unchanged")
 	}
 }
+
+func TestNumberedConfirmationStripsANSI(t *testing.T) {
+	var out bytes.Buffer
+	selector := Selector{In: strings.NewReader("2\n"), Out: &out, DefaultChoice: "Cancel"}
+	selected, err := selector.Select("Install?\n\x1b[2mSet $env:NDDSHOME to the installation directory.\x1b[0m", []string{"Cancel", "Accept license and install"})
+	if err != nil || selected != "Accept license and install" {
+		t.Fatalf("%s %v", selected, err)
+	}
+	if strings.Contains(out.String(), "\x1b") || !strings.Contains(out.String(), "$env:NDDSHOME") {
+		t.Fatal(out.String())
+	}
+}

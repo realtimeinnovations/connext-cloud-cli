@@ -482,115 +482,21 @@ func TestAPIConnectionErrorReportsNotConfiguredHost(t *testing.T) {
 	}
 }
 
-func TestDiscoverConnextUsesNDDSHOME(t *testing.T) {
-	tmpDir := t.TempDir()
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
-		t.Fatal(err)
+func TestDiscoverConnextUsesManagedWithoutSelector(t *testing.T) {
+	old := connext.ManagedInstaller
+	t.Cleanup(func() { connext.ManagedInstaller = old })
+	connext.ManagedInstaller = func(options connext.DiscoveryOptions) (connext.Install, error) {
+		if options.ExecutableName != "rtiroutingservice" {
+			t.Fatal(options)
+		}
+		return connext.Install{Path: "managed", Version: "7.7.0.1"}, nil
 	}
-	if err := os.WriteFile(filepath.Join(install, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result, err := DiscoverConnextInstall(map[string]string{"NDDSHOME": install})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != "7.7.0" || result.Path == "" {
-		t.Fatalf("unexpected install: %#v", result)
-	}
-	if result.Reason != "selected via $NDDSHOME" {
-		t.Fatalf("unexpected reason: %q", result.Reason)
-	}
-}
-
-func TestDiscoverConnextUsesCONNEXTDDS_DIR(t *testing.T) {
-	tmpDir := t.TempDir()
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(install, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result, err := DiscoverConnextInstall(map[string]string{"CONNEXTDDS_DIR": install})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != "7.7.0" || result.Path == "" {
-		t.Fatalf("unexpected install: %#v", result)
-	}
-	if result.Reason != "selected via $CONNEXTDDS_DIR" {
-		t.Fatalf("unexpected reason: %q", result.Reason)
-	}
-}
-
-func TestDiscoverConnextSelectsHighestCommonInstallWhenNotPrompting(t *testing.T) {
-	tmpDir := t.TempDir()
-	older := filepath.Join(tmpDir, "rti_connext_dds-7.6.0")
-	newer := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(filepath.Join(older, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(newer, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	previousPatterns := append([]string(nil), connext.InstallPatterns...)
-	t.Cleanup(func() { connext.InstallPatterns = previousPatterns })
-	connext.InstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
-	t.Cleanup(func() {
-	})
-	if err := os.WriteFile(filepath.Join(older, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(newer, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result, err := DiscoverConnextInstallWithPrompt(map[string]string{}, false, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != "7.7.0" {
-		t.Fatalf("unexpected install: %#v", result)
-	}
-}
-
-func TestDiscoverConnextPromptsForExistingInstallations(t *testing.T) {
-	tmpDir := t.TempDir()
-	older := filepath.Join(tmpDir, "rti_connext_dds-7.6.0")
-	newer := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(filepath.Join(older, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(newer, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	previousPatterns := append([]string(nil), connext.InstallPatterns...)
-	t.Cleanup(func() { connext.InstallPatterns = previousPatterns })
-	connext.InstallPatterns = []string{filepath.Join(tmpDir, "rti_connext_dds-*")}
-	if err := os.WriteFile(filepath.Join(older, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(newer, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var gotMessage string
-	var gotChoices []string
-	result, err := DiscoverConnextInstallWithPrompt(map[string]string{}, true, func(message string, choices []string) (string, error) {
-		gotMessage = message
-		gotChoices = append([]string(nil), choices...)
-		return older, nil
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotMessage != "Select Connext installation:" {
-		t.Fatalf("unexpected prompt: %s", gotMessage)
-	}
-	if len(gotChoices) != 4 || gotChoices[0] != newer || gotChoices[1] != older || gotChoices[2] != connext.EnterConnextPathLabel || gotChoices[3] != connext.DownloadConnextLabel {
-		t.Fatalf("unexpected choices: %#v", gotChoices)
-	}
-	if result.Path != older {
-		t.Fatalf("unexpected result: %#v", result)
+	result, err := DiscoverConnextInstallWithConfirmation(map[string]string{}, connext.ConfirmationFromSelector(func(string, []string) (string, error) {
+		t.Fatal("unexpected installation selector")
+		return "", nil
+	}))
+	if err != nil || result.Path != "managed" {
+		t.Fatalf("%#v %v", result, err)
 	}
 }
 

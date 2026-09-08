@@ -24,14 +24,14 @@ func TestDefaultPathsUseRticloudDirectory(t *testing.T) {
 	if got, want := filepath.Base(path), "config.json"; got != want {
 		t.Fatalf("DefaultConfigPath() base = %q, want %q", got, want)
 	}
-	if got, want := filepath.Base(filepath.Dir(path)), ".rticloud"; got != want {
+	if got, want := filepath.Base(filepath.Dir(path)), "configuration"; got != want {
 		t.Fatalf("DefaultConfigPath() dir = %q, want %q", got, want)
 	}
 	credentialsPath := DefaultCredentialsPath()
 	if got, want := filepath.Base(credentialsPath), "credentials.json"; got != want {
 		t.Fatalf("DefaultCredentialsPath() base = %q, want %q", got, want)
 	}
-	if got, want := filepath.Base(filepath.Dir(credentialsPath)), ".rticloud"; got != want {
+	if got, want := filepath.Base(filepath.Dir(credentialsPath)), "auth"; got != want {
 		t.Fatalf("DefaultCredentialsPath() dir = %q, want %q", got, want)
 	}
 }
@@ -425,5 +425,86 @@ func TestWriteConfigUsesUserOnlyPermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("config mode = %#o, want %#o", got, 0o600)
+	}
+}
+
+func TestDefaultManagerMigratesBeforeConfigurationCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	legacy := filepath.Join(home, ".rticloud")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "config.json"), []byte(`{"api_host":"https://example.test/api/v1","zone":"existing"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := New("")
+	if !manager.IsConfigured() {
+		t.Fatal("legacy configuration not detected")
+	}
+	values, err := manager.GetConfig()
+	if err != nil || values["zone"] != "existing" {
+		t.Fatalf("migration did not preserve config: %v", err)
+	}
+	values["zone"] = "updated"
+	if err := manager.WriteConfig(values); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(DefaultConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(legacy, "config.json")); !os.IsNotExist(err) {
+		t.Fatal("legacy config still active")
+	}
+}
+
+func TestCustomConfigDoesNotMigrateDefaultState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	legacy := filepath.Join(home, ".rticloud")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(legacy, "config.json")
+	if err := os.WriteFile(source, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := New(filepath.Join(t.TempDir(), "custom.json"))
+	if _, err := manager.GetConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.WriteConfig(map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatal("custom config migrated default state")
+	}
+}
+
+func TestMigrationGateRetriesFailureAndPreservesError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	source := filepath.Join(home, ".rticloud", "config.json")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := New("")
+	if _, err := manager.GetAPIURL(); err == nil || errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("migration error hidden: %v", err)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte(`{"api_host":"https://example.test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := manager.GetAPIURL(); err != nil || got != "https://example.test" {
+		t.Fatalf("retry failed: %q %v", got, err)
 	}
 }

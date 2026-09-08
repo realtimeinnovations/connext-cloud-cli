@@ -123,7 +123,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
 		return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		calls = append(calls, "discover")
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
@@ -141,7 +141,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestFirstRunFailsBeforeDatabusSelectionWhenConnextMissing(t *testing.T) {
 	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
 		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		steps = append(steps, "discover")
 		return ConnextInstall{}, GatewayError{Message: "Connext Pro 7.3.0 or newer with rtiroutingservice was not found."}
 	}
@@ -185,7 +185,7 @@ func TestFirstRunFailsBeforeDatabusSelectionWhenConnextMissing(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	_, err := app.ConfigureFirstRun(false)
+	_, err := app.ConfigureFirstRun()
 	if err == nil || !strings.Contains(err.Error(), "Connext Pro 7.3.0 or newer with rtiroutingservice was not found") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
 		return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) {
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
@@ -224,7 +224,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 		}
 		return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	reloadConfirmed := false
 	app.ConfirmReloadFunc = func(message string) (bool, error) {
@@ -274,7 +274,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
 		if databusName != "inventory-obs" || kind != "telemetry-service-collector" || clientName != "collector" {
 			return GatewayError{Message: fmt.Sprintf("unexpected args: %s %s %s", databusName, kind, clientName)}
@@ -323,7 +323,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		}
 		return "collector", nil
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 			return nil, GatewayError{Message: name}
 		}
 	}
-	app.DiscoverConnextInstallFn = func(prompt bool) (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	app.SelectFunc = func(message string, choices []string) (string, error) {
 		switch message {
@@ -368,7 +368,7 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 			return "", GatewayError{Message: message}
 		}
 	}
-	config, err := app.ConfigureFirstRun(true)
+	config, err := app.ConfigureFirstRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1131,4 +1131,46 @@ func readBytes(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestConnextConfirmationDefaultsToManagedOnEnter(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.In = strings.NewReader("\n")
+	got, err := app.defaultSelect("Use NDDSHOME?", []string{"No, use rticloud-managed Connext [recommended]", "Yes, use NDDSHOME"})
+	if err != nil || got != "No, use rticloud-managed Connext [recommended]" {
+		t.Fatalf("choice=%q error=%v", got, err)
+	}
+	if !strings.Contains(out.String(), "No, use rticloud-managed Connext [recommended]") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	// Observability-only also needs to report its selected Connext installation.
+	values := map[string]any{"observability": "obs", "runtime": map[string]any{"connext_home": "obsolete"}}
+	if err := app.WriteConfig(values); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.WriteRuntimeState(map[string]any{"connext_home": "selected-managed", "connext_version": "7.7.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Status(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Connext (last run): 7.7.0.1 (selected-managed)") || strings.Contains(out.String(), "obsolete") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestDownloadConfirmationDefaultsToCancel(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.In = strings.NewReader("\n")
+	got, err := app.defaultSelect("Download and accept the license?", []string{"Cancel", "Accept license and install"})
+	if err != nil || got != "Cancel" {
+		t.Fatalf("choice=%q error=%v", got, err)
+	}
 }

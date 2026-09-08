@@ -24,6 +24,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"golang.org/x/oauth2"
 )
 
@@ -36,14 +37,15 @@ type ConfigProvider interface {
 type BrowserOpener func(string) error
 
 type Manager struct {
-	Config      ConfigProvider
-	TokenPath   string
-	HTTPClient  *http.Client
-	Env         func(string) string
-	Now         func() time.Time
-	Sleep       func(time.Duration)
-	OpenBrowser BrowserOpener
-	Stdout      io.Writer
+	Config       ConfigProvider
+	TokenPath    string
+	HTTPClient   *http.Client
+	Env          func(string) string
+	Now          func() time.Time
+	Sleep        func(time.Duration)
+	OpenBrowser  BrowserOpener
+	Stdout       io.Writer
+	migratedPath string
 }
 
 type tokenFile struct {
@@ -150,7 +152,7 @@ func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Man
 }
 
 func DefaultWorkspacesCredentialsPath() string {
-	return filepath.Join(config.DefaultDir(), workspacesCredentialsFile)
+	return filepath.Join(config.DefaultDir(), "auth", workspacesCredentialsFile)
 }
 
 func EvaluationAPIURL() (string, error) {
@@ -170,7 +172,20 @@ func defaultOpenBrowser(target string) error {
 	return command.Start()
 }
 
+func (manager *Manager) migrateLegacy() error {
+	if (manager.TokenPath == config.DefaultCredentialsPath() || manager.TokenPath == DefaultWorkspacesCredentialsPath()) && manager.migratedPath != manager.TokenPath {
+		if err := rtipaths.MigrateLegacy(); err != nil {
+			return err
+		}
+		manager.migratedPath = manager.TokenPath
+	}
+	return nil
+}
+
 func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
+	if err := manager.migrateLegacy(); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(manager.TokenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -200,6 +215,9 @@ func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
 }
 
 func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
+	if err := manager.migrateLegacy(); err != nil {
+		return err
+	}
 	expiresAt := manager.Now().Add(time.Hour)
 	if expiresIn > 0 {
 		expiresAt = manager.Now().Add(time.Duration(expiresIn-15) * time.Second)
@@ -218,6 +236,9 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 }
 
 func (manager *Manager) Logout() error {
+	if manager.TokenPath == config.DefaultCredentialsPath() || manager.TokenPath == DefaultWorkspacesCredentialsPath() {
+		return rtipaths.ClearCredentials(manager.TokenPath)
+	}
 	if err := os.Remove(manager.TokenPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
