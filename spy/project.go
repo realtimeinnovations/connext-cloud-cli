@@ -335,7 +335,7 @@ func (app *App) ValidateConfigResources(config map[string]any) error {
 		if zone == "" {
 			zone = app.currentZone()
 		}
-		return common.StaleConfigError{Err: UserError{Message: fmt.Sprintf("Cloud Native application '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud spy", appTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus")))}}
+		return UserError{Message: fmt.Sprintf("Cloud Native application '%s' was not found for Databus '%s'.\n\nCreate one from the Connext Cloud dashboard\n  - Open %s\nThen rerun:\n  rticloud spy", appTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus")))}
 	}
 	return nil
 }

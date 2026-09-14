@@ -9,7 +9,6 @@ package common
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +25,8 @@ func (err UserError) Error() string {
 	return err.Message
 }
 
+// StaleConfigError is retained for compatibility with the existing Gateway
+// validation path. Reset-hint policy is determined at the API boundary.
 type StaleConfigError struct {
 	Err error
 }
@@ -36,11 +37,6 @@ func (err StaleConfigError) Error() string {
 
 func (err StaleConfigError) Unwrap() error {
 	return err.Err
-}
-
-func IsStaleConfigError(err error) bool {
-	var stale StaleConfigError
-	return errors.As(err, &stale)
 }
 
 type TemplateItem struct {

@@ -250,27 +250,55 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {
-			return nil, gateway.GatewayError{Message: err.Error()}
+			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error()})
 		}
 		message := gateway.FormatAPIConnectionError(method, apiHost, path, err)
 		if command != "gateway" {
 			message = strings.ReplaceAll(message, "rticloud gateway", "rticloud "+command)
 		}
-		return nil, gateway.GatewayError{Message: message}
+		return nil, suppressResetHint(gateway.GatewayError{Message: message})
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		return nil, gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		if response.StatusCode == http.StatusNotFound {
+			return nil, apiErr
+		}
+		return nil, suppressResetHint(apiErr)
 	}
 	if len(body) == 0 {
 		return map[string]any{}, nil
 	}
 	payload := map[string]any{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		return nil, suppressResetHint(err)
 	}
 	return payload, nil
+}
+
+type resetHintSuppressedError struct {
+	err error
+}
+
+func (err resetHintSuppressedError) Error() string {
+	return err.err.Error()
+}
+
+func (err resetHintSuppressedError) Unwrap() error {
+	return err.err
+}
+
+func suppressResetHint(err error) error {
+	return resetHintSuppressedError{err: err}
+}
+
+func resetHintError(err error) (error, bool) {
+	var suppressed resetHintSuppressedError
+	if errors.As(err, &suppressed) {
+		return suppressed.err, false
+	}
+	return err, true
 }
 
 func currentZone(manager *config.Manager) string {
@@ -346,7 +374,8 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 }
 
 func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
-	if existingConfig && spy.HasDatabus(config) && common.IsStaleConfigError(err) {
+	err, showResetHint := resetHintError(err)
+	if existingConfig && spy.HasDatabus(config) && showResetHint {
 		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
 	}
 	return err
@@ -442,7 +471,8 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 }
 
 func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
-	if existingConfig && gateway.HasDatabus(config) && common.IsStaleConfigError(err) {
+	err, showResetHint := resetHintError(err)
+	if existingConfig && (gateway.HasDatabus(config) || gateway.HasObservability(config)) && showResetHint {
 		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
 	}
 	return err
