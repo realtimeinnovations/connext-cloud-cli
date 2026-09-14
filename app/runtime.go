@@ -250,27 +250,55 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {
-			return nil, gateway.GatewayError{Message: err.Error()}
+			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error()})
 		}
 		message := gateway.FormatAPIConnectionError(method, apiHost, path, err)
 		if command != "gateway" {
 			message = strings.ReplaceAll(message, "rticloud gateway", "rticloud "+command)
 		}
-		return nil, gateway.GatewayError{Message: message}
+		return nil, suppressResetHint(gateway.GatewayError{Message: message})
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		return nil, gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		if response.StatusCode == http.StatusNotFound {
+			return nil, apiErr
+		}
+		return nil, suppressResetHint(apiErr)
 	}
 	if len(body) == 0 {
 		return map[string]any{}, nil
 	}
 	payload := map[string]any{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		return nil, suppressResetHint(err)
 	}
 	return payload, nil
+}
+
+type resetHintSuppressedError struct {
+	err error
+}
+
+func (err resetHintSuppressedError) Error() string {
+	return err.err.Error()
+}
+
+func (err resetHintSuppressedError) Unwrap() error {
+	return err.err
+}
+
+func suppressResetHint(err error) error {
+	return resetHintSuppressedError{err: err}
+}
+
+func resetHintError(err error) (error, bool) {
+	var suppressed resetHintSuppressedError
+	if errors.As(err, &suppressed) {
+		return suppressed.err, false
+	}
+	return err, true
 }
 
 func currentZone(manager *config.Manager) string {
@@ -320,7 +348,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 			_, _ = fmt.Fprint(runtime.Out, spy.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
 		}
 		if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
-			return err
+			return spyPreflightError(configValues, existingConfig, err)
 		}
 		if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
 			return err
@@ -342,6 +370,14 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	}
 	_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
 	_, err = runtime.Spy.RunWithOptions(configValues, connext, databusSecure, spy.RunOptions{TextOutput: runtime.liveTextOutput(format)})
+	return err
+}
+
+func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
+	err, showResetHint := resetHintError(err)
+	if existingConfig && spy.HasDatabus(config) && showResetHint {
+		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
+	}
 	return err
 }
 
@@ -373,7 +409,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 			_, _ = fmt.Fprint(runtime.Out, gateway.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
 		}
 		if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
-			return err
+			return gatewayPreflightError(configValues, existingConfig, err)
 		}
 		if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
 			return err
@@ -432,6 +468,14 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		return err
 	}
 	return nil
+}
+
+func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
+	err, showResetHint := resetHintError(err)
+	if existingConfig && (gateway.HasDatabus(config) || gateway.HasObservability(config)) && showResetHint {
+		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
+	}
+	return err
 }
 
 // First-run setup has already resolved and confirmed the installation for this

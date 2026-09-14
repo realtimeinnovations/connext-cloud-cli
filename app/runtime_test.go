@@ -35,6 +35,71 @@ func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
 	}
 }
 
+func TestGatewayPreflightErrorShowsDatabusResetHint(t *testing.T) {
+	err := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, errors.New("Databus is disabled"))
+	if !strings.Contains(err.Error(), "Databus is disabled") || !strings.Contains(err.Error(), "rticloud gateway reset") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestGatewayPreflightErrorShowsResetHintForDisabledObservabilityService(t *testing.T) {
+	err := gatewayPreflightError(map[string]any{"observability": "metrics", "templates": map[string]any{"collector": "collector"}}, true, errors.New("Observability Service is disabled"))
+	if !strings.Contains(err.Error(), "Observability Service is disabled") || !strings.Contains(err.Error(), "rticloud gateway reset") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestGatewayPreflightErrorLeavesFirstRunErrorsUnchanged(t *testing.T) {
+	original := errors.New("Gateway template was not found")
+	if got := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, false, original); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
+func TestGatewayPreflightErrorLeavesAPIErrorsUnchanged(t *testing.T) {
+	original := errors.New("API unavailable")
+	if got := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, suppressResetHint(original)); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
+func TestGatewayPreflightErrorShowsResetHintForNotFoundResponse(t *testing.T) {
+	_, apiErr := decodeCommandJSON(runtimeTextResponse(http.StatusNotFound, "Databus not found"), nil, "GET", "/databuses/inventory", "api.example", "gateway")
+	err := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, apiErr)
+	if !strings.Contains(err.Error(), "Databus not found") || !strings.Contains(err.Error(), "rticloud gateway reset") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestGatewayPreflightErrorSuppressesResetHintForServerError(t *testing.T) {
+	_, apiErr := decodeCommandJSON(runtimeTextResponse(http.StatusServiceUnavailable, "temporarily unavailable"), nil, "GET", "/databuses/inventory", "api.example", "gateway")
+	err := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, apiErr)
+	if !strings.Contains(err.Error(), "temporarily unavailable") || strings.Contains(err.Error(), "rticloud gateway reset") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestSpyPreflightErrorShowsDatabusResetHint(t *testing.T) {
+	err := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, true, errors.New("Cloud Native application was not found"))
+	if !strings.Contains(err.Error(), "Cloud Native application was not found") || !strings.Contains(err.Error(), "rticloud spy reset") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestSpyPreflightErrorLeavesFirstRunErrorsUnchanged(t *testing.T) {
+	original := errors.New("Cloud Native application was not found")
+	if got := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, false, original); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
+func TestSpyPreflightErrorLeavesAPIErrorsUnchanged(t *testing.T) {
+	original := errors.New("API unavailable")
+	if got := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, true, suppressResetHint(original)); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
 func TestRuntimeLogoutRemovesCloudAndWorkspacesCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
 	cloudPath := filepath.Join(tmpDir, "credentials.json")

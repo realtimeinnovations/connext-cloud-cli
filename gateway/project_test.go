@@ -404,6 +404,17 @@ func TestValidateConfigResourcesPointsToObservabilityDashboard(t *testing.T) {
 	}
 }
 
+func TestValidateConfigResourcesRejectsMissingGatewayTemplate(t *testing.T) {
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
+	}
+	err := app.ValidateConfigResources(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "missing"}})
+	if err == nil || !strings.Contains(err.Error(), "Gateway template 'missing' was not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateConfigResourcesRejectsInactiveGatewayService(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
@@ -1037,6 +1048,26 @@ func TestStatusReportsMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "No gateway configuration found in this project.") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestGatewayRestartHintShowsDatabusResetCommand(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.printGatewayRestartHint(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}})
+
+	if !strings.Contains(out.String(), "rticloud gateway reset") || !strings.Contains(out.String(), "rticloud gateway") {
+		t.Fatalf("expected Databus reset hint, got: %s", out.String())
+	}
+}
+
+func TestGatewayRestartHintOmitsDatabusResetForObservabilityOnly(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.printGatewayRestartHint(map[string]any{"observability": "metrics"})
+
+	if strings.Contains(out.String(), "rticloud gateway reset") {
+		t.Fatalf("did not expect Databus reset hint, got: %s", out.String())
 	}
 }
 

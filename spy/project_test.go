@@ -303,6 +303,17 @@ func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testin
 	}
 }
 
+func TestValidateConfigResourcesRejectsMissingConfiguredApp(t *testing.T) {
+	app := NewApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
+	}
+	err := app.ValidateConfigResources(map[string]any{"databus": "db", "templates": map[string]any{"app": "missing"}})
+	if err == nil || !strings.Contains(err.Error(), "Cloud Native application 'missing' was not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateConfigResourcesRejectsInactiveSpyDatabus(t *testing.T) {
 	app := NewApp(t.TempDir(), &bytes.Buffer{})
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
@@ -678,6 +689,16 @@ func TestLiveViewDoesNotShowReceivingSamplesWithoutParticipants(t *testing.T) {
 	rendered := tui.StripANSIEscapes(renderANSI(view.Render(0)))
 	if !strings.Contains(rendered, "○ not connected") || !strings.Contains(rendered, "no participants discovered yet") || strings.Contains(rendered, "receiving samples") {
 		t.Fatalf("expected samples without participants to stay not connected: %q", rendered)
+	}
+}
+
+func TestSpyRestartHintShowsDatabusResetCommand(t *testing.T) {
+	var out bytes.Buffer
+	app := NewApp(t.TempDir(), &out)
+	app.printRestartHint(map[string]any{"databus": "inventory", "templates": map[string]any{"app": RTICloudSpyAppName}})
+
+	if !strings.Contains(out.String(), "rticloud spy reset") || !strings.Contains(out.String(), "rticloud spy") {
+		t.Fatalf("expected Databus reset hint, got: %s", out.String())
 	}
 }
 

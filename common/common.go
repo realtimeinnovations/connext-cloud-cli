@@ -25,6 +25,20 @@ func (err UserError) Error() string {
 	return err.Message
 }
 
+// StaleConfigError is retained for compatibility with the existing Gateway
+// validation path. Reset-hint policy is determined at the API boundary.
+type StaleConfigError struct {
+	Err error
+}
+
+func (err StaleConfigError) Error() string {
+	return err.Err.Error()
+}
+
+func (err StaleConfigError) Unwrap() error {
+	return err.Err
+}
+
 type TemplateItem struct {
 	Name string
 	Kind string
