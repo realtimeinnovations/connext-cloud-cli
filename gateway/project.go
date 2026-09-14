@@ -1403,7 +1403,8 @@ func generatedCollectorName(databusName, gatewayTemplate string) string {
 		return sanitized
 	}
 
-	hash := sha256.Sum256([]byte(sanitized))
+	hashInput, _ := json.Marshal([]string{databusName, gatewayTemplate})
+	hash := sha256.Sum256(hashInput)
 	suffix := "_" + hex.EncodeToString(hash[:])[:collectorNameHashLength]
 	prefixLength := maxCollectorNameLength - collectorNameHashSeparators - collectorNameHashLength
 	return sanitized[:prefixLength] + suffix

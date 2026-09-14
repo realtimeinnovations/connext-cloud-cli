@@ -362,6 +362,15 @@ func TestGeneratedCollectorNameIsDeterministicAndAvoidsPrefixCollisions(t *testi
 	}
 }
 
+func TestGeneratedCollectorNamePreservesDatabusTemplateBoundary(t *testing.T) {
+	longPrefix := strings.Repeat("d", 50)
+	first := generatedCollectorName(longPrefix+"_a", "b")
+	second := generatedCollectorName(longPrefix, "a_b")
+	if first == second {
+		t.Fatalf("distinct Databus/template pairs produced the same collector name: %q", first)
+	}
+}
+
 func TestManualCollectorNameRejectsNamesOverLimit(t *testing.T) {
 	if _, err := validateManualCollectorName(strings.Repeat("c", maxCollectorNameLength+1)); err == nil || !strings.Contains(err.Error(), "47") {
 		t.Fatalf("expected length validation error, got: %v", err)
