@@ -332,6 +332,105 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 	}
 }
 
+func TestGeneratedCollectorNamePreservesShortNames(t *testing.T) {
+	if got := generatedCollectorName("inventory", "gateway"); got != "inventory_gateway" {
+		t.Fatalf("unexpected generated collector name: %s", got)
+	}
+}
+
+func TestGeneratedCollectorNameRespectsLengthLimit(t *testing.T) {
+	name := generatedCollectorName(strings.Repeat("d", 40), strings.Repeat("g", 10))
+	if len(name) != maxCollectorNameLength {
+		t.Fatalf("expected %d characters, got %d: %s", maxCollectorNameLength, len(name), name)
+	}
+	if !strings.Contains(name, "_") || len(name[len(name)-collectorNameHashLength-1:]) != collectorNameHashLength+1 {
+		t.Fatalf("expected hashed suffix, got: %s", name)
+	}
+}
+
+func TestGeneratedCollectorNameIsDeterministicAndAvoidsPrefixCollisions(t *testing.T) {
+	first := generatedCollectorName(strings.Repeat("d", 50)+"a", "gateway")
+	second := generatedCollectorName(strings.Repeat("d", 50)+"b", "gateway")
+	if first == second {
+		t.Fatalf("expected distinct generated names, got %q", first)
+	}
+	if first[:maxCollectorNameLength-collectorNameHashLength-1] != second[:maxCollectorNameLength-collectorNameHashLength-1] {
+		t.Fatalf("expected readable prefixes to match: %q vs %q", first, second)
+	}
+	if generatedCollectorName(strings.Repeat("d", 50)+"a", "gateway") != first {
+		t.Fatal("expected generated collector name to be deterministic")
+	}
+}
+
+func TestGeneratedCollectorNamePreservesDatabusTemplateBoundary(t *testing.T) {
+	longPrefix := strings.Repeat("d", 50)
+	first := generatedCollectorName(longPrefix+"_a", "b")
+	second := generatedCollectorName(longPrefix, "a_b")
+	if first == second {
+		t.Fatalf("distinct Databus/template pairs produced the same collector name: %q", first)
+	}
+}
+
+func TestManualCollectorNameRejectsNamesOverLimit(t *testing.T) {
+	if _, err := validateManualCollectorName(strings.Repeat("c", maxCollectorNameLength+1)); err == nil || !strings.Contains(err.Error(), "47") {
+		t.Fatalf("expected length validation error, got: %v", err)
+	}
+	if got, err := validateManualCollectorName(strings.Repeat("c", maxCollectorNameLength)); err != nil || len(got) != maxCollectorNameLength {
+		t.Fatalf("expected 47-character name to be accepted, got %q, %v", got, err)
+	}
+}
+
+func TestExistingGeneratedCollectorTemplateIsReused(t *testing.T) {
+	databusName := strings.Repeat("d", 50)
+	gatewayTemplate := "gateway"
+	generated := generatedCollectorName(databusName, gatewayTemplate)
+	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
+	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
+	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
+		return map[string]map[string]any{databusName: {}}, map[string]map[string]any{"observability": {}}, nil
+	}
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		switch name {
+		case databusName:
+			return map[string]any{"name": databusName, "clients": map[string]any{gatewayTemplate: map[string]any{"kind": "gateway"}}}, nil
+		case "observability":
+			return map[string]any{"name": "observability", "clients": map[string]any{generated: map[string]any{"kind": "telemetry-service-collector"}}}, nil
+		default:
+			return nil, GatewayError{Message: name}
+		}
+	}
+	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
+		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
+	}
+	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
+	called := false
+	app.SelectFunc = func(message string, choices []string) (string, error) {
+		switch message {
+		case "Select gateway capability:":
+			return "Data and Observability", nil
+		case "Select Databus:":
+			return databusName, nil
+		case "Select Gateway template from " + databusName + ":":
+			return gatewayTemplate, nil
+		case "Select Observability Service:":
+			return "observability", nil
+		default:
+			return "", GatewayError{Message: message}
+		}
+	}
+	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
+		called = true
+		return nil
+	}
+	config, err := app.ConfigureFirstRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.NestedString(config, "templates", "collector") != generated || called {
+		t.Fatalf("expected existing generated template to be reused: config=%#v createCalled=%v", config, called)
+	}
+}
+
 func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 	tmpDir := t.TempDir()
 	app := NewGatewayApp(tmpDir, &bytes.Buffer{})

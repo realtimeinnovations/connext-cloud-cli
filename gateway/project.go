@@ -8,6 +8,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +40,13 @@ const (
 	routingRenderPollInterval  = 50 * time.Millisecond
 	routingLiveRefreshInterval = 100 * time.Millisecond
 )
+
+const (
+	maxCollectorNameLength      = 47
+	collectorNameHashLength     = 8
+	collectorNameHashSeparators = 1
+)
+
 const databusResetHint = "To select a different Databus:\n  rticloud gateway reset\n  rticloud gateway"
 
 func DatabusResetHint() string {
@@ -1176,7 +1185,7 @@ func (app *GatewayApp) ConfigureFirstRun() (map[string]any, error) {
 		}
 		collectorTemplates := TemplateItems(observability, "observability-collector")
 		if includeData {
-			autoName := sanitizeCollectorName(databusName + "_" + gatewayTemplate)
+			autoName := generatedCollectorName(databusName, gatewayTemplate)
 			if common.TemplateListContains(collectorTemplates, autoName) {
 				collectorTemplate = autoName
 				_, _ = fmt.Fprint(app.Out, RenderInfoMessage(fmt.Sprintf("Using collector template: %s", autoName)))
@@ -1388,9 +1397,36 @@ func sanitizeCollectorName(name string) string {
 	}, name)
 }
 
+func generatedCollectorName(databusName, gatewayTemplate string) string {
+	sanitized := sanitizeCollectorName(databusName + "_" + gatewayTemplate)
+	if len(sanitized) <= maxCollectorNameLength {
+		return sanitized
+	}
+
+	hashInput, _ := json.Marshal([]string{databusName, gatewayTemplate})
+	hash := sha256.Sum256(hashInput)
+	suffix := "_" + hex.EncodeToString(hash[:])[:collectorNameHashLength]
+	prefixLength := maxCollectorNameLength - collectorNameHashSeparators - collectorNameHashLength
+	return sanitized[:prefixLength] + suffix
+}
+
+func validateManualCollectorName(name string) (string, error) {
+	sanitized := sanitizeCollectorName(strings.TrimSpace(name))
+	if sanitized == "" {
+		return "", GatewayError{Message: "Collector name cannot be empty."}
+	}
+	if len(sanitized) > maxCollectorNameLength {
+		return "", GatewayError{Message: fmt.Sprintf("Collector name cannot exceed %d characters.", maxCollectorNameLength)}
+	}
+	return sanitized, nil
+}
+
 // createCollectorTemplate creates a new observability-collector application
 // template in the given observability service.
 func (app *GatewayApp) createCollectorTemplate(obsName, collectorName string) (string, error) {
+	if len(collectorName) > maxCollectorNameLength {
+		return "", GatewayError{Message: fmt.Sprintf("Collector name cannot exceed %d characters.", maxCollectorNameLength)}
+	}
 	if app.CreateApplicationFunc != nil {
 		return collectorName, app.CreateApplicationFunc(obsName, "telemetry-service-collector", collectorName)
 	}
@@ -1428,9 +1464,9 @@ func (app *GatewayApp) selectCollectorOrCreate(obsName, selectMsg string, templa
 	if err != nil {
 		return "", err
 	}
-	name = sanitizeCollectorName(strings.TrimSpace(name))
-	if name == "" {
-		return "", GatewayError{Message: "Collector name cannot be empty."}
+	name, err = validateManualCollectorName(name)
+	if err != nil {
+		return "", err
 	}
 	return app.createCollectorTemplate(obsName, name)
 }
