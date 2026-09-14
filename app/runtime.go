@@ -320,7 +320,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 			_, _ = fmt.Fprint(runtime.Out, spy.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
 		}
 		if err := runtime.Spy.ValidateConfigResources(configValues); err != nil {
-			return err
+			return spyPreflightError(configValues, existingConfig, err)
 		}
 		if err := runtime.Spy.DownloadArtifacts(configValues, false); err != nil {
 			return err
@@ -342,6 +342,13 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	}
 	_, _ = fmt.Fprintf(runtime.Out, "Connext Pro %s found at %s\n", connext.Version, connext.Path)
 	_, err = runtime.Spy.RunWithOptions(configValues, connext, databusSecure, spy.RunOptions{TextOutput: runtime.liveTextOutput(format)})
+	return err
+}
+
+func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
+	if existingConfig && spy.HasDatabus(config) {
+		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
+	}
 	return err
 }
 
@@ -373,7 +380,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 			_, _ = fmt.Fprint(runtime.Out, gateway.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
 		}
 		if err := runtime.Gateway.ValidateConfigResources(configValues); err != nil {
-			return err
+			return gatewayPreflightError(configValues, existingConfig, err)
 		}
 		if err := runtime.Gateway.DownloadArtifacts(configValues, false); err != nil {
 			return err
@@ -432,6 +439,13 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		return err
 	}
 	return nil
+}
+
+func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
+	if existingConfig && gateway.HasDatabus(config) {
+		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
+	}
+	return err
 }
 
 // First-run setup has already resolved and confirmed the installation for this

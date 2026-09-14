@@ -1040,6 +1040,26 @@ func TestStatusReportsMissingConfig(t *testing.T) {
 	}
 }
 
+func TestGatewayRestartHintShowsDatabusResetCommand(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.printGatewayRestartHint(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}})
+
+	if !strings.Contains(out.String(), "rticloud gateway reset") || !strings.Contains(out.String(), "rticloud gateway") {
+		t.Fatalf("expected Databus reset hint, got: %s", out.String())
+	}
+}
+
+func TestGatewayRestartHintOmitsDatabusResetForObservabilityOnly(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.printGatewayRestartHint(map[string]any{"observability": "metrics"})
+
+	if strings.Contains(out.String(), "rticloud gateway reset") {
+		t.Fatalf("did not expect Databus reset hint, got: %s", out.String())
+	}
+}
+
 func TestResetRemovesConfigAndCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")

@@ -38,6 +38,11 @@ const (
 	routingRenderPollInterval  = 50 * time.Millisecond
 	routingLiveRefreshInterval = 100 * time.Millisecond
 )
+const databusResetHint = "To select a different Databus:\n  rticloud gateway reset\n  rticloud gateway"
+
+func DatabusResetHint() string {
+	return databusResetHint
+}
 
 type TemplateItem = common.TemplateItem
 
@@ -647,7 +652,7 @@ done:
 				_, _ = fmt.Fprintf(app.Out, "Collector stopped.\n")
 			}
 			_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-			app.printGatewayRestartHint()
+			app.printGatewayRestartHint(config)
 			if interrupted {
 				return 130, nil
 			}
@@ -661,7 +666,7 @@ done:
 		_, _ = fmt.Fprintf(app.Out, "Collector stopped.\n")
 	}
 	_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-	app.printGatewayRestartHint()
+	app.printGatewayRestartHint(config)
 	return 0, nil
 }
 
@@ -880,7 +885,7 @@ done:
 				_, _ = fmt.Fprintf(app.Out, "Gateway stopped.\n")
 			}
 			_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-			app.printGatewayRestartHint()
+			app.printGatewayRestartHint(config)
 			if interrupted {
 				return 130, nil
 			}
@@ -896,7 +901,7 @@ done:
 		_, _ = fmt.Fprintf(app.Out, "Gateway interrupted.\n")
 	}
 	_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-	app.printGatewayRestartHint()
+	app.printGatewayRestartHint(config)
 	return 0, nil
 }
 
@@ -951,9 +956,14 @@ func mergeEnv(base []string, overrides ...string) []string {
 	return merged
 }
 
-func (app *GatewayApp) printGatewayRestartHint() {
+func (app *GatewayApp) printGatewayRestartHint(config map[string]any) {
 	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud gateway' from this directory to start this gateway again.")
+	if HasDatabus(config) {
+		_, _ = fmt.Fprintln(app.Out, "• To select a different Databus:")
+		_, _ = fmt.Fprintln(app.Out, "    rticloud gateway reset")
+		_, _ = fmt.Fprintln(app.Out, "    rticloud gateway")
+	}
 }
 
 func supportsRoutingPTY() bool {

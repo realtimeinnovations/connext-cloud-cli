@@ -44,6 +44,12 @@ const (
 	spyLiveRefreshInterval = 100 * time.Millisecond
 )
 
+const databusResetHint = "To select a different Databus:\n  rticloud spy reset\n  rticloud spy"
+
+func DatabusResetHint() string {
+	return databusResetHint
+}
+
 type UserError = common.UserError
 type ConnextInstall = connext.Install
 type TemplateItem = common.TemplateItem
@@ -625,12 +631,12 @@ done:
 			if interrupted {
 				_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
 				_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-				app.printRestartHint()
+				app.printRestartHint(config)
 				return 130, nil
 			}
 			_, _ = fmt.Fprintln(app.Out, "Spy stopped.")
 			_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-			app.printRestartHint()
+			app.printRestartHint(config)
 			return exitErr.ExitCode(), nil
 		}
 		return 0, err
@@ -643,7 +649,7 @@ done:
 		_, _ = fmt.Fprintln(app.Out, "Spy interrupted.")
 	}
 	_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
-	app.printRestartHint()
+	app.printRestartHint(config)
 	return 0, nil
 }
 
@@ -720,9 +726,14 @@ func (app *App) PrintConfigSummary(config map[string]any) {
 	_, _ = fmt.Fprintln(app.Out)
 }
 
-func (app *App) printRestartHint() {
+func (app *App) printRestartHint(config map[string]any) {
 	_, _ = fmt.Fprintf(app.Out, "• Logs saved under %s\n", app.LogsDir())
 	_, _ = fmt.Fprintln(app.Out, "• Run 'rticloud spy' from this directory to start this spy again.")
+	if HasDatabus(config) {
+		_, _ = fmt.Fprintln(app.Out, "• To select a different Databus:")
+		_, _ = fmt.Fprintln(app.Out, "    rticloud spy reset")
+		_, _ = fmt.Fprintln(app.Out, "    rticloud spy")
+	}
 }
 
 func QosProfileFromXML(xmlPath string, appName string) (string, error) {

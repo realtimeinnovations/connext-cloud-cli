@@ -681,6 +681,16 @@ func TestLiveViewDoesNotShowReceivingSamplesWithoutParticipants(t *testing.T) {
 	}
 }
 
+func TestSpyRestartHintShowsDatabusResetCommand(t *testing.T) {
+	var out bytes.Buffer
+	app := NewApp(t.TempDir(), &out)
+	app.printRestartHint(map[string]any{"databus": "inventory", "templates": map[string]any{"app": RTICloudSpyAppName}})
+
+	if !strings.Contains(out.String(), "rticloud spy reset") || !strings.Contains(out.String(), "rticloud spy") {
+		t.Fatalf("expected Databus reset hint, got: %s", out.String())
+	}
+}
+
 func TestResetRemovesConfigAndCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
