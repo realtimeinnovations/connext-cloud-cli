@@ -69,7 +69,7 @@ func TestPruneDoesNotFollowSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires symlink privileges")
 	}
-	for _, name := range []string{"doc", "resource"} {
+	for _, name := range []string{"doc", "resource", "third_party"} {
 		t.Run(name, func(t *testing.T) {
 			root := managedTestEnvironment(t)
 			directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
