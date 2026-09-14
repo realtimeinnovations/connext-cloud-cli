@@ -346,7 +346,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 }
 
 func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
-	if existingConfig && spy.HasDatabus(config) {
+	if existingConfig && spy.HasDatabus(config) && common.IsStaleConfigError(err) {
 		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
 	}
 	return err
@@ -442,7 +442,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 }
 
 func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
-	if existingConfig && gateway.HasDatabus(config) {
+	if existingConfig && gateway.HasDatabus(config) && common.IsStaleConfigError(err) {
 		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
 	}
 	return err

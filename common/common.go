@@ -9,6 +9,7 @@ package common
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,23 @@ type UserError struct {
 
 func (err UserError) Error() string {
 	return err.Message
+}
+
+type StaleConfigError struct {
+	Err error
+}
+
+func (err StaleConfigError) Error() string {
+	return err.Err.Error()
+}
+
+func (err StaleConfigError) Unwrap() error {
+	return err.Err
+}
+
+func IsStaleConfigError(err error) bool {
+	var stale StaleConfigError
+	return errors.As(err, &stale)
 }
 
 type TemplateItem struct {

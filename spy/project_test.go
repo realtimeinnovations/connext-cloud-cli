@@ -303,6 +303,17 @@ func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testin
 	}
 }
 
+func TestValidateConfigResourcesMarksMissingConfiguredAppAsStale(t *testing.T) {
+	app := NewApp(t.TempDir(), &bytes.Buffer{})
+	app.GetResourceFunc = func(name string) (map[string]any, error) {
+		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
+	}
+	err := app.ValidateConfigResources(map[string]any{"databus": "db", "templates": map[string]any{"app": "missing"}})
+	if !common.IsStaleConfigError(err) {
+		t.Fatalf("expected stale configuration error, got: %v", err)
+	}
+}
+
 func TestValidateConfigResourcesRejectsInactiveSpyDatabus(t *testing.T) {
 	app := NewApp(t.TempDir(), &bytes.Buffer{})
 	app.GetResourceFunc = func(name string) (map[string]any, error) {
@@ -312,6 +323,9 @@ func TestValidateConfigResourcesRejectsInactiveSpyDatabus(t *testing.T) {
 	err := app.ValidateConfigResources(config)
 	if err == nil {
 		t.Fatal("expected inactive databus error")
+	}
+	if common.IsStaleConfigError(err) {
+		t.Fatalf("inactive Databus should not be marked as stale configuration: %v", err)
 	}
 	message := err.Error()
 	if !strings.Contains(message, "Databus 'db' is disabled, not active") ||

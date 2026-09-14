@@ -18,6 +18,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 )
@@ -36,29 +37,43 @@ func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
 }
 
 func TestGatewayPreflightErrorShowsDatabusResetHint(t *testing.T) {
-	err := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, errors.New("Databus is unavailable"))
-	if !strings.Contains(err.Error(), "Databus is unavailable") || !strings.Contains(err.Error(), "rticloud gateway reset") {
+	err := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, common.StaleConfigError{Err: errors.New("Gateway template was not found")})
+	if !strings.Contains(err.Error(), "Gateway template was not found") || !strings.Contains(err.Error(), "rticloud gateway reset") {
 		t.Fatalf("unexpected preflight error: %v", err)
 	}
 }
 
 func TestGatewayPreflightErrorLeavesFirstRunErrorsUnchanged(t *testing.T) {
-	original := errors.New("Databus is unavailable")
+	original := common.StaleConfigError{Err: errors.New("Gateway template was not found")}
 	if got := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, false, original); got != original {
 		t.Fatalf("expected original error, got %v", got)
 	}
 }
 
+func TestGatewayPreflightErrorLeavesAPIErrorsUnchanged(t *testing.T) {
+	original := errors.New("API unavailable")
+	if got := gatewayPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gateway"}}, true, original); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
 func TestSpyPreflightErrorShowsDatabusResetHint(t *testing.T) {
-	err := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, true, errors.New("Databus is unavailable"))
-	if !strings.Contains(err.Error(), "Databus is unavailable") || !strings.Contains(err.Error(), "rticloud spy reset") {
+	err := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, true, common.StaleConfigError{Err: errors.New("Cloud Native application was not found")})
+	if !strings.Contains(err.Error(), "Cloud Native application was not found") || !strings.Contains(err.Error(), "rticloud spy reset") {
 		t.Fatalf("unexpected preflight error: %v", err)
 	}
 }
 
 func TestSpyPreflightErrorLeavesFirstRunErrorsUnchanged(t *testing.T) {
-	original := errors.New("Databus is unavailable")
+	original := common.StaleConfigError{Err: errors.New("Cloud Native application was not found")}
 	if got := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, false, original); got != original {
+		t.Fatalf("expected original error, got %v", got)
+	}
+}
+
+func TestSpyPreflightErrorLeavesAPIErrorsUnchanged(t *testing.T) {
+	original := errors.New("API unavailable")
+	if got := spyPreflightError(map[string]any{"databus": "inventory", "templates": map[string]any{"app": "rticloud_spy"}}, true, original); got != original {
 		t.Fatalf("expected original error, got %v", got)
 	}
 }

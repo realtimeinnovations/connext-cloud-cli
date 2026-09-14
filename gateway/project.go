@@ -1237,7 +1237,8 @@ func (app *GatewayApp) ValidateConfigResources(config map[string]any) error {
 			if zone == "" {
 				zone = app.currentZone()
 			}
-			return GatewayError{Message: fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\n1. Open the Databus dashboard:\n   %s\n2. %s\n\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"), edgeGatewayApplicationInstruction())}
+			message := fmt.Sprintf("Gateway template '%s' was not found for Databus '%s'.\n\n1. Open the Databus dashboard:\n   %s\n2. %s\n\nThen rerun:\n  rticloud gateway", gatewayTemplate, common.StringValue(config, "databus"), DashboardURL(zone, common.StringValue(config, "databus"), "databus"), edgeGatewayApplicationInstruction())
+			return common.StaleConfigError{Err: GatewayError{Message: message}}
 		}
 	}
 	if HasObservability(config) {
