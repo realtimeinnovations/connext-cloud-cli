@@ -45,6 +45,8 @@ func pruneManagedInstallation(directory string, options DiscoveryOptions) []erro
 	}{
 		{"", "doc", false},
 		{"", "lib", false},
+		{"third_party", "protobuf-", true},
+		{"resource", "python_api", false},
 		{filepath.Join("resource", "app"), "eclipse", false},
 		{filepath.Join("resource", "app"), "node-", true},
 		{filepath.Join("resource", "app", "app_support"), "system_designer", false},

@@ -424,3 +424,13 @@ func TestInstallerProgressEndsBeforeStatusAndOnFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallerInteractionDeduplicatesRepeatedStatus(t *testing.T) {
+	var out bytes.Buffer
+	interaction := &installerInteraction{out: &out}
+	interaction.onOutput("Disable copying of examples to rti_workspace [Y/n]: ")
+	interaction.onOutput("Create an RTI Launcher shortcut on the Desktop [Y/n]: ")
+	if strings.Count(out.String(), "Finalizing installation...") != 1 {
+		t.Fatal(out.String())
+	}
+}

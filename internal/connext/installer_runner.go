@@ -67,6 +67,7 @@ type installerInteraction struct {
 	progress              bool
 	warned, reportedError bool
 	hashes, lastPercent   int
+	lastStatus            string
 	out                   io.Writer
 	inline, rendered      bool
 }
@@ -77,7 +78,7 @@ var installerPrompts = []struct {
 	pattern          *regexp.Regexp
 	response, status string
 }{
-	{regexp.MustCompile(`(?i)Do you accept this license\?\s*\[y/n\]:\s*$`), "y\n", "Applying the license acceptance confirmed before installation."},
+	{regexp.MustCompile(`(?i)Do you accept this license\?\s*\[y/n\]:\s*$`), "y\n", "Accepting the RTI License Agreement..."},
 	{regexp.MustCompile(`(?i)Installation Directory\s*\[[^\]]+\]:\s*$`), "\n", "Using the managed installation folder."},
 	{regexp.MustCompile(`(?i)Do you want to continue\?\s*\[Y/n\]:\s*$`), "\n", "Installing Connext Professional..."},
 	{regexp.MustCompile(`(?i)Disable copying of examples to rti_workspace\s*\[Y/n\]:\s*$`), "\n", "Finalizing installation..."},
@@ -121,14 +122,20 @@ func (p *installerInteraction) onOutput(data string) string {
 	for _, prompt := range installerPrompts {
 		if prompt.pattern.MatchString(p.pending) {
 			p.pending = ""
-			if prompt.status != "" {
-				p.finish()
-				fmt.Fprintln(p.out, prompt.status)
-			}
+			p.reportStatus(prompt.status)
 			return prompt.response
 		}
 	}
 	return ""
+}
+
+func (p *installerInteraction) reportStatus(status string) {
+	if status == "" || status == p.lastStatus {
+		return
+	}
+	p.finish()
+	fmt.Fprintln(p.out, status)
+	p.lastStatus = status
 }
 
 // finish separates subsequent status/error output from the live progress line.
