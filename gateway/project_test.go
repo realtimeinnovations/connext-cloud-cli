@@ -915,7 +915,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(routingDir, "gw.xml"), []byte("<routing/>"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(routingDir, "my-gw.xml"), []byte("<routing/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
@@ -929,7 +929,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	}
 	var out bytes.Buffer
 	app := NewGatewayApp(tmpDir, &out)
-	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, 0, false, false)
+	rc, err := app.RunRoutingService(map[string]any{"databus": "db", "templates": map[string]any{"gateway": "my-gw"}}, ConnextInstall{Path: install, Version: "7.7.0"}, 0, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,8 +943,8 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiroutingservice")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "routing", "gw.xml")) ||
-		!strings.Contains(logLines[0], "-cfgName gw_gateway") ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "routing", "my-gw.xml")) ||
+		!strings.Contains(logLines[0], "-cfgName my_gw_gateway") ||
 		!strings.Contains(logLines[0], "-verbosity LOCAL:WARN") {
 		t.Fatalf("unexpected first routing log line: %q", logLines[0])
 	}
