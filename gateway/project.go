@@ -692,7 +692,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	command := []string{
 		RoutingExecutable(connext.Path),
 		"-cfgFile", xmlPath,
-		"-cfgName", gatewayTemplate + "_gateway",
+		"-cfgName", routingServiceConfigName(gatewayTemplate),
 		"-verbosity", "LOCAL:WARN",
 	}
 	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
@@ -912,6 +912,10 @@ done:
 	_, _ = fmt.Fprint(app.Out, tui.RenderDiagnosticSummary(liveView.Detector.Findings()))
 	app.printGatewayRestartHint(config)
 	return 0, nil
+}
+
+func routingServiceConfigName(gatewayTemplate string) string {
+	return strings.ReplaceAll(gatewayTemplate, "-", "_") + "_gateway"
 }
 
 func (app *GatewayApp) routingEnv() []string {
