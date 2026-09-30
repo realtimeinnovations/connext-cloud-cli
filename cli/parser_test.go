@@ -363,6 +363,31 @@ func TestParserEdgeProvisioningCampaignHelp(t *testing.T) {
 	}
 }
 
+func TestParserDomainTemplateSecurityFlags(t *testing.T) {
+	var out bytes.Buffer
+	if err := Execute([]string{"edge-provisioning", "domain-template", "create", "--help"}, &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--security-mode", "--psk-ttl-minutes", "--device-cert-ttl-minutes"} {
+		if !strings.Contains(out.String(), flag) {
+			t.Fatalf("missing domain template flag %s", flag)
+		}
+	}
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--security-mode", "invalid"}, "--security-mode must be full or lightweight"},
+		{[]string{"--security-mode", "lightweight", "--governance-template", "gov"}, "governance is not allowed"},
+		{[]string{"--security-mode", "full"}, "--governance-template is required"},
+	} {
+		args := append([]string{"edge-provisioning", "domain-template", "create", "--service", "svc"}, test.args...)
+		if err := Execute(args, io.Discard, io.Discard, nil); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("args=%v err=%v, want %q", test.args, err, test.want)
+		}
+	}
+}
+
 func TestParserEdgeProvisioningDeviceHelp(t *testing.T) {
 	var out bytes.Buffer
 	err := Execute([]string{"edge-provisioning", "participant"}, &out, &out, nil)

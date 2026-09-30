@@ -21,7 +21,7 @@ import (
 )
 
 // ParseCampaignToken decodes the JWT payload (without signature verification)
-// and extracts the service_id and participant_id claims.
+// and extracts the service ID and optional participant_id claims.
 func ParseCampaignToken(token string) (serviceID, participantID string, err error) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
@@ -39,10 +39,10 @@ func ParseCampaignToken(token string) (serviceID, participantID string, err erro
 	// namespaced URIs (e.g. "https://devices.cloud.rti.com/edge_system_id").
 	serviceID = claimValue(claims, "edge_system_id", "service_id")
 	participantID = claimValue(claims, "participant_id")
-	if serviceID == "" || participantID == "" {
+	if serviceID == "" {
 		formatted, _ := json.MarshalIndent(claims, "", "  ")
 		return "", "", fmt.Errorf(
-			"could not find edge_system_id/participant_id in token claims.\nDecoded payload:\n%s",
+			"could not find edge_system_id in token claims.\nDecoded payload:\n%s",
 			formatted,
 		)
 	}
@@ -389,7 +389,7 @@ func (e wizardRetryError) Unwrap() error { return e.err }
 // trigger the login flow when no session exists.
 func (a *Agent) operatorWizard(ctx context.Context) error {
 	if a.ListServicesFunc == nil || a.ListDomainTemplatesFunc == nil ||
-		a.ListParticipantTemplatesFunc == nil {
+		a.GetDomainTemplateModeFunc == nil {
 		return fmt.Errorf("operator enrollment is not configured")
 	}
 	for {
@@ -443,11 +443,31 @@ func (a *Agent) buildDirectRequest() (EnrollRequest, error) {
 	if err != nil {
 		return EnrollRequest{}, err
 	}
-	participant, err := a.chooseCatalogItem("Participant Template", a.ParticipantTemplateID,
-		func() ([]string, error) { return a.ListParticipantTemplatesFunc(service) },
-		fmt.Sprintf("rticloud edge-provisioning participant-template create --service %s ...", service))
+	if a.GetDomainTemplateModeFunc == nil {
+		return EnrollRequest{}, fmt.Errorf("domain template mode lookup is not configured")
+	}
+	securityMode, err := a.GetDomainTemplateModeFunc(service, domain)
 	if err != nil {
-		return EnrollRequest{}, err
+		return EnrollRequest{}, wizardRetryError{fmt.Errorf("getting security mode for domain template %q: %w", domain, err)}
+	}
+	var participant string
+	switch securityMode {
+	case "lightweight":
+		if a.ParticipantTemplateID != "" {
+			return EnrollRequest{}, fmt.Errorf("--participant-tpl-id is not allowed for lightweight-security domains")
+		}
+	case "full":
+		if a.ListParticipantTemplatesFunc == nil {
+			return EnrollRequest{}, fmt.Errorf("participant template lookup is not configured")
+		}
+		participant, err = a.chooseCatalogItem("Participant Template", a.ParticipantTemplateID,
+			func() ([]string, error) { return a.ListParticipantTemplatesFunc(service) },
+			fmt.Sprintf("rticloud edge-provisioning participant-template create --service %s ...", service))
+		if err != nil {
+			return EnrollRequest{}, err
+		}
+	default:
+		return EnrollRequest{}, fmt.Errorf("domain template %q has invalid security mode %q", domain, securityMode)
 	}
 	serial, err := a.resolveSerial()
 	if err != nil {
@@ -461,6 +481,7 @@ func (a *Agent) buildDirectRequest() (EnrollRequest, error) {
 		ServiceID:        service,
 		DomainTemplateID: domain,
 		ParticipantID:    participant,
+		SecurityMode:     securityMode,
 		Serial:           serial,
 		MACs:             macs,
 	}, nil

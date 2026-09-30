@@ -51,7 +51,7 @@ func (a *Agent) scheduleAll(p *profile) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := a.Now()
-	for _, artifact := range allArtifacts {
+	for _, artifact := range p.artifacts() {
 		// Domain-scoped artifacts are scheduled only by the domain owner.
 		if isDomainArtifact(artifact) && !owner {
 			continue

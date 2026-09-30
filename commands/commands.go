@@ -997,8 +997,26 @@ func (runner *Runner) DeletePermissionsTemplate(edgeSystem string, templateName 
 
 // ── Domain Templates ──────────────────────────────────────────────────────────
 
-func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, governanceTemplate string, domainTag string, customGovernanceFile string, customGovernanceName string) error {
-	payload := map[string]any{"domainId": domainID, "governanceTemplate": governanceTemplate}
+func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, governanceTemplate string, domainTag string, customGovernanceFile string, customGovernanceName string, securityMode string, pskTTLMinutes, deviceCertTTLMinutes int) error {
+	if securityMode != "full" && securityMode != "lightweight" {
+		return fmt.Errorf("security mode must be full or lightweight")
+	}
+	if securityMode == "lightweight" && (governanceTemplate != "" || customGovernanceFile != "") {
+		return fmt.Errorf("governance is not allowed with lightweight security")
+	}
+	if pskTTLMinutes < 0 || deviceCertTTLMinutes < 0 {
+		return fmt.Errorf("artifact lifetimes must not be negative")
+	}
+	payload := map[string]any{"domainId": domainID, "securityMode": securityMode}
+	if governanceTemplate != "" {
+		payload["governanceTemplate"] = governanceTemplate
+	}
+	if pskTTLMinutes > 0 {
+		payload["pskTtlMinutes"] = pskTTLMinutes
+	}
+	if deviceCertTTLMinutes > 0 {
+		payload["deviceCertTtlMinutes"] = deviceCertTTLMinutes
+	}
 	if domainTag != "" {
 		payload["domainTag"] = domainTag
 	}
@@ -1081,9 +1099,17 @@ func (runner *Runner) fetchJSONMap(path string) (map[string]any, error) {
 // value in the payload so a renamed envelope key degrades gracefully instead
 // of reporting an empty catalogue.
 func itemIDs(payload map[string]any, listKeys []string, idKeys ...string) []string {
+	items := catalogItems(payload, listKeys)
+	if items == nil {
+		return nil
+	}
+	return idsFromItems(items, idKeys)
+}
+
+func catalogItems(payload map[string]any, listKeys []string) []any {
 	for _, listKey := range listKeys {
 		if items, ok := payload[listKey].([]any); ok {
-			return idsFromItems(items, idKeys)
+			return items
 		}
 	}
 	for _, value := range payload {
@@ -1092,7 +1118,7 @@ func itemIDs(payload map[string]any, listKeys []string, idKeys ...string) []stri
 			continue
 		}
 		if _, isObject := items[0].(map[string]any); isObject {
-			return idsFromItems(items, idKeys)
+			return items
 		}
 	}
 	return nil
@@ -1142,6 +1168,31 @@ func (runner *Runner) FetchDomainTemplates(edgeSystem string) ([]string, error) 
 	}
 	return itemIDs(payload, []string{"domain_templates", "domainTemplates", "templates"},
 		"templateId", "template_id", "id"), nil
+}
+
+func (runner *Runner) FetchDomainTemplateMode(edgeSystem, templateID string) (string, error) {
+	payload, err := runner.fetchJSONMap(edgePath("edge-systems", edgeSystem, "domain-templates"))
+	if err != nil {
+		return "", err
+	}
+	items := catalogItems(payload, []string{"domain_templates", "domainTemplates", "templates"})
+	for _, raw := range items {
+		template, ok := raw.(map[string]any)
+		if !ok || template["templateId"] != templateID {
+			continue
+		}
+		rawMode, present := template["securityMode"]
+		if !present {
+			// Assume full security for legacy templates that omit securityMode.
+			return "full", nil
+		}
+		mode, ok := rawMode.(string)
+		if !ok || (mode != "full" && mode != "lightweight") {
+			return "", fmt.Errorf("domain template %q has invalid security mode %v", templateID, rawMode)
+		}
+		return mode, nil
+	}
+	return "", fmt.Errorf("domain template %q not found", templateID)
 }
 
 // FetchParticipantTemplates returns the Participant Template IDs of a
@@ -1200,7 +1251,10 @@ func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, en
 			return nil
 		}
 	}
-	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID, "participantTemplateId": participantID}
+	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID}
+	if participantID != "" {
+		payload["participantTemplateId"] = participantID
+	}
 	return runner.postJSON(edgePath("edge-systems", edgeSystem, "campaigns"), payload, http.StatusCreated)
 }
 
@@ -1268,6 +1322,10 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
 	}
+	securityMode, err := enrollmentSecurityMode(result)
+	if err != nil {
+		return "", err
+	}
 
 	// Extract the domain_template_id returned by the server.  This becomes
 	// the top-level directory for all on-disk artifacts for this profile:
@@ -1275,7 +1333,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 	domainTemplateID := stringField(result, "domain_template_id")
 
 	// Write to the local artifact store when available.
-	if runner.EdgeStore != nil && edgeSystemID != "" && participantID != "" {
+	if runner.EdgeStore != nil && edgeSystemID != "" {
 		// Layered layout identifiers: the provisioning service, the domain
 		// template, the participant template and the node (device serial).
 		// Every enrolled node is fully qualified by all four; a missing
@@ -1288,6 +1346,7 @@ func (runner *Runner) EnrollDevice(edgeSystemID string, participantID string, se
 		domain := domainTemplateID
 		node := serial
 		arts := edgestore.EnrollArtifacts{
+			SecurityMode:  securityMode,
 			DeviceCertPEM: []byte(stringField(result, "certificate")),
 			CAChainPEM:    []byte(stringField(result, "caChain")),
 			GovernanceP7S: []byte(stringField(result, "governanceP7s")),
@@ -1329,6 +1388,18 @@ func stringField(m map[string]any, key string) string {
 	return v
 }
 
+func enrollmentSecurityMode(result map[string]any) (string, error) {
+	rawMode, present := result["security_mode"]
+	if !present {
+		return "full", nil
+	}
+	mode, ok := rawMode.(string)
+	if !ok || (mode != "full" && mode != "lightweight") {
+		return "", fmt.Errorf("enrollment response has invalid security_mode %v", rawMode)
+	}
+	return mode, nil
+}
+
 // EnrollDeviceDirect performs operator-initiated direct enrollment: creates the
 // node inventory row and signs its certificate in one API call, authenticated
 // with a normal management token (no campaign JWT required).
@@ -1364,10 +1435,12 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		csrPEM = string(data)
 	}
 	payload := map[string]any{
-		"serial":                serial,
-		"csr":                   csrPEM,
-		"domainTemplateId":      domainTemplateID,
-		"participantTemplateId": participantTemplateID,
+		"serial":           serial,
+		"csr":              csrPEM,
+		"domainTemplateId": domainTemplateID,
+	}
+	if participantTemplateID != "" {
+		payload["participantTemplateId"] = participantTemplateID
 	}
 	if len(macs) > 0 {
 		payload["macs"] = macs
@@ -1390,6 +1463,10 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", "", err
 	}
+	securityMode, err := enrollmentSecurityMode(result)
+	if err != nil {
+		return "", "", err
+	}
 
 	// Written only now that the enrollment is accepted: --key-file may hold the
 	// key for the operator's current certificate. Kept ahead of the store block,
@@ -1409,11 +1486,12 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 	}
 
 	// Write to the local artifact store when available.
-	if runner.EdgeStore != nil && edgeSystemID != "" && participantTemplateID != "" {
+	if runner.EdgeStore != nil && edgeSystemID != "" {
 		service := edgeSystemID
 		domain := retDomainTemplateID
 		node := serial
 		arts := edgestore.EnrollArtifacts{
+			SecurityMode:  securityMode,
 			DeviceCertPEM: []byte(stringField(result, "certificate")),
 			CAChainPEM:    []byte(stringField(result, "caChain")),
 			GovernanceP7S: []byte(stringField(result, "governanceP7s")),

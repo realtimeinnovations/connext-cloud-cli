@@ -226,6 +226,30 @@ func TestAgentSummaryChip(t *testing.T) {
 	}
 }
 
+func TestLightweightSnapshotShowsOnlySupportedArtifacts(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	snapshot := profileSnapshot{
+		securityMode: "lightweight",
+		notAfter: map[ArtifactID]time.Time{
+			ArtifactIdentity:   now.Add(-time.Hour),
+			ArtifactPSK:        now.Add(time.Hour),
+			ArtifactDeviceCert: now.Add(2 * time.Hour),
+		},
+		issuedAt: map[ArtifactID]time.Time{
+			ArtifactIdentity:   now.Add(-100 * time.Hour),
+			ArtifactPSK:        now.Add(-99 * time.Hour),
+			ArtifactDeviceCert: now.Add(-98 * time.Hour),
+		},
+	}
+	artifacts := snapshot.artifacts()
+	if len(artifacts) != 2 || artifacts[0] != ArtifactPSK || artifacts[1] != ArtifactDeviceCert {
+		t.Fatalf("lightweight artifacts = %v", artifacts)
+	}
+	if got := countArtifactsNeedingRenewal(now, []profileSnapshot{snapshot}); got != 2 {
+		t.Fatalf("lightweight renewal count = %d, want 2", got)
+	}
+}
+
 func TestCountArtifactsNeedingRenewal(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	profiles := []profileSnapshot{

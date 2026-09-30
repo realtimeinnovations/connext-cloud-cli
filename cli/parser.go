@@ -1254,7 +1254,8 @@ func newEdgeProvisioningDomainTemplateCommand(runtime *app.Runtime) *cobra.Comma
 
 	{ // create
 		var edgeSystem, governanceTemplate, customGovernanceFile, customGovernanceName, domainTag string
-		var domainID int
+		var securityMode string
+		var domainID, pskTTLMinutes, deviceCertTTLMinutes int
 		c := &cobra.Command{
 			Use:   "create",
 			Short: "Create a Domain Template",
@@ -1267,19 +1268,28 @@ To see available Governance Templates for a service, run:
 				if edgeSystem == "" {
 					return fmt.Errorf("--service is required")
 				}
-				if governanceTemplate == "" && customGovernanceFile == "" {
+				if securityMode != "full" && securityMode != "lightweight" {
+					return fmt.Errorf("--security-mode must be full or lightweight")
+				}
+				if securityMode == "lightweight" && (governanceTemplate != "" || customGovernanceFile != "") {
+					return fmt.Errorf("governance is not allowed with lightweight security")
+				}
+				if securityMode == "full" && governanceTemplate == "" && customGovernanceFile == "" {
 					return fmt.Errorf("--governance-template is required (or provide --custom-governance-file to create one inline)")
 				}
 				if customGovernanceFile != "" && customGovernanceName == "" {
 					return fmt.Errorf("--custom-governance-name is required when --custom-governance-file is provided")
 				}
-				return runtime.Commands.CreateDomainTemplate(edgeSystem, domainID, governanceTemplate, domainTag, customGovernanceFile, customGovernanceName)
+				return runtime.Commands.CreateDomainTemplate(edgeSystem, domainID, governanceTemplate, domainTag, customGovernanceFile, customGovernanceName, securityMode, pskTTLMinutes, deviceCertTTLMinutes)
 			},
 		}
 		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().IntVar(&domainID, "domain-id", 0, "DDS domain ID")
 		c.Flags().StringVar(&governanceTemplate, "governance-template", "", "Name of an existing Governance Template (see: governance-template list)")
 		c.Flags().StringVar(&domainTag, "domain-tag", "", "Tag to identify the domain template")
+		c.Flags().StringVar(&securityMode, "security-mode", "full", "Domain security mode: full or lightweight")
+		c.Flags().IntVar(&pskTTLMinutes, "psk-ttl-minutes", 0, "PSK lifetime in minutes (server default when omitted)")
+		c.Flags().IntVar(&deviceCertTTLMinutes, "device-cert-ttl-minutes", 0, "Provisioning certificate lifetime in minutes (server default when omitted)")
 		c.Flags().StringVar(&customGovernanceFile, "custom-governance-file", "", "Path to inline custom Governance XML (creates a Governance Template automatically)")
 		c.Flags().StringVar(&customGovernanceName, "custom-governance-name", "", "Name to assign to the Governance Template created from --custom-governance-file")
 		cmd.AddCommand(c)
@@ -1435,9 +1445,6 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				if edgeSystem == "" {
 					return fmt.Errorf("--service is required")
 				}
-				if participantID == "" {
-					return fmt.Errorf("--participant-tpl-id is required")
-				}
 				if enrollmentList == "" {
 					return fmt.Errorf("--enrollment-list is required")
 				}
@@ -1448,7 +1455,7 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			},
 		}
 		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
-		c.Flags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
+		c.Flags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID (required for full security; omit for lightweight domains)")
 		c.Flags().StringVar(&enrollmentList, "enrollment-list", "", "Path to JSON or CSV file with the list of devices to enroll")
 		c.Flags().StringVar(&domainTemplateID, "domain-tpl-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
 		cmd.AddCommand(c)
@@ -1663,7 +1670,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if effectiveService == "" {
 					return fmt.Errorf("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
 				}
-				if effectiveParticipant == "" {
+				if effectiveParticipant == "" && campaignToken == "" {
 					return fmt.Errorf("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
 				}
 				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken)
@@ -1705,6 +1712,9 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 Unlike 'enroll' (which requires a campaign JWT), this command authenticates
 with your regular login credentials and performs enrollment in a single API call.
 
+Supply --participant-template-id for full-security domains; omit it for
+lightweight domains.
+
 The --serial flag identifies this participant on the Provisioning Service.
 You may choose any stable, unique string (e.g. device serial number, hostname,
 or UUID) — it is stored permanently and cannot be changed after enrollment.
@@ -1740,9 +1750,6 @@ Example (generate the key locally):
 				if domainTemplateIDFlag == "" {
 					return fmt.Errorf("--domain-template-id is required")
 				}
-				if participantTemplateIDFlag == "" {
-					return fmt.Errorf("--participant-template-id is required")
-				}
 				if serial == "" {
 					return fmt.Errorf("--serial is required")
 				}
@@ -1752,6 +1759,15 @@ Example (generate the key locally):
 				if !genKey && csrFile == "" {
 					return fmt.Errorf("either --csr-file or --gen-key is required")
 				}
+				if participantTemplateIDFlag == "" {
+					mode, err := runtime.Commands.FetchDomainTemplateMode(service, domainTemplateIDFlag)
+					if err != nil {
+						return err
+					}
+					if mode == "full" {
+						return fmt.Errorf("--participant-template-id is required for full-security domains")
+					}
+				}
 				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile, genKey)
 				return err
 			},
@@ -1760,7 +1776,7 @@ Example (generate the key locally):
 		c.Flags().BoolVar(&genKey, "gen-key", false, "Generate the private key and CSR locally instead of supplying --csr-file")
 		c.Flags().StringVar(&keyFile, "key-file", "", "Path to PEM private key file to store alongside the mTLS certificate (with --gen-key, the generated key is also written here)")
 		c.Flags().StringVar(&domainTemplateIDFlag, "domain-template-id", "", "Domain Template ID (see: edge-provisioning domain-template list, field: templateId)")
-		c.Flags().StringVar(&participantTemplateIDFlag, "participant-template-id", "", "Participant Template ID (see: edge-provisioning participant-template list, field: participant_id)")
+		c.Flags().StringVar(&participantTemplateIDFlag, "participant-template-id", "", "Participant Template ID (required for full security; omit for lightweight domains)")
 		c.Flags().StringSliceVar(&macs, "mac", nil, "Device MAC address (optional, can be specified multiple times)")
 		c.Flags().StringVar(&deviceName, "device-name", "", "Device name to record in the inventory (optional)")
 		cmd.AddCommand(c)
