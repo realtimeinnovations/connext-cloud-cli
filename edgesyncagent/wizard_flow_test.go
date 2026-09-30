@@ -192,6 +192,65 @@ func TestConfigureFirstRun_HeadlessDirect(t *testing.T) {
 	}
 }
 
+func TestConfigureFirstRun_HeadlessLightweightDirect(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	a.AfterFunc = func(d time.Duration, f func()) *time.Timer {
+		return time.AfterFunc(10*time.Hour, f)
+	}
+	a.Service = "svc"
+	a.DomainTemplateID = "1:light"
+	a.DeploymentName = "SN-LIGHT"
+	a.GetDomainTemplateModeFunc = func(service, domain string) (string, error) {
+		if service != "svc" || domain != "1:light" {
+			t.Fatalf("unexpected mode lookup: %s/%s", service, domain)
+		}
+		return "lightweight", nil
+	}
+
+	var enrolled []string
+	wireDirectEnroll(a, ffs, "https://device.example", &enrolled)
+
+	a.SelectFunc = func(message string, choices []string) (string, error) {
+		t.Fatalf("prompted in headless mode: %q", message)
+		return "", nil
+	}
+	a.InputFunc = func(message string) (string, error) {
+		t.Fatalf("prompted in headless mode: %q", message)
+		return "", nil
+	}
+
+	if err := a.ConfigureFirstRun(context.Background()); err != nil {
+		t.Fatalf("ConfigureFirstRun: %v", err)
+	}
+	want := []string{"svc", "1:light", "", "SN-LIGHT"}
+	if strings.Join(enrolled, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected enrollment args: %v (want %v)", enrolled, want)
+	}
+}
+
+func TestConfigureFirstRun_HeadlessDirectRequiresParticipantForFullSecurity(t *testing.T) {
+	a := buildTestAgent(t, newFakeFS())
+	a.Service = "svc"
+	a.DomainTemplateID = "1:full"
+	a.DeploymentName = "SN-FULL"
+	a.GetDomainTemplateModeFunc = func(service, domain string) (string, error) {
+		if service != "svc" || domain != "1:full" {
+			t.Fatalf("unexpected mode lookup: %s/%s", service, domain)
+		}
+		return "full", nil
+	}
+	a.EnrollDirectFunc = func(string, string, string, string, []string, string, string, string) (EnrollmentResult, error) {
+		t.Fatal("attempted direct enrollment without a participant template")
+		return EnrollmentResult{}, nil
+	}
+
+	err := a.ConfigureFirstRun(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "--participant-tpl-id is required for full-security domains") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestConfigureFirstRun_HeadlessCampaign(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)

@@ -1980,8 +1980,9 @@ token issued by an operator.  The serial number and MAC addresses are
 auto-detected; use --manual to confirm or override them.
 
 For unattended provisioning skip the wizard entirely by passing either
---campaign-token, or --service, --domain-tpl-id and --participant-tpl-id
-(direct enrollment with your management login).
+--campaign-token, or --service and --domain-tpl-id (plus
+--participant-tpl-id for full-security domains) for direct enrollment with
+your management login.
 
 Once the agent is running, additional profiles can be enrolled with the
 'enroll' sub-command or by dropping an enroll-*.json file into the inbox

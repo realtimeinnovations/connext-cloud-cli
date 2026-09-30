@@ -137,13 +137,31 @@ const (
 // enrollment — picking the Provisioning Service and templates from the
 // account catalogue — and campaign enrollment (pasting a campaign token).
 // When the enrollment is fully specified up front (CampaignToken, or Service +
-// DomainTemplateID + ParticipantTemplateID) it runs headless with no prompts.
+// DomainTemplateID with a participant template for full-security domains) it
+// runs headless with no prompts.
 func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 	if a.CampaignToken != "" {
 		return a.enrollHeadlessCampaign()
 	}
-	if a.Service != "" && a.DomainTemplateID != "" && a.ParticipantTemplateID != "" {
-		return a.enrollHeadlessDirect()
+	if a.Service != "" && a.DomainTemplateID != "" {
+		if a.ParticipantTemplateID != "" {
+			return a.enrollHeadlessDirect()
+		}
+		if a.GetDomainTemplateModeFunc == nil {
+			return fmt.Errorf("domain template mode lookup is not configured")
+		}
+		securityMode, err := a.GetDomainTemplateModeFunc(a.Service, a.DomainTemplateID)
+		if err != nil {
+			return fmt.Errorf("getting security mode for domain template %q: %w", a.DomainTemplateID, err)
+		}
+		switch securityMode {
+		case "lightweight":
+			return a.enrollHeadlessDirect()
+		case "full":
+			return fmt.Errorf("--participant-tpl-id is required for full-security domains")
+		default:
+			return fmt.Errorf("domain template %q has invalid security mode %q", a.DomainTemplateID, securityMode)
+		}
 	}
 
 	// Offer to reuse an enrollment already present on disk (performed
