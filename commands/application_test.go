@@ -284,7 +284,7 @@ func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
 		bundle = append([]byte(nil), data...)
 		return nil
 	}
-	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{Bundle: true}); err != nil {
+	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := zip.NewReader(bytes.NewReader(bundle), int64(len(bundle)))
@@ -315,7 +315,7 @@ func TestDownloadApplicationBundleHonorsExistingFile(t *testing.T) {
 		t.Fatal("existing bundle must not be overwritten")
 		return nil
 	}
-	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{Bundle: true}); err != nil {
+	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "demo-shapes.zip already exists. Use -f to overwrite.") {
@@ -350,42 +350,93 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 	}
 }
 
-func TestRegisterAppClientWritesCompleteDirectoryAndSecureZip(t *testing.T) {
-	t.Chdir(t.TempDir())
-	api := &fakeAPI{responses: map[string]*http.Response{
-		"POST /databuses/demo/applications/shapes/clients": newJSONResponse(http.StatusCreated, map[string]any{
-			"client_id": "client-1",
-			"secure_files": map[string]any{
-				"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")),
-			},
-		}),
-		"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
-			"client_config":  `<dds path="./secure/identity.pem"/>`,
-			"client_example": "# example\n",
-			"manifest":       map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
-		}),
-	}}
-	runner := New(api, io.Discard)
-	runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
-		return []byte("private key"), "csr", nil
-	}
-	if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", "", true, false, true); err != nil {
-		t.Fatal(err)
-	}
-	root := "demo-shapes-client-1"
-	for _, name := range []string{"shapes.xml", "shapes.py", "manifest.json", "secure/identity.pem", "secure/client.key"} {
-		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
-			t.Fatalf("missing %s: %v", name, err)
-		}
-	}
-	keyInfo, err := os.Stat(filepath.Join(root, "secure/client.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if keyInfo.Mode().Perm() != 0o600 {
-		t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
-	}
-	if _, err := zip.OpenReader(root + ".zip"); err != nil {
-		t.Fatalf("open secure bundle: %v", err)
+func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		zip  bool
+	}{
+		{"directory", false},
+		{"zip", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			api := &fakeAPI{responses: map[string]*http.Response{
+				"POST /databuses/demo/applications/shapes/clients": newJSONResponse(http.StatusCreated, map[string]any{
+					"client_id": "client-1",
+					"secure_files": map[string]any{
+						"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")),
+					},
+				}),
+				"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
+					"client_config":  `<dds path="./secure/identity.pem"/>`,
+					"client_example": "# example\n",
+					"manifest":       map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
+				}),
+			}}
+			runner := New(api, io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
+				return []byte("private key"), "csr", nil
+			}
+			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", "", true, false, test.zip); err != nil {
+				t.Fatal(err)
+			}
+			root := "demo-shapes-client-1"
+			if test.zip {
+				if _, err := os.Stat(root); !os.IsNotExist(err) {
+					t.Fatalf("ZIP output must not create a directory; stat error: %v", err)
+				}
+				archive, err := zip.OpenReader(root + ".zip")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer archive.Close()
+				files := map[string]*zip.File{}
+				for _, file := range archive.File {
+					files[file.Name] = file
+				}
+				for name, want := range map[string]string{
+					"shapes.xml":          `<dds path="./secure/identity.pem"/>`,
+					"shapes.py":           "# example\n",
+					"secure/identity.pem": "certificate",
+					"secure/client.key":   "private key",
+				} {
+					file := files[root+"/"+name]
+					if file == nil {
+						t.Fatalf("ZIP missing %s", name)
+					}
+					reader, err := file.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := io.ReadAll(reader)
+					reader.Close()
+					if err != nil || string(data) != want {
+						t.Fatalf("ZIP entry %s = %q, error = %v; want %q", name, data, err, want)
+					}
+				}
+				if files[root+"/manifest.json"] == nil || len(files) != 5 {
+					t.Fatalf("unexpected ZIP contents: %#v", files)
+				}
+				if mode := files[root+"/secure/client.key"].Mode().Perm(); mode != 0o600 {
+					t.Fatalf("private key mode = %#o, want 0600", mode)
+				}
+				return
+			}
+			if _, err := os.Stat(root + ".zip"); !os.IsNotExist(err) {
+				t.Fatalf("directory output must not create a ZIP; stat error: %v", err)
+			}
+			for _, name := range []string{"shapes.xml", "shapes.py", "manifest.json", "secure/identity.pem", "secure/client.key"} {
+				if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+					t.Fatalf("missing %s: %v", name, err)
+				}
+			}
+			keyInfo, err := os.Stat(filepath.Join(root, "secure/client.key"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if keyInfo.Mode().Perm() != 0o600 {
+				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
+			}
+		})
 	}
 }

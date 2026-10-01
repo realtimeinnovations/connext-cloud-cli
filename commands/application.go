@@ -101,7 +101,7 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 type ApplicationDownloadOptions struct {
 	GenerateExample bool
 	IncludeManifest bool
-	Bundle          bool
+	ZIP             bool
 	ForceOverwrite  bool
 	TargetDir       string
 	ConfigOutput    string
@@ -279,7 +279,7 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected application configuration for '%s'\n", appName)
 		return nil
 	}
-	if options.Bundle {
+	if options.ZIP {
 		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
 		if err != nil {
 			return err
@@ -458,16 +458,27 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	delete(payload, "secure_files")
 	formatted, _ := json.MarshalIndent(payload, "", "  ")
 	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
-	if err != nil {
-		return err
-	}
 	artifacts, found, err := runner.fetchApplication(name, appName)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return nil
+	}
+	if zipOutput {
+		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
+		if err != nil {
+			return err
+		}
+		if _, err := runner.SaveClientFile("", name+"-"+appName+"-"+clientID+".zip", bundle, forceOverwrite); err != nil {
+			return err
+		}
+		runner.warnUnknownTypes(artifacts.Manifest)
+		return nil
+	}
+	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
+	if err != nil {
+		return err
 	}
 	files := map[string][]byte{appName + ".xml": []byte(artifacts.ClientConfig)}
 	if artifacts.ClientExample != "" {
@@ -491,15 +502,6 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	}
 	if err := runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, secureDir); err != nil {
 		return err
-	}
-	if zipOutput {
-		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
-		if err != nil {
-			return err
-		}
-		if _, err := runner.SaveClientFile("", name+"-"+appName+"-"+clientID+".zip", bundle, forceOverwrite); err != nil {
-			return err
-		}
 	}
 	runner.warnUnknownTypes(artifacts.Manifest)
 	return nil

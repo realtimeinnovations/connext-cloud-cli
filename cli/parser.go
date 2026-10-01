@@ -766,7 +766,7 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 
 	{ // get
 		var name, appName, output string
-		var example, force, manifest, bundle bool
+		var example, force, manifest, zipOutput bool
 		c := &cobra.Command{
 			Use:   "get",
 			Short: "Get a Databus application",
@@ -781,16 +781,16 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 				if output != "" && example {
 					return fmt.Errorf("--example cannot be used with --output")
 				}
-				if output != "" && (manifest || bundle) {
+				if output != "" && (manifest || zipOutput) {
 					return fmt.Errorf("--output cannot be combined with artifact flags")
 				}
-				if bundle && (example || manifest) {
-					return fmt.Errorf("--bundle cannot be combined with --example or --manifest")
+				if zipOutput && (example || manifest) {
+					return fmt.Errorf("--zip cannot be combined with --example or --manifest")
 				}
 				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
 					GenerateExample: example,
 					IncludeManifest: manifest,
-					Bundle:          bundle,
+					ZIP:             zipOutput,
 					ForceOverwrite:  force,
 					ConfigOutput:    output,
 				})
@@ -799,9 +799,9 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application name")
 		c.Flags().BoolVar(&example, "example", false, "Include example configuration")
-		c.Flags().StringVarP(&output, "output", "o", "", "Write application configuration JSON to this file")
+		c.Flags().StringVarP(&output, "output", "o", "", "Export application configuration JSON to this file")
 		c.Flags().BoolVar(&manifest, "manifest", false, "Also write the manager-provided manifest")
-		c.Flags().BoolVar(&bundle, "bundle", false, "Write the complete application bundle ZIP")
+		c.Flags().BoolVar(&zipOutput, "zip", false, "Package XML, example, and manifest as a ZIP instead of individual files")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
 		cmd.AddCommand(c)
 	}
@@ -883,7 +883,7 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&clientID, "client-id", "", "Client ID")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "CSR file")
 		c.Flags().BoolVar(&genPrivateKey, "gen-private-key", false, "Generate a private key")
-		c.Flags().BoolVar(&zipOutput, "zip", false, "Also write the secure application bundle ZIP")
+		c.Flags().BoolVar(&zipOutput, "zip", false, "Package application artifacts and security files as a ZIP instead of a directory")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
 		cmd.AddCommand(c)
 	}
