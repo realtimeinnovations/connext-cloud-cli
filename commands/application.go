@@ -42,9 +42,26 @@ func (artifacts applicationArtifacts) validateComplete() error {
 	return nil
 }
 
+func validArtifactName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\:\x00")
+}
+
+func validateApplicationNames(databusName, appName, clientID string) error {
+	names := []struct{ label, value string }{{"Databus name", databusName}, {"application name", appName}}
+	if clientID != "" {
+		names = append(names, struct{ label, value string }{"client ID", clientID})
+	}
+	for _, name := range names {
+		if !validArtifactName(name.value) {
+			return fmt.Errorf("invalid %s %q: expected a name without path components", name.label, name.value)
+		}
+	}
+	return nil
+}
+
 func validateSecureFileNames(secureFiles map[string]string) error {
 	for name := range secureFiles {
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") {
+		if !validArtifactName(name) {
 			return fmt.Errorf("invalid secure filename %q: expected a filename without path components", name)
 		}
 	}
@@ -56,6 +73,9 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 		return nil, err
 	}
 	if err := validateSecureFileNames(secureFiles); err != nil {
+		return nil, err
+	}
+	if err := validateApplicationNames(databusName, appName, clientID); err != nil {
 		return nil, err
 	}
 	baseName := databusName + "-" + appName
@@ -254,6 +274,9 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 }
 
 func (runner *Runner) DownloadApplication(name string, appName string, options ApplicationDownloadOptions) error {
+	if err := validateApplicationNames(name, appName, ""); err != nil {
+		return err
+	}
 	artifacts, found, err := runner.fetchApplication(name, appName)
 	if err != nil || !found {
 		return err
@@ -296,8 +319,7 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 		return err
 	}
 	if artifacts.ClientConfig == "" {
-		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected application configuration for '%s'\n", appName)
-		return nil
+		return fmt.Errorf("manager did not return XML configuration for %q", appName)
 	}
 	if options.ZIP {
 		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
@@ -310,22 +332,29 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil
 	}
+	if options.GenerateExample && artifacts.ClientExample == "" {
+		return fmt.Errorf("manager did not return example for %q", appName)
+	}
+	var manifest []byte
+	if options.IncludeManifest {
+		raw := bytes.TrimSpace(artifacts.Manifest)
+		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("manager did not return manifest")
+		}
+		manifest, err = formatJSON(raw)
+		if err != nil {
+			return err
+		}
+	}
 	if _, err := runner.SaveClientFile(options.TargetDir, appName+".xml", []byte(artifacts.ClientConfig), options.ForceOverwrite); err != nil {
 		return err
 	}
-	if options.GenerateExample && artifacts.ClientExample != "" {
+	if options.GenerateExample {
 		if _, err := runner.SaveClientFile(options.TargetDir, appName+".py", []byte(artifacts.ClientExample), options.ForceOverwrite); err != nil {
 			return err
 		}
 	}
 	if options.IncludeManifest {
-		if len(artifacts.Manifest) == 0 || string(artifacts.Manifest) == "null" {
-			return fmt.Errorf("manager did not return manifest")
-		}
-		manifest, err := formatJSON(artifacts.Manifest)
-		if err != nil {
-			return err
-		}
 		if _, err := runner.SaveClientFile(options.TargetDir, "manifest.json", manifest, options.ForceOverwrite); err != nil {
 			return err
 		}
@@ -382,6 +411,9 @@ func CreateClientBundleDirectory(databusName string, appName string, clientName 
 	if databusName == "" || appName == "" || clientName == "" {
 		return "", fmt.Errorf("databus_name, app_name, and client_name must be provided")
 	}
+	if err := validateApplicationNames(databusName, appName, clientName); err != nil {
+		return "", err
+	}
 	targetDir := fmt.Sprintf("%s-%s-%s", databusName, appName, clientName)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", err
@@ -402,11 +434,6 @@ func (runner *Runner) saveClientFile(targetDir string, fileName string, data []b
 		if !forceOverwrite {
 			_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
 			return false, nil
-		}
-		if sensitive {
-			if err := runner.Chmod(filePath, 0o600); err != nil {
-				return false, err
-			}
 		}
 	}
 	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
@@ -441,6 +468,23 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if clientID == "" {
 		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
 		return nil
+	}
+	if err := validateApplicationNames(name, appName, clientID); err != nil {
+		return err
+	}
+	destination := name + "-" + appName + "-" + clientID
+	if zipOutput {
+		destination += ".zip"
+	}
+	if info, err := runner.Stat(destination); err == nil {
+		if zipOutput == info.IsDir() {
+			return fmt.Errorf("%s has the wrong output type", destination)
+		}
+		if !forceOverwrite {
+			return fmt.Errorf("%s already exists. Use --force to overwrite", destination)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect client output %s: %w", destination, err)
 	}
 	var privateKey []byte
 	var csrPEM string
@@ -509,8 +553,12 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		if err != nil {
 			return err
 		}
-		if _, err := runner.saveClientFile("", name+"-"+appName+"-"+clientID+".zip", bundle, forceOverwrite, len(privateKey) > 0); err != nil {
+		saved, err := runner.saveClientFile("", destination, bundle, forceOverwrite, len(privateKey) > 0)
+		if err != nil {
 			return err
+		}
+		if !saved {
+			return fmt.Errorf("client %q was registered, but archive %s was not saved", clientID, destination)
 		}
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil

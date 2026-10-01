@@ -89,6 +89,11 @@ func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bo
 			return err
 		}
 	}
+	if sensitive {
+		if err := runner.Chmod(filePath, fileMode); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
 	if err := runner.WriteFile(filePath, data, fileMode); err != nil {
 		return err
 	}
