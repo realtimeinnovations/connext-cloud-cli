@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
@@ -606,6 +607,53 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 	}
 
 	cmd.AddCommand(newApplicationCommand(runtime))
+	cmd.AddCommand(newTopicCommand(runtime))
+
+	return cmd
+}
+
+func newTopicCommand(runtime *app.Runtime) *cobra.Command {
+	cmd := parentCommand("topic", "Inspect discovered Databus topics")
+
+	{
+		var name string
+		c := &cobra.Command{
+			Use:   "list",
+			Short: "List discovered topics",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				return runtime.Commands.ListTopics(name)
+			},
+		}
+		c.Flags().StringVar(&name, "name", "", "Resource name")
+		cmd.AddCommand(c)
+	}
+
+	{
+		var name, topicName string
+		var typeXML bool
+		c := &cobra.Command{
+			Use:   "get",
+			Short: "Show a discovered topic schema",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if name == "" {
+					return fmt.Errorf("--name is required")
+				}
+				if topicName == "" {
+					return fmt.Errorf("--topic is required")
+				}
+				return runtime.Commands.GetTopic(name, topicName, typeXML)
+			},
+		}
+		c.Flags().StringVar(&name, "name", "", "Resource name")
+		c.Flags().StringVar(&topicName, "topic", "", "Exact DDS topic name")
+		c.Flags().BoolVar(&typeXML, "type-xml", false, "Print raw Type XML")
+		cmd.AddCommand(c)
+	}
 
 	return cmd
 }
@@ -718,7 +766,7 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 
 	{ // get
 		var name, appName, output string
-		var example, force bool
+		var example, force, manifest, bundle bool
 		c := &cobra.Command{
 			Use:   "get",
 			Short: "Get a Databus application",
@@ -733,13 +781,27 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 				if output != "" && example {
 					return fmt.Errorf("--example cannot be used with --output")
 				}
-				return runtime.Commands.GetApplication(name, appName, example, force, "", output)
+				if output != "" && (manifest || bundle) {
+					return fmt.Errorf("--output cannot be combined with artifact flags")
+				}
+				if bundle && (example || manifest) {
+					return fmt.Errorf("--bundle cannot be combined with --example or --manifest")
+				}
+				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
+					GenerateExample: example,
+					IncludeManifest: manifest,
+					Bundle:          bundle,
+					ForceOverwrite:  force,
+					ConfigOutput:    output,
+				})
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application name")
 		c.Flags().BoolVar(&example, "example", false, "Include example configuration")
 		c.Flags().StringVarP(&output, "output", "o", "", "Write application configuration JSON to this file")
+		c.Flags().BoolVar(&manifest, "manifest", false, "Also write the manager-provided manifest")
+		c.Flags().BoolVar(&bundle, "bundle", false, "Write the complete application bundle ZIP")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
 		cmd.AddCommand(c)
 	}
@@ -795,7 +857,7 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 
 	{ // register
 		var name, appName, clientID, csrFile string
-		var genPrivateKey, force bool
+		var genPrivateKey, force, zipOutput bool
 		c := &cobra.Command{
 			Use:   "register",
 			Short: "Register an application client",
@@ -813,7 +875,7 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 				if (csrFile == "") == !genPrivateKey {
 					return fmt.Errorf("exactly one of --csr-file or --gen-private-key is required")
 				}
-				return runtime.Commands.RegisterAppClient(name, appName, clientID, csrFile, genPrivateKey, force)
+				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, force, zipOutput)
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
@@ -821,6 +883,7 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&clientID, "client-id", "", "Client ID")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "CSR file")
 		c.Flags().BoolVar(&genPrivateKey, "gen-private-key", false, "Generate a private key")
+		c.Flags().BoolVar(&zipOutput, "zip", false, "Also write the secure application bundle ZIP")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
 		cmd.AddCommand(c)
 	}

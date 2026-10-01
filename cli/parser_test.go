@@ -294,6 +294,28 @@ func TestParserRecognizesNestedApplicationClientCommands(t *testing.T) {
 	}
 }
 
+func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
+	var out bytes.Buffer
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"databus", "app", "get", "--help"}, []string{"--manifest", "--bundle"}},
+		{[]string{"databus", "app", "client", "register", "--help"}, []string{"--zip"}},
+		{[]string{"databus", "topic", "get", "--help"}, []string{"--topic", "--type-xml"}},
+	} {
+		out.Reset()
+		if err := Execute(test.args, &out, io.Discard, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range test.want {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("%v help missing %q: %s", test.args, want, out.String())
+			}
+		}
+	}
+}
+
 func TestParserReportsMissingValuesWithoutPanic(t *testing.T) {
 	err := Execute([]string{"databus", "query", "--name"}, io.Discard, io.Discard, nil)
 	if err == nil {
