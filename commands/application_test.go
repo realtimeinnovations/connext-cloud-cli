@@ -382,6 +382,10 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			root := "demo-shapes-client-1"
 			if test.zip {
+				info, err := os.Stat(root + ".zip")
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
+				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
 					t.Fatalf("ZIP output must not create a directory; stat error: %v", err)
 				}
@@ -436,6 +440,136 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			if keyInfo.Mode().Perm() != 0o600 {
 				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestSecureFilesRejectUnsafeNamesBeforeWriting(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "../../outside.pem", "nested/identity.pem", "/outside.pem", `..\outside.pem`, `nested\identity.pem`, `C:outside.pem`, "bad\x00name"} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")),
+				name:           base64.StdEncoding.EncodeToString([]byte("outside")),
+			}
+			runner := New(&fakeAPI{}, io.Discard)
+			runner.WriteFile = func(string, []byte, os.FileMode) error {
+				t.Fatal("unsafe response must not write any secure files")
+				return nil
+			}
+			if err := runner.SaveSecureFiles(files, nil, false, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid secure filename") {
+				t.Fatalf("unexpected directory error: %v", err)
+			}
+			for _, config := range []string{"<dds/>", `<dds path="./secure/identity.pem"/>`} {
+				bundle, err := applicationBundle("db", "app", "client", applicationArtifacts{
+					ClientConfig: config, ClientExample: "# example", Manifest: json.RawMessage(`{"topics":[]}`),
+				}, files, nil)
+				if err == nil || !strings.Contains(err.Error(), "invalid secure filename") || len(bundle) != 0 {
+					t.Fatalf("unexpected bundle result: %d bytes, error = %v", len(bundle), err)
+				}
+			}
+		})
+	}
+}
+
+func registrationTestAPI(artifacts map[string]any) *fakeAPI {
+	return &fakeAPI{responses: map[string]*http.Response{
+		"POST /databuses/db/applications/app/clients": newJSONResponse(http.StatusCreated, map[string]any{
+			"client_id":    "client",
+			"secure_files": map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate"))},
+		}),
+		"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, artifacts),
+	}}
+}
+
+func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
+	for _, field := range []string{"client_config", "client_example", "manifest"} {
+		for _, value := range []any{nil, ""} {
+			for _, zipOutput := range []bool{false, true} {
+				label := field + "/missing/directory"
+				if value != nil {
+					label = field + "/empty/directory"
+				}
+				if zipOutput {
+					label = strings.TrimSuffix(label, "directory") + "zip"
+				}
+				t.Run(label, func(t *testing.T) {
+					dir := t.TempDir()
+					t.Chdir(dir)
+					artifacts := map[string]any{"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}}}
+					if value == nil {
+						delete(artifacts, field)
+					} else if field == "manifest" {
+						artifacts[field] = nil
+					} else {
+						artifacts[field] = value
+					}
+					runner := New(registrationTestAPI(artifacts), io.Discard)
+					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
+					err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput)
+					if err == nil || !strings.Contains(err.Error(), "application artifacts are incomplete") {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					entries, err := os.ReadDir(dir)
+					if err != nil || len(entries) != 0 {
+						t.Fatalf("incomplete artifacts created output: %v; error = %v", entries, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRegisterAppClientZIPPermissions(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		generateKey bool
+		overwrite   bool
+	}{
+		{"generated key", true, false},
+		{"generated key overwrites public archive", true, true},
+		{"external CSR", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			const output = "db-app-client.zip"
+			if test.overwrite {
+				if err := os.WriteFile(output, []byte("old archive"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(output, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner := New(registrationTestAPI(map[string]any{
+				"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+			}), io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
+			runner.ReadFile = func(string) ([]byte, error) { return []byte("external csr"), nil }
+			runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
+				want := os.FileMode(0o644)
+				if test.generateKey {
+					want = 0o600
+				}
+				if name != output || mode != want {
+					t.Fatalf("write %q mode %#o; want %q mode %#o", name, mode, output, want)
+				}
+				if test.overwrite {
+					info, err := os.Stat(name)
+					if err != nil || info.Mode().Perm() != 0o600 {
+						t.Fatalf("archive must be private before writing key: %v, %v", info, err)
+					}
+				}
+				return os.WriteFile(name, data, mode)
+			}
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", test.generateKey, test.overwrite, true); err != nil {
+				t.Fatal(err)
+			}
+			if test.generateKey {
+				info, err := os.Stat(output)
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("private archive info = %v, error = %v", info, err)
+				}
 			}
 		})
 	}

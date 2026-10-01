@@ -34,9 +34,29 @@ type applicationArtifacts struct {
 	Manifest      json.RawMessage `json:"manifest"`
 }
 
+func (artifacts applicationArtifacts) validateComplete() error {
+	manifest := bytes.TrimSpace(artifacts.Manifest)
+	if artifacts.ClientConfig == "" || artifacts.ClientExample == "" || len(manifest) == 0 || bytes.Equal(manifest, []byte("null")) {
+		return fmt.Errorf("application artifacts are incomplete")
+	}
+	return nil
+}
+
+func validateSecureFileNames(secureFiles map[string]string) error {
+	for name := range secureFiles {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") {
+			return fmt.Errorf("invalid secure filename %q: expected a filename without path components", name)
+		}
+	}
+	return nil
+}
+
 func applicationBundle(databusName string, appName string, clientID string, artifacts applicationArtifacts, secureFiles map[string]string, privateKey []byte) ([]byte, error) {
-	if artifacts.ClientConfig == "" || artifacts.ClientExample == "" || len(artifacts.Manifest) == 0 || string(artifacts.Manifest) == "null" {
-		return nil, fmt.Errorf("application bundle artifacts are incomplete")
+	if err := artifacts.validateComplete(); err != nil {
+		return nil, err
+	}
+	if err := validateSecureFileNames(secureFiles); err != nil {
+		return nil, err
 	}
 	baseName := databusName + "-" + appName
 	if clientID != "" {
@@ -370,15 +390,25 @@ func CreateClientBundleDirectory(databusName string, appName string, clientName 
 }
 
 func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
+	return runner.saveClientFile(targetDir, fileName, data, forceOverwrite, strings.HasSuffix(fileName, ".key"))
+}
+
+func (runner *Runner) saveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool, sensitive bool) (bool, error) {
 	filePath := fileName
 	if targetDir != "" {
 		filePath = filepath.Join(targetDir, fileName)
 	}
-	if _, err := runner.Stat(filePath); err == nil && !forceOverwrite {
-		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
-		return false, nil
+	if _, err := runner.Stat(filePath); err == nil {
+		if !forceOverwrite {
+			_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
+			return false, nil
+		}
+		if sensitive {
+			if err := runner.Chmod(filePath, 0o600); err != nil {
+				return false, err
+			}
+		}
 	}
-	sensitive := strings.HasSuffix(fileName, ".key")
 	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
 		return false, err
 	}
@@ -387,6 +417,9 @@ func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []b
 }
 
 func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
+	if err := validateSecureFileNames(secureFiles); err != nil {
+		return err
+	}
 	for filename, encoded := range secureFiles {
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
@@ -458,6 +491,9 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	delete(payload, "secure_files")
 	formatted, _ := json.MarshalIndent(payload, "", "  ")
 	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	if err := validateSecureFileNames(secureFiles); err != nil {
+		return err
+	}
 	artifacts, found, err := runner.fetchApplication(name, appName)
 	if err != nil {
 		return err
@@ -465,31 +501,32 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if !found {
 		return nil
 	}
+	if err := artifacts.validateComplete(); err != nil {
+		return err
+	}
 	if zipOutput {
 		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
 		if err != nil {
 			return err
 		}
-		if _, err := runner.SaveClientFile("", name+"-"+appName+"-"+clientID+".zip", bundle, forceOverwrite); err != nil {
+		if _, err := runner.saveClientFile("", name+"-"+appName+"-"+clientID+".zip", bundle, forceOverwrite, len(privateKey) > 0); err != nil {
 			return err
 		}
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil
 	}
+	manifest, err := formatJSON(artifacts.Manifest)
+	if err != nil {
+		return err
+	}
 	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
 	if err != nil {
 		return err
 	}
-	files := map[string][]byte{appName + ".xml": []byte(artifacts.ClientConfig)}
-	if artifacts.ClientExample != "" {
-		files[appName+".py"] = []byte(artifacts.ClientExample)
-	}
-	if len(artifacts.Manifest) > 0 && string(artifacts.Manifest) != "null" {
-		manifest, err := formatJSON(artifacts.Manifest)
-		if err != nil {
-			return err
-		}
-		files["manifest.json"] = manifest
+	files := map[string][]byte{
+		appName + ".xml": []byte(artifacts.ClientConfig),
+		appName + ".py":  []byte(artifacts.ClientExample),
+		"manifest.json":  manifest,
 	}
 	for fileName, data := range files {
 		if _, err := runner.SaveClientFile(targetDir, fileName, data, forceOverwrite); err != nil {
