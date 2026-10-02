@@ -346,17 +346,37 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 			return err
 		}
 	}
-	if _, err := runner.SaveClientFile(options.TargetDir, appName+".xml", []byte(artifacts.ClientConfig), options.ForceOverwrite); err != nil {
-		return err
+	type outputFile struct {
+		name string
+		data []byte
 	}
+	files := []outputFile{{appName + ".xml", []byte(artifacts.ClientConfig)}}
 	if options.GenerateExample {
-		if _, err := runner.SaveClientFile(options.TargetDir, appName+".py", []byte(artifacts.ClientExample), options.ForceOverwrite); err != nil {
-			return err
-		}
+		files = append(files, outputFile{appName + ".py", []byte(artifacts.ClientExample)})
 	}
 	if options.IncludeManifest {
-		if _, err := runner.SaveClientFile(options.TargetDir, "manifest.json", manifest, options.ForceOverwrite); err != nil {
+		files = append(files, outputFile{"manifest.json", manifest})
+	}
+	for _, file := range files {
+		path := filepath.Join(options.TargetDir, file.name)
+		if info, err := runner.Stat(path); err == nil {
+			if info != nil && info.IsDir() {
+				return fmt.Errorf("%s is a directory", path)
+			}
+			if !options.ForceOverwrite {
+				return fmt.Errorf("%s already exists. Use --force to overwrite", path)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect application output %s: %w", path, err)
+		}
+	}
+	for _, file := range files {
+		saved, err := runner.SaveClientFile(options.TargetDir, file.name, file.data, options.ForceOverwrite)
+		if err != nil {
 			return err
+		}
+		if !saved {
+			return fmt.Errorf("application artifact %s was not saved", filepath.Join(options.TargetDir, file.name))
 		}
 	}
 	runner.warnUnknownTypes(artifacts.Manifest)

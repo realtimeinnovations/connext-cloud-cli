@@ -162,3 +162,73 @@ func TestWriteOutputFileDoesNotWriteIfPreChmodFails(t *testing.T) {
 		t.Fatal("expected permission error")
 	}
 }
+
+func TestDownloadPreflightsAllRequestedDestinations(t *testing.T) {
+	for _, existing := range []string{"app.xml", "app.py", "manifest.json"} {
+		t.Run(existing, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, existing), []byte("old content"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
+				"client_config": "<new/>", "client_example": "# new example", "manifest": map[string]any{"version": 1},
+			})}}
+			runner := New(api, io.Discard)
+			err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: dir, GenerateExample: true, IncludeManifest: true})
+			if err == nil || !strings.Contains(err.Error(), "already exists") {
+				t.Fatalf("expected existing-output error, got %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 1 || entries[0].Name() != existing {
+				t.Fatalf("download produced partial output: %v, %v", entries, err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, existing))
+			if err != nil || string(data) != "old content" {
+				t.Fatalf("existing file changed: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestDownloadForceOverwritesAllRequestedArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	want := map[string]string{"app.xml": "<new/>", "app.py": "# new example", "manifest.json": "{\n  \"version\": 1\n}\n"}
+	for name := range want {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("old content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
+		"client_config": "<new/>", "client_example": "# new example", "manifest": map[string]any{"version": 1},
+	})}}
+	runner := New(api, io.Discard)
+	if err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: dir, GenerateExample: true, IncludeManifest: true, ForceOverwrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range want {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != content {
+			t.Fatalf("%s = %q, error = %v; want %q", name, data, err, content)
+		}
+	}
+}
+
+func TestDownloadPreflightRejectsInaccessibleDestination(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
+		"client_config": "<new/>", "manifest": map[string]any{"version": 1},
+	})}}
+	runner := New(api, io.Discard)
+	runner.Stat = func(name string) (os.FileInfo, error) {
+		if filepath.Base(name) == "manifest.json" {
+			return nil, os.ErrPermission
+		}
+		return nil, os.ErrNotExist
+	}
+	runner.WriteFile = func(string, []byte, os.FileMode) error {
+		t.Fatal("must inspect all destinations before writing")
+		return nil
+	}
+	if err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{IncludeManifest: true}); err == nil {
+		t.Fatal("expected preflight error")
+	}
+}
