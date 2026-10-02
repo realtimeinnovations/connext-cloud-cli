@@ -7,6 +7,8 @@
 package commands
 
 import (
+	"archive/zip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -295,5 +297,106 @@ func TestRegistrationFetchesApplicationOnceBeforePost(t *testing.T) {
 				t.Fatalf("requests = %q; want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestRegistrationZIPProtectsManagerProvidedKeys(t *testing.T) {
+	for _, overwrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overwrite%v", overwrite), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			const output = "db-app-client.zip"
+			if overwrite {
+				if err := os.WriteFile(output, []byte("old archive"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(output, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			api := registrationTestAPI(map[string]any{
+				"client_config": `<dds path="./secure/psk.key"/>`, "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+			})
+			api.responses["POST /databuses/db/applications/app/clients"] = newJSONResponse(http.StatusCreated, map[string]any{
+				"client_id": "client", "secure_files": map[string]string{
+					"psk.key":      base64.StdEncoding.EncodeToString([]byte("shared secret")),
+					"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")),
+				},
+			})
+			runner := New(api, io.Discard)
+			runner.ReadFile = func(string) ([]byte, error) { return []byte("external CSR"), nil }
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", false, overwrite, true); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(output)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Errorf("key-containing archive must be 0600: info = %v, error = %v", info, err)
+			}
+			archive, err := zip.OpenReader(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			foundKey := false
+			for _, file := range archive.File {
+				want := os.FileMode(0o644)
+				if strings.HasSuffix(file.Name, ".key") {
+					foundKey = true
+					want = 0o600
+					reader, err := file.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := io.ReadAll(reader)
+					reader.Close()
+					if err != nil || string(data) != "shared secret" {
+						t.Fatalf("key contents = %q, error = %v", data, err)
+					}
+				}
+				if file.Mode().Perm() != want {
+					t.Errorf("entry %s mode %#o; want %#o", file.Name, file.Mode().Perm(), want)
+				}
+			}
+			if !foundKey {
+				t.Fatal("archive omitted manager-provided key")
+			}
+		})
+	}
+}
+
+func TestDownloadConfigurationRejectsNullClientData(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
+		"client_config": "<dds/>", "client_data": nil,
+	})}}
+	runner := New(api, io.Discard)
+	runner.WriteFile = func(string, []byte, os.FileMode) error {
+		t.Fatal("null client_data must not produce an export")
+		return nil
+	}
+	err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{ConfigOutput: filepath.Join(t.TempDir(), "app.json")})
+	if err == nil || !strings.Contains(err.Error(), "unexpected application configuration") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDownloadConfigurationAllowsEmptyClientDataObject(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
+		"client_data": map[string]any{},
+	})}}
+	output := filepath.Join(t.TempDir(), "app.json")
+	runner := New(api, io.Discard)
+	if err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{ConfigOutput: output}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	topics, ok := config["topic_data"].(map[string]any)
+	if !ok || len(topics) != 0 {
+		t.Fatalf("unexpected configuration: %#v", config)
 	}
 }

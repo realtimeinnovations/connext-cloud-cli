@@ -123,7 +123,11 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 		if err != nil {
 			return nil, err
 		}
-		if err := addFile(filepath.Join(secureDir, name), decoded, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if strings.HasSuffix(name, ".key") {
+			mode = 0o600
+		}
+		if err := addFile(filepath.Join(secureDir, name), decoded, mode); err != nil {
 			return nil, err
 		}
 	}
@@ -283,7 +287,7 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 	}
 	if options.ConfigOutput != "" {
 		var clientData map[string]any
-		if json.Unmarshal(artifacts.ClientData, &clientData) != nil {
+		if json.Unmarshal(artifacts.ClientData, &clientData) != nil || clientData == nil {
 			return fmt.Errorf("unexpected application configuration for %q", appName)
 		}
 		topicData := map[string]any{}
@@ -577,7 +581,11 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		if err != nil {
 			return err
 		}
-		saved, err := runner.saveClientFile("", destination, bundle, forceOverwrite, len(privateKey) > 0)
+		sensitive := len(privateKey) > 0
+		for name := range secureFiles {
+			sensitive = sensitive || strings.HasSuffix(name, ".key")
+		}
+		saved, err := runner.saveClientFile("", destination, bundle, forceOverwrite, sensitive)
 		if err != nil {
 			return err
 		}
