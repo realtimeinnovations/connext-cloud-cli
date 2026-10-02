@@ -506,6 +506,20 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect client output %s: %w", destination, err)
 	}
+	artifacts, found, err := runner.fetchApplication(name, appName)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("cannot register client %q: application artifacts are unavailable", clientID)
+	}
+	if err := artifacts.validateComplete(); err != nil {
+		return err
+	}
+	manifest, err := formatJSON(artifacts.Manifest)
+	if err != nil {
+		return err
+	}
 	var privateKey []byte
 	var csrPEM string
 	if genPrivateKey {
@@ -558,16 +572,6 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if err := validateSecureFileNames(secureFiles); err != nil {
 		return err
 	}
-	artifacts, found, err := runner.fetchApplication(name, appName)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	if err := artifacts.validateComplete(); err != nil {
-		return err
-	}
 	if zipOutput {
 		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
 		if err != nil {
@@ -582,10 +586,6 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		}
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil
-	}
-	manifest, err := formatJSON(artifacts.Manifest)
-	if err != nil {
-		return err
 	}
 	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
 	if err != nil {

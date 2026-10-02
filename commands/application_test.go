@@ -504,11 +504,15 @@ func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
 					} else {
 						artifacts[field] = value
 					}
-					runner := New(registrationTestAPI(artifacts), io.Discard)
+					api := registrationTestAPI(artifacts)
+					runner := New(api, io.Discard)
 					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
 					err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput)
 					if err == nil || !strings.Contains(err.Error(), "application artifacts are incomplete") {
 						t.Fatalf("unexpected error: %v", err)
+					}
+					if api.lastPayload != nil {
+						t.Fatalf("incomplete artifacts caused client registration: %#v", api.lastPayload)
 					}
 					entries, err := os.ReadDir(dir)
 					if err != nil || len(entries) != 0 {

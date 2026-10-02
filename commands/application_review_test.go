@@ -232,3 +232,68 @@ func TestDownloadPreflightRejectsInaccessibleDestination(t *testing.T) {
 		t.Fatal("expected preflight error")
 	}
 }
+
+func TestRegistrationFetchFailureDoesNotCreateClient(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		for _, status := range []int{0, http.StatusNotFound, http.StatusConflict, http.StatusInternalServerError} {
+			t.Run(fmt.Sprintf("zip%v/status%d", zipOutput, status), func(t *testing.T) {
+				dir := t.TempDir()
+				t.Chdir(dir)
+				api := registrationTestAPI(nil)
+				api.getFunc = func(string) (*http.Response, error) {
+					if status == 0 {
+						return nil, fmt.Errorf("transport failure")
+					}
+					return newTextResponse(status, "application unavailable"), nil
+				}
+				runner := New(api, io.Discard)
+				runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
+				if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput); err == nil {
+					t.Fatal("expected artifact fetch error")
+				}
+				if api.lastPayload != nil {
+					t.Fatalf("failed artifact fetch registered a client: %#v", api.lastPayload)
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("failed fetch produced output: %v, %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+type registrationOrderAPI struct {
+	*fakeAPI
+	calls []string
+}
+
+func (api *registrationOrderAPI) Get(path string) (*http.Response, error) {
+	api.calls = append(api.calls, "GET "+path)
+	return api.fakeAPI.Get(path)
+}
+
+func (api *registrationOrderAPI) Post(path string, payload any) (*http.Response, error) {
+	api.calls = append(api.calls, "POST "+path)
+	return api.fakeAPI.Post(path, payload)
+}
+
+func TestRegistrationFetchesApplicationOnceBeforePost(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("zip%v", zipOutput), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			api := &registrationOrderAPI{fakeAPI: registrationTestAPI(map[string]any{
+				"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+			})}
+			runner := New(api, io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput); err != nil {
+				t.Fatal(err)
+			}
+			want := "GET /databuses/db/applications/app\nPOST /databuses/db/applications/app/clients"
+			if got := strings.Join(api.calls, "\n"); got != want {
+				t.Fatalf("requests = %q; want %q", got, want)
+			}
+		})
+	}
+}
