@@ -8,7 +8,6 @@ package commands
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +45,7 @@ type Runner struct {
 	Sleep        func(time.Duration)
 	ReadFile     func(string) ([]byte, error)
 	WriteFile    func(string, []byte, os.FileMode) error
+	Chmod        func(string, os.FileMode) error
 	MkdirAll     func(string, os.FileMode) error
 	Stat         func(string) (os.FileInfo, error)
 	CSRGenerator CSRGenerator
@@ -60,6 +59,7 @@ func New(api API, out io.Writer) *Runner {
 		Sleep:     time.Sleep,
 		ReadFile:  os.ReadFile,
 		WriteFile: os.WriteFile,
+		Chmod:     os.Chmod,
 		MkdirAll:  os.MkdirAll,
 		Stat:      os.Stat,
 	}
@@ -89,7 +89,18 @@ func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bo
 			return err
 		}
 	}
-	return runner.WriteFile(filePath, data, fileMode)
+	if sensitive {
+		if err := runner.Chmod(filePath, fileMode); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := runner.WriteFile(filePath, data, fileMode); err != nil {
+		return err
+	}
+	if sensitive {
+		return runner.Chmod(filePath, fileMode)
+	}
+	return nil
 }
 
 func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
@@ -181,6 +192,44 @@ func (runner *Runner) QueryDatabus(name string) error {
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
+	return nil
+}
+
+func (runner *Runner) ListTopics(name string) error {
+	response, err := runner.API.Get("/databuses/" + name + "/topics")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	runner.printResponseBody(body)
+	return nil
+}
+
+func (runner *Runner) GetTopic(name string, topicName string, typeXML bool) error {
+	path := "/databuses/" + name + "/topics/" + url.PathEscape(topicName)
+	if typeXML {
+		path += "?representation=typeXml"
+	}
+	response, err := runner.API.Get(path)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
+	}
+	if typeXML {
+		_, err = runner.Out.Write(body)
+		return err
+	}
+	runner.printResponseBody(body)
 	return nil
 }
 
@@ -362,322 +411,6 @@ func (runner *Runner) UpdateDatabusStatus(name string, status string) error {
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusOK {
 		_, _ = fmt.Fprintf(runner.Out, "Databus '%s' %sd successfully.\n", name, status)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-type applicationManifest struct {
-	Port      json.RawMessage `json:"port"`
-	Kind      string          `json:"kind"`
-	TopicData json.RawMessage `json:"topic_data"`
-}
-
-func parseApplicationPort(rawPort json.RawMessage) (int, bool, error) {
-	if len(rawPort) == 0 || string(rawPort) == "null" {
-		return 0, false, nil
-	}
-	var port int
-	if err := json.Unmarshal(rawPort, &port); err == nil {
-		return port, true, nil
-	}
-	var portText string
-	if err := json.Unmarshal(rawPort, &portText); err != nil {
-		return 0, false, fmt.Errorf("port must be a number or numeric string")
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return 0, false, fmt.Errorf("port must be a number or numeric string")
-	}
-	return port, true, nil
-}
-
-func (runner *Runner) CreateApplication(name string, appName string, port int, kind string, configFile string, portOverridden bool) error {
-	var topicData map[string]any
-	if configFile != "" {
-		data, err := runner.ReadFile(configFile)
-		if err != nil {
-			return fmt.Errorf("read application configuration: %w", err)
-		}
-		var manifest applicationManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
-		}
-		kind = manifest.Kind
-		manifestPort, hasManifestPort, err := parseApplicationPort(manifest.Port)
-		if err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
-		}
-		if hasManifestPort && !portOverridden {
-			port = manifestPort
-		}
-		topicData = map[string]any{}
-		if len(manifest.TopicData) > 0 {
-			if err := json.Unmarshal(manifest.TopicData, &topicData); err != nil || topicData == nil {
-				return fmt.Errorf("application configuration topic_data must be a JSON object")
-			}
-		}
-	}
-	if kind == "" {
-		kind = "app"
-	}
-	if kind == "observability-collector" {
-		kind = "telemetry-service-collector"
-	}
-	if kind != "app" && kind != "gateway" && kind != "telemetry-service-collector" {
-		return fmt.Errorf("invalid application kind %q; expected app, gateway, or observability-collector", kind)
-	}
-	payload := map[string]any{"port": port, "kind": kind}
-	if appName != "" {
-		payload["client_name"] = appName
-	}
-	if configFile != "" {
-		payload["topic_data"] = topicData
-	}
-	response, err := runner.API.Post("/databuses/"+name+"/applications", payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusCreated {
-		runner.printResponseBody(body)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) GetApplication(name string, appName string, generateExample bool, forceOverwrite bool, targetDir string, manifestOutput string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	if manifestOutput != "" {
-		clientData, ok := payload["client_data"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("unexpected application configuration for %q", appName)
-		}
-		topicData := map[string]any{}
-		if rawTopics, exists := clientData["topics"]; exists {
-			var topicsOK bool
-			topicData, topicsOK = rawTopics.(map[string]any)
-			if !topicsOK || topicData == nil {
-				return fmt.Errorf("unexpected topic data for application %q", appName)
-			}
-		}
-		manifest := map[string]any{"topic_data": topicData}
-		if kind, ok := clientData["kind"].(string); ok && kind != "" {
-			manifest["kind"] = kind
-		}
-		if rawPort, exists := clientData["port"]; exists {
-			encodedPort, err := json.Marshal(rawPort)
-			if err != nil {
-				return err
-			}
-			port, hasPort, err := parseApplicationPort(encodedPort)
-			if err != nil {
-				return fmt.Errorf("unexpected port for application %q", appName)
-			}
-			if hasPort {
-				manifest["port"] = port
-			}
-		}
-		data, err := json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = runner.SaveClientFile("", manifestOutput, append(data, '\n'), forceOverwrite)
-		return err
-	}
-	clientConfig, _ := payload["client_config"].(string)
-	if clientConfig == "" {
-		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected application configuration for '%s'\n", appName)
-		return nil
-	}
-	if _, err := runner.SaveClientFile(targetDir, appName+".xml", []byte(clientConfig), forceOverwrite); err != nil {
-		return err
-	}
-	if generateExample {
-		if example, ok := payload["client_example"].(string); ok && example != "" {
-			_, err := runner.SaveClientFile(targetDir, appName+".py", []byte(example), forceOverwrite)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (runner *Runner) DeleteApplication(name string, appName string) error {
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Application '%s' successfully deleted from databus '%s'\n", appName, name)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) ListAppClients(name string, appName string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName + "/clients")
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload["clients"], "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func CreateClientBundleDirectory(databusName string, appName string, clientName string) (string, error) {
-	if databusName == "" || appName == "" || clientName == "" {
-		return "", fmt.Errorf("databus_name, app_name, and client_name must be provided")
-	}
-	targetDir := fmt.Sprintf("%s-%s-%s", databusName, appName, clientName)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
-	}
-	return targetDir, nil
-}
-
-func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
-	filePath := fileName
-	if targetDir != "" {
-		filePath = filepath.Join(targetDir, fileName)
-	}
-	if _, err := runner.Stat(filePath); err == nil && !forceOverwrite {
-		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
-		return false, nil
-	}
-	sensitive := strings.HasSuffix(fileName, ".key")
-	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
-		return false, err
-	}
-	_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", filePath)
-	return true, nil
-}
-
-func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
-	for filename, encoded := range secureFiles {
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return err
-		}
-		if _, err := runner.SaveClientFile(targetDir, filename, decoded, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	if len(privateKey) > 0 {
-		if _, err := runner.SaveClientFile(targetDir, "client.key", privateKey, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (runner *Runner) RegisterAppClient(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool) error {
-	if clientID == "" {
-		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
-		return nil
-	}
-	var privateKey []byte
-	var csrPEM string
-	if genPrivateKey {
-		if runner.CSRGenerator == nil {
-			return fmt.Errorf("CSR generator is not configured")
-		}
-		var err error
-		privateKey, csrPEM, err = runner.CSRGenerator(name, appName, clientID)
-		if err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
-	} else {
-		if csrFile == "" {
-			_, _ = fmt.Fprintln(runner.Out, "Error: either --csr-file or --gen-private-key is required")
-			return nil
-		}
-		data, err := runner.ReadFile(csrFile)
-		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-			return nil
-		}
-		csrPEM = string(data)
-	}
-	response, err := runner.API.Post("/databuses/"+name+"/applications/"+appName+"/clients", map[string]any{"client_id": clientID, "csr": csrPEM})
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	secureFiles := map[string]string{}
-	if rawSecureFiles, ok := payload["secure_files"].(map[string]any); ok {
-		for key, value := range rawSecureFiles {
-			if text, ok := value.(string); ok {
-				secureFiles[key] = text
-			}
-		}
-	}
-	delete(payload, "secure_files")
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
-	if err != nil {
-		return err
-	}
-	if err := runner.GetApplication(name, appName, true, forceOverwrite, targetDir, ""); err != nil {
-		return err
-	}
-	return runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, targetDir)
-}
-
-func (runner *Runner) RevokeAppClient(name string, appName string, clientID string) error {
-	if clientID == "" {
-		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required for revoke")
-		return nil
-	}
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName + "/clients/" + clientID)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent {
-		_, _ = fmt.Fprintf(runner.Out, "Client '%s' revoked successfully.\n", clientID)
 		return nil
 	}
 	runner.printResponseError("Error: ", response.StatusCode, body)
