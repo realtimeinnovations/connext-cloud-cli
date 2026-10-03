@@ -207,32 +207,51 @@ func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
 	if err := manager.migrateLegacy(); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(manager.TokenPath)
+	inspection, err := manager.InspectCredentials()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
 		return "", err
 	}
-	var token tokenFile
-	if err := json.Unmarshal(data, &token); err != nil {
-		_ = os.Remove(manager.TokenPath)
-		return "", nil
+	if inspection.State == "usable" {
+		return inspection.AccessToken, nil
 	}
-	if token.AccessToken == "" || token.ExpiresAt == "" {
+	if inspection.State != "missing" {
 		_ = os.Remove(manager.TokenPath)
-		return "", nil
+	}
+	return "", nil
+}
+
+// CredentialInspection contains local metadata, not server validation.
+// AccessToken is deliberately excluded from serialization.
+type CredentialInspection struct {
+	State       string    `json:"state"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	AccessToken string    `json:"-"`
+}
+
+// InspectCredentials never migrates, deletes, refreshes, or saves credentials.
+func (manager *Manager) InspectCredentials() (CredentialInspection, error) {
+	if manager.pathErr != nil {
+		return CredentialInspection{}, manager.pathErr
+	}
+	data, err := os.ReadFile(manager.TokenPath)
+	if os.IsNotExist(err) {
+		return CredentialInspection{State: "missing"}, nil
+	}
+	if err != nil {
+		return CredentialInspection{}, err
+	}
+	var token tokenFile
+	if err := json.Unmarshal(data, &token); err != nil || token.AccessToken == "" || token.ExpiresAt == "" {
+		return CredentialInspection{State: "malformed"}, nil
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, token.ExpiresAt)
 	if err != nil {
-		_ = os.Remove(manager.TokenPath)
-		return "", nil
+		return CredentialInspection{State: "malformed"}, nil
 	}
-	if manager.Now().Before(expiresAt) {
-		return token.AccessToken, nil
+	if !manager.Now().Before(expiresAt) {
+		return CredentialInspection{State: "expired", ExpiresAt: expiresAt}, nil
 	}
-	_ = os.Remove(manager.TokenPath)
-	return "", nil
+	return CredentialInspection{State: "usable", ExpiresAt: expiresAt, AccessToken: token.AccessToken}, nil
 }
 
 func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
@@ -283,7 +302,12 @@ func (manager *Manager) usesDefaultPath() bool {
 }
 
 func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (string, int, error) {
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(apiURL, "/")+"/service-accounts/auth/token", nil)
+	return manager.GetAccessTokenFromAPIKeyContext(context.Background(), apiKey, apiURL)
+}
+
+// GetAccessTokenFromAPIKeyContext exchanges a key without persisting the token.
+func (manager *Manager) GetAccessTokenFromAPIKeyContext(ctx context.Context, apiKey string, apiURL string) (string, int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(apiURL, "/")+"/service-accounts/auth/token", nil)
 	if err != nil {
 		return "", 0, err
 	}

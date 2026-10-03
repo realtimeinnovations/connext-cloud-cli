@@ -118,71 +118,98 @@ func seedManagedLicense(contents []byte) error {
 // ProvisionManagedLicense repairs the per-version copy from product-owned
 // storage. A declared installation's invalid license blocks environment fallback.
 func ProvisionManagedLicense(install Install) (bool, error) {
-	if !IsManagedInstallation(install) {
-		return false, fmt.Errorf("not an rticloud-managed installation: %s", install.Path)
-	}
-	canonical, err := managedLicensePath()
+	inspection, err := InspectManagedLicense(install)
 	if err != nil {
 		return false, err
 	}
-	if err := safeManagedPath(filepath.Dir(filepath.Dir(filepath.Dir(canonical))), filepath.Dir(canonical)); err != nil {
-		return false, err
+	if inspection.Contents == nil {
+		return false, nil
 	}
-	contents, readErr := readCopyableLicense(canonical)
-	if readErr != nil {
-		// Preserve licenses saved by earlier CLI versions inside their installation.
-		contents, err = readCopyableLicense(LicenseFilePath(install))
-		if err != nil {
-			selected := os.Getenv("NDDSHOME")
-			selectedLicense := ""
-			if selected != "" && !sameInstallationPath(selected, install.Path) {
-				selectedLicense = filepath.Join(selected, LicenseFileName)
-			}
-			if selectedLicense != "" {
-				if _, statErr := os.Lstat(selectedLicense); statErr == nil {
-					contents, err = readCopyableLicense(selectedLicense)
-					if err != nil {
-						return false, fmt.Errorf("invalid NDDSHOME license; environment fallback is disabled: %w", err)
-					}
-				} else if !os.IsNotExist(statErr) {
-					return false, statErr
-				}
-			}
-			if contents == nil {
-				if env := os.Getenv("RTI_LICENSE_FILE"); env != "" {
-					contents, err = readCopyableLicense(env)
-					if err != nil {
-						return false, fmt.Errorf("invalid RTI_LICENSE_FILE: %w", err)
-					}
-				} else {
-					contents = previousManagedLicense(install)
-				}
-			}
-		}
-		if contents == nil {
-			return false, nil
-		}
-		if err := writeVerifiedLicense(canonical, contents); err != nil {
+	if inspection.Source != inspection.CanonicalPath {
+		if err := writeVerifiedLicense(inspection.CanonicalPath, inspection.Contents); err != nil {
 			return false, err
 		}
 	}
-	if current, err := readCopyableLicense(LicenseFilePath(install)); err == nil && bytes.Equal(current, contents) {
-		return true, nil
-	}
-	if err := writeVerifiedLicense(LicenseFilePath(install), contents); err != nil {
-		return false, err
+	if !inspection.CopyMatches {
+		if err := writeVerifiedLicense(LicenseFilePath(install), inspection.Contents); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
 
-func previousManagedLicense(current Install) []byte {
+// LicenseInspection describes the source provisioning would choose, without
+// copying or downloading anything. Contents must never be emitted in a report.
+type LicenseInspection struct {
+	Source        string
+	CanonicalPath string
+	Contents      []byte `json:"-"`
+	CopyMatches   bool
+}
+
+func InspectManagedLicense(install Install) (LicenseInspection, error) {
+	result := LicenseInspection{}
+	if !IsManagedInstallation(install) {
+		return result, fmt.Errorf("not an rticloud-managed installation: %s", install.Path)
+	}
+	canonical, err := managedLicensePath()
+	if err != nil {
+		return result, err
+	}
+	result.CanonicalPath = canonical
+	if err := safeManagedPath(filepath.Dir(filepath.Dir(filepath.Dir(canonical))), filepath.Dir(canonical)); err != nil {
+		return result, err
+	}
+	result.Source = canonical
+	contents, err := readCopyableLicense(canonical)
+	if err != nil {
+		result.Source = LicenseFilePath(install)
+		contents, err = readCopyableLicense(result.Source)
+		if err != nil {
+			selected := os.Getenv("NDDSHOME")
+			if selected != "" && !sameInstallationPath(selected, install.Path) {
+				path := filepath.Join(selected, LicenseFileName)
+				if _, statErr := os.Lstat(path); statErr == nil {
+					result.Source = path
+					contents, err = readCopyableLicense(path)
+					if err != nil {
+						return result, fmt.Errorf("invalid NDDSHOME license; environment fallback is disabled: %w", err)
+					}
+				} else if !os.IsNotExist(statErr) {
+					return result, statErr
+				}
+			}
+			if contents == nil {
+				if env := os.Getenv("RTI_LICENSE_FILE"); env != "" {
+					result.Source = env
+					contents, err = readCopyableLicense(env)
+					if err != nil {
+						return result, fmt.Errorf("invalid RTI_LICENSE_FILE: %w", err)
+					}
+				} else {
+					result.Source, contents = previousManagedLicenseSource(install)
+				}
+			}
+		}
+	}
+	result.Contents = contents
+	if contents != nil {
+		current, err := readCopyableLicense(LicenseFilePath(install))
+		result.CopyMatches = err == nil && bytes.Equal(current, contents)
+	} else {
+		result.Source = ""
+	}
+	return result, nil
+}
+
+func previousManagedLicenseSource(current Install) (string, []byte) {
 	root, err := managedRoot()
 	if err != nil {
-		return nil
+		return "", nil
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil
+		return "", nil
 	}
 	sort.Slice(entries, func(i, j int) bool { return CompareVersion(entries[i].Name(), entries[j].Name()) > 0 })
 	for _, entry := range entries {
@@ -194,11 +221,12 @@ func previousManagedLicense(current Install) []byte {
 		if !IsManagedInstallation(candidate) {
 			continue
 		}
-		if contents, err := readCopyableLicense(LicenseFilePath(candidate)); err == nil {
-			return contents
+		path := LicenseFilePath(candidate)
+		if contents, err := readCopyableLicense(path); err == nil {
+			return path, contents
 		}
 	}
-	return nil
+	return "", nil
 }
 
 // EnvironmentOverrides keeps subprocesses on the selected installation and its
