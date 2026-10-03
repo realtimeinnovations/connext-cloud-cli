@@ -688,7 +688,7 @@ func (a *Agent) runDisplay(ctx context.Context) {
 	if tw == nil {
 		tw = a.Out
 	}
-	if agentIsTerminal(tw) {
+	if !a.NonInteractive && agentIsTerminal(tw) {
 		// The live TUI owns the terminal: emit() must route events to the file
 		// sink and ring, not stdout, so it does not corrupt the rendered frame.
 		a.tuiActive.Store(true)

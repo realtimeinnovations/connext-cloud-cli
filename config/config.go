@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
@@ -47,13 +48,14 @@ const NotConfiguredMessage = "RTI Connext Cloud CLI not configured.\n\nFirst run
 var ErrNotConfigured = errors.New(NotConfiguredMessage)
 
 type Manager struct {
-	Path         string
-	Env          func(string) string
-	HTTPClient   *http.Client
-	cache        map[string]string
-	migratedPath string
-	pathErr      error
-	defaultPath  bool
+	NonInteractive bool
+	Path           string
+	Env            func(string) string
+	HTTPClient     *http.Client
+	cache          map[string]string
+	migratedPath   string
+	pathErr        error
+	defaultPath    bool
 }
 
 func DefaultDir() (string, error) {
@@ -220,6 +222,9 @@ func (manager *Manager) RequireConfiguration(out io.Writer) bool {
 }
 
 func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Reader, out io.Writer) (bool, error) {
+	if manager.NonInteractive && region == "" && !getRegion {
+		return false, clierror.InputRequired("--region is required with --non-interactive (or use --get-region)", "provide_region")
+	}
 	currentConfig, err := manager.GetConfig()
 	if err != nil {
 		return false, err

@@ -32,6 +32,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
@@ -49,19 +50,20 @@ const (
 )
 
 type Runtime struct {
-	Out           io.Writer
-	Config        *config.Manager
-	Auth          *auth.Manager
-	WorkAuth      *auth.Manager
-	CloudAPI      *cloudapi.Client
-	Commands      *commands.Runner
-	License       *commands.Runner
-	Gateway       *gateway.GatewayApp
-	Spy           *spy.App
-	EdgeProvision *edgeprovision.Runner
-	EdgeStore     *edgestore.Store
-	EdgeSyncAgent *edgesyncagent.Agent
-	Updater       *update.Manager
+	NonInteractive bool
+	Out            io.Writer
+	Config         *config.Manager
+	Auth           *auth.Manager
+	WorkAuth       *auth.Manager
+	CloudAPI       *cloudapi.Client
+	Commands       *commands.Runner
+	License        *commands.Runner
+	Gateway        *gateway.GatewayApp
+	Spy            *spy.App
+	EdgeProvision  *edgeprovision.Runner
+	EdgeStore      *edgestore.Store
+	EdgeSyncAgent  *edgesyncagent.Agent
+	Updater        *update.Manager
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -328,6 +330,9 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	}
 	existingConfig := configValues != nil
 	if configValues == nil {
+		if runtime.NonInteractive {
+			return clierror.InputRequired("No Spy project configuration is available. Run 'rticloud spy' interactively to configure this project first.", "configure_spy_project")
+		}
 		if skipPreflight {
 			return common.UserError{Message: "No spy configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud spy"}
 		}
@@ -388,6 +393,9 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	}
 	existingConfig := configValues != nil
 	if configValues == nil {
+		if runtime.NonInteractive {
+			return clierror.InputRequired("No Gateway project configuration is available. Run 'rticloud gateway' interactively to configure this project first.", "configure_gateway_project")
+		}
 		if skipPreflight {
 			return gateway.GatewayError{Message: "No gateway configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud gateway"}
 		}
