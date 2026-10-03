@@ -442,3 +442,60 @@ func TestExistingNullProjectConfigIsInvalid(t *testing.T) {
 		t.Fatal(r)
 	}
 }
+
+func TestRequestedTimeoutOverridesInheritedClientTimeout(t *testing.T) {
+	for _, source := range []string{"cloud", "auth"} {
+		for _, credentials := range []string{"cached", "api-key"} {
+			t.Run(source+"/"+credentials, func(t *testing.T) {
+				o, _, _ := fixture(t)
+				o.Timeout = 60 * time.Second
+				if credentials == "api-key" {
+					if err := os.Remove(o.Auth.TokenPath); err != nil {
+						t.Fatal(err)
+					}
+					o.Auth.Env = func(string) string { return "SECRET_API_KEY" }
+				}
+				var deadline time.Time
+				calls := 0
+				var minimumDeadline time.Time
+				client := &http.Client{Timeout: 30 * time.Second, Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					d, ok := req.Context().Deadline()
+					if !ok || d.Before(minimumDeadline) {
+						t.Fatalf("request deadline %v was shortened by the inherited client timeout; want at least %v", d, minimumDeadline)
+					}
+					if calls == 1 {
+						deadline = d
+					} else if d != deadline {
+						t.Fatal("API-key exchange and Cloud probe did not share a deadline")
+					}
+					if req.Method == http.MethodPost {
+						return response(200, `{"access_token":"SECRET_EXCHANGED"}`), nil
+					}
+					return response(200, `{"databuses":{}}`), nil
+				})}
+				if source == "cloud" {
+					o.HTTPClient = client
+				} else {
+					o.HTTPClient = nil
+					o.Auth.HTTPClient = client
+				}
+				minimumDeadline = time.Now().Add(o.Timeout)
+				r := Run(context.Background(), o)
+				if c := check(t, r, "cloud_access"); c.Status != "pass" {
+					t.Fatalf("%+v", c)
+				}
+				wantCalls := 1
+				if credentials == "api-key" {
+					wantCalls = 2
+				}
+				if calls != wantCalls {
+					t.Fatalf("got %d requests; want %d", calls, wantCalls)
+				}
+				if client.Timeout != 30*time.Second {
+					t.Fatal("doctor changed the shared runtime client's timeout")
+				}
+			})
+		}
+	}
+}
