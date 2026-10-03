@@ -272,7 +272,7 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 		return rawURL, nil
 	}
 	if serial == "" {
-		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
+		return "", argumentError("--serial is required when using --service and --participant-tpl-id without --url")
 	}
 	if u := rt.EdgeStore.ResolveNodeURL(service, domainID, participantID, serial); u != "" {
 		return u, nil
@@ -290,9 +290,9 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --serial %s%s",
 				ni.Service, ni.Domain, ni.Participant, ni.Node, ts)
 		}
-		return "", fmt.Errorf("%s", sb.String())
+		return "", argumentError("%s", sb.String())
 	}
-	return "", fmt.Errorf("--url is required (node_url not found in store at %s)",
+	return "", argumentError("--url is required (node_url not found in store at %s)",
 		rt.EdgeStore.NodeURLPath(service, domainID, participantID, serial))
 }
 
@@ -372,12 +372,9 @@ func newConfigureCommand(runtime *app.Runtime) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if region != "" && getRegion {
-				return fmt.Errorf("exactly one of --region or --get-region is allowed")
+				return argumentError("exactly one of --region or --get-region is allowed")
 			}
-			ok, err := runtime.Config.ConfigureRegion(region, getRegion, os.Stdin, cmd.OutOrStdout())
-			if err == nil && !ok {
-				return &clierror.Error{Code: "COMMAND_FAILED", Message: "CLI configuration failed"}
-			}
+			_, err := runtime.Config.ConfigureRegion(region, getRegion, os.Stdin, cmd.OutOrStdout())
 			return err
 		},
 	}
@@ -772,7 +769,7 @@ func newTopicCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.ListTopics(name)
 			},
@@ -790,10 +787,10 @@ func newTopicCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if topicName == "" {
-					return fmt.Errorf("--topic is required")
+					return argumentError("--topic is required")
 				}
 				return runtime.Commands.GetTopic(name, topicName, typeXML)
 			},
@@ -931,19 +928,19 @@ Formatting:
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if output != "" && example {
-					return fmt.Errorf("--example cannot be used with --output")
+					return argumentError("--example cannot be used with --output")
 				}
 				if output != "" && (manifest || zipOutput) {
-					return fmt.Errorf("--output cannot be combined with artifact flags")
+					return argumentError("--output cannot be combined with artifact flags")
 				}
 				if zipOutput && (example || manifest) {
-					return fmt.Errorf("--zip cannot be combined with --example or --manifest")
+					return argumentError("--zip cannot be combined with --example or --manifest")
 				}
 				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
 					GenerateExample: example,
@@ -1030,16 +1027,16 @@ Formatting:
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if clientID == "" {
-					return fmt.Errorf("--client-id is required")
+					return argumentError("--client-id is required")
 				}
 				if (csrFile == "") == !genPrivateKey {
-					return fmt.Errorf("exactly one of --csr-file or --gen-private-key is required")
+					return argumentError("exactly one of --csr-file or --gen-private-key is required")
 				}
 				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, force, zipOutput)
 			},
@@ -1170,7 +1167,7 @@ Formatting:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
 			if format != "" && format != "text" {
-				return fmt.Errorf("invalid --format %q; expected text", format)
+				return argumentError("invalid --format %q; expected text", format)
 			}
 			if nonInteractive(cmd) && format == "" {
 				format = "text"
@@ -1232,7 +1229,7 @@ Formatting:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
 			if format != "" && format != "text" {
-				return fmt.Errorf("invalid --format %q; expected text", format)
+				return argumentError("invalid --format %q; expected text", format)
 			}
 			if nonInteractive(cmd) && format == "" {
 				format = "text"
@@ -1849,7 +1846,7 @@ func ensureConnextDir(path string) error {
 	info, err := os.Stat(path)
 	if err == nil {
 		if !info.IsDir() {
-			return fmt.Errorf("--connext-dir %q exists but is not a directory", path)
+			return argumentError("--connext-dir %q exists but is not a directory", path)
 		}
 		return nil
 	}
@@ -1907,13 +1904,13 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return argumentError("--serial is required")
 				}
 				if len(macs) == 0 {
-					return fmt.Errorf("--mac is required (at least one)")
+					return argumentError("--mac is required (at least one)")
 				}
 				if csrFile == "" {
-					return fmt.Errorf("--csr-file is required")
+					return argumentError("--csr-file is required")
 				}
 				// Auto-populate service, participant-id and domain-id from the campaign
 				// token when the user has not supplied them explicitly.
@@ -1930,10 +1927,10 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					}
 				}
 				if effectiveService == "" {
-					return fmt.Errorf("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
+					return argumentError("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
 				}
 				if effectiveParticipant == "" {
-					return fmt.Errorf("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
+					return argumentError("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
 				}
 				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken)
 				if err != nil {
@@ -1945,7 +1942,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if runtime.EdgeStore != nil {
 					domain := edgesyncagent.CampaignTokenDeviceDomain(campaignToken)
 					if domain == "" {
-						return fmt.Errorf("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
+						return argumentError("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
 					}
 					deviceURL := "https://" + domain
 					if err := runtime.EdgeStore.WriteNodeURL(effectiveService, domainTemplateID, effectiveParticipant, serial, deviceURL); err != nil {
@@ -2004,22 +2001,22 @@ Example (generate the key locally):
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if service == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if domainTemplateIDFlag == "" {
-					return fmt.Errorf("--domain-template-id is required")
+					return argumentError("--domain-template-id is required")
 				}
 				if participantTemplateIDFlag == "" {
-					return fmt.Errorf("--participant-template-id is required")
+					return argumentError("--participant-template-id is required")
 				}
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return argumentError("--serial is required")
 				}
 				if genKey && csrFile != "" {
-					return fmt.Errorf("--csr-file and --gen-key are mutually exclusive")
+					return argumentError("--csr-file and --gen-key are mutually exclusive")
 				}
 				if !genKey && csrFile == "" {
-					return fmt.Errorf("either --csr-file or --gen-key is required")
+					return argumentError("either --csr-file or --gen-key is required")
 				}
 				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile, genKey)
 				return err
@@ -2043,7 +2040,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -2075,7 +2072,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -2134,7 +2131,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -2176,7 +2173,7 @@ mtls_artifacts/ directory.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if csrFile == "" {
-					return fmt.Errorf("--csr-file is required")
+					return argumentError("--csr-file is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -2314,7 +2311,7 @@ agent's management login.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
 					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
-						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
+						return argumentError("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
 					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
@@ -2329,11 +2326,11 @@ agent's management login.`,
 					var req edgesyncagent.EnrollRequest
 					if campaignToken != "" {
 						if deviceName == "" {
-							return fmt.Errorf("--device-name is required (the name registered in the inventory)")
+							return argumentError("--device-name is required (the name registered in the inventory)")
 						}
 						serviceID, tokenParticipantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
 						if err != nil {
-							return fmt.Errorf("invalid campaign token: %w", err)
+							return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("invalid campaign token: %v", err), Cause: err}
 						}
 						req = edgesyncagent.EnrollRequest{
 							ServiceID:     serviceID,

@@ -251,19 +251,23 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
-		if errors.Is(err, config.ErrNotConfigured) {
-			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error()})
+		var typed *clierror.Error
+		if errors.Is(err, config.ErrNotConfigured) || errors.As(err, &typed) {
+			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error(), Cause: err})
 		}
 		message := gateway.FormatAPIConnectionError(method, apiHost, path, err)
 		if command != "gateway" {
 			message = strings.ReplaceAll(message, "rticloud gateway", "rticloud "+command)
 		}
-		return nil, suppressResetHint(gateway.GatewayError{Message: message})
+		return nil, suppressResetHint(gateway.GatewayError{Message: message, Cause: err})
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
+	body, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		return nil, suppressResetHint(readErr)
+	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body), Cause: httputil.NewStatusError(response.StatusCode, body)}
 		if response.StatusCode == http.StatusNotFound {
 			return nil, apiErr
 		}
@@ -381,7 +385,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
 	err, showResetHint := resetHintError(err)
 	if existingConfig && spy.HasDatabus(config) && showResetHint {
-		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
+		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint(), Cause: err}
 	}
 	return err
 }
@@ -481,7 +485,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
 	err, showResetHint := resetHintError(err)
 	if existingConfig && (gateway.HasDatabus(config) || gateway.HasObservability(config)) && showResetHint {
-		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
+		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint(), Cause: err}
 	}
 	return err
 }
@@ -542,7 +546,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	}
 	licenseContent, err := runtime.License.DownloadLicense(nil)
 	if err != nil {
-		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err)}
+		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
 	}
 	if err := internalconnext.WriteLicenseFile(install, licenseContent); err != nil {
 		return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)

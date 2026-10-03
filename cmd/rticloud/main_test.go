@@ -48,6 +48,8 @@ func TestCLIProcess(t *testing.T) {
 		mutation      int
 		mutationBody  string
 		textWant      string
+		project       string
+		stderrWant    string
 		resource      string
 		list          string
 		noCredentials bool
@@ -161,6 +163,22 @@ func TestCLIProcess(t *testing.T) {
 		{name: "default list output", args: []string{"databus", "list"}, text: true, calls: 1},
 		{name: "text error on stderr", args: []string{"databus", "query", "--name", "demo"}, status: 404, text: true, exit: 4, calls: 1},
 		{name: "text missing credentials", args: []string{"databus", "list"}, text: true, noCredentials: true, exit: 3},
+		{name: "configure mutually exclusive", args: []string{"configure", "--region", "us-east-2", "--get-region"}, text: true, exit: 2, stderrWant: "exactly one"},
+		{name: "configure invalid region", args: []string{"configure", "--region", "invalid"}, text: true, exit: 2, stderrWant: "Invalid region 'invalid'. Available regions:"},
+		{name: "topic missing name", args: []string{"databus", "topics"}, text: true, exit: 2},
+		{name: "topic missing topic", args: []string{"databus", "get-topic", "--name", "demo"}, text: true, exit: 2},
+		{name: "app get incompatible flags", args: []string{"databus", "app", "get", "--name", "demo", "--app-name", "app", "--example", "--output", "app.json"}, text: true, exit: 2},
+		{name: "client register incompatible flags", args: []string{"databus", "app", "client", "register", "--name", "demo", "--app-name", "app", "--client-id", "client", "--csr-file", "client.csr", "--gen-private-key"}, text: true, exit: 2},
+		{name: "edge enroll missing serial", args: []string{"edge-sync", "enroll"}, text: true, exit: 2},
+		{name: "edge direct enroll missing service", args: []string{"edge-sync", "enroll-direct"}, text: true, exit: 2},
+		{name: "gateway configured missing credentials", args: []string{"gateway"}, project: "gateway", noCredentials: true, text: true, exit: 3, stderrWant: "No usable credentials"},
+		{name: "spy configured missing credentials", args: []string{"spy"}, project: "spy", noCredentials: true, text: true, exit: 3, stderrWant: "No usable credentials"},
+		{name: "gateway configured expired credentials", args: []string{"gateway"}, project: "gateway", expired: true, text: true, exit: 3, stderrWant: "No usable credentials"},
+		{name: "spy configured expired credentials", args: []string{"spy"}, project: "spy", expired: true, text: true, exit: 3, stderrWant: "No usable credentials"},
+		{name: "gateway configured unauthorized", args: []string{"gateway"}, project: "gateway", status: 401, text: true, exit: 3, calls: 1},
+		{name: "spy configured unauthorized", args: []string{"spy"}, project: "spy", status: 401, text: true, exit: 3, calls: 1},
+		{name: "gateway configured forbidden", args: []string{"gateway"}, project: "gateway", status: 403, text: true, exit: 3, calls: 1},
+		{name: "spy configured forbidden", args: []string{"spy"}, project: "spy", status: 403, text: true, exit: 3, calls: 1},
 		{name: "configure needs region", args: []string{"configure"}, text: true, exit: 2},
 		{name: "login cannot open browser", args: []string{"login"}, text: true, exit: 2},
 		{name: "device login cannot open browser", args: []string{"login", "--device"}, text: true, exit: 2},
@@ -259,6 +277,9 @@ func TestCLIProcess(t *testing.T) {
 			}
 			cmd := exec.CommandContext(ctx, os.Args[0], args...)
 			cmd.Dir = t.TempDir()
+			if tc.project != "" {
+				writeJSON(filepath.Join(cmd.Dir, ".connext", tc.project+".yaml"), map[string]any{"databus": "demo", "templates": map[string]any{"gateway": "gw", "app": "spy"}})
+			}
 			for _, env := range os.Environ() {
 				key := strings.SplitN(env, "=", 2)[0]
 				if key != "CONNEXT_CLOUD_API_KEY" && key != "LOCALAPPDATA" && !strings.HasPrefix(key, "RTICLOUD_CLI_TEST_") {
@@ -296,7 +317,13 @@ func TestCLIProcess(t *testing.T) {
 				t.Fatalf("exit=%d calls=%d; want exit=%d calls=%d; stdout=%q stderr=%q", exit, calls.Load(), tc.exit, tc.calls, stdout.String(), stderr.String())
 			}
 			if tc.text {
-				if exit != 0 && (stdout.Len() != 0 || stderr.Len() == 0) {
+				if tc.stderrWant != "" && !strings.Contains(stderr.String(), tc.stderrWant) {
+					t.Fatalf("specific error missing: %q", stderr.String())
+				}
+				if tc.project != "" && strings.Contains(stderr.String(), "Cannot reach") {
+					t.Fatalf("authentication mislabeled as connection failure: %q", stderr.String())
+				}
+				if exit != 0 && ((tc.project == "" && stdout.Len() != 0) || stderr.Len() == 0) {
 					t.Fatalf("error streams: stdout=%q stderr=%q", stdout.String(), stderr.String())
 				}
 				textWant := tc.textWant

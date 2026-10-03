@@ -347,7 +347,7 @@ func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName
 	}
 	payload, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications/%s/clients", resourceName, templateName), map[string]any{"client_id": clientID, "csr": csr})
 	if err != nil {
-		return GatewayError{Message: fmt.Sprintf("Unable to register secure %s credentials for template '%s'.\n%v", label, templateName, err)}
+		return GatewayError{Message: fmt.Sprintf("Unable to register secure %s credentials for template '%s'.\n%v", label, templateName, err), Cause: err}
 	}
 	securePayload, _ := payload["secure_files"].(map[string]any)
 	secureMap := map[string]string{}
@@ -434,7 +434,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	if err != nil {
 		logFile.Close()
 		close(collectorLines)
-		return nil, GatewayError{Message: fmt.Sprintf("Failed to start Collector Service: %v", err)}
+		return nil, GatewayError{Message: fmt.Sprintf("Failed to start Collector Service: %v", err), Cause: err}
 	}
 	app.collectorLines = collectorLines
 	app.collectorDiscoveryEnabled = discoveryEnabled

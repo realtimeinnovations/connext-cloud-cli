@@ -8,6 +8,7 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,6 +223,15 @@ func (manager *Manager) RequireConfiguration(out io.Writer) bool {
 }
 
 func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Reader, out io.Writer) (bool, error) {
+	if region != "" && getRegion {
+		return false, &clierror.Error{Code: "INVALID_ARGUMENT", Message: "exactly one of --region or --get-region is allowed"}
+	}
+	if region != "" {
+		if _, ok := RegionURLMap[region]; !ok {
+			return false, invalidRegion(region)
+		}
+	}
+	explicitRegion := region != ""
 	if manager.NonInteractive && region == "" && !getRegion {
 		return false, clierror.InputRequired("--region is required with --non-interactive (or use --get-region)", "provide_region")
 	}
@@ -232,18 +242,17 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 	if getRegion {
 		currentAPIHost := manager.GetAPIURLSafe()
 		if currentAPIHost == "" {
-			_, _ = fmt.Fprintln(out, "Current region: not configured")
-			return true, nil
+			_, err := fmt.Fprintln(out, "Current region: not configured")
+			return err == nil, err
 		}
 		for configuredRegion, url := range RegionURLMap {
 			if currentAPIHost == url {
-				_, _ = fmt.Fprintf(out, "Current region: %s\n", configuredRegion)
-				return true, nil
+				_, err := fmt.Fprintf(out, "Current region: %s\n", configuredRegion)
+				return err == nil, err
 			}
 		}
-		_, _ = fmt.Fprintln(out, "Current region: custom (not using standard regions)")
-		_, _ = fmt.Fprintf(out, "Current API host: %s\n", currentAPIHost)
-		return true, nil
+		_, err := fmt.Fprintf(out, "Current region: custom (not using standard regions)\nCurrent API host: %s\n", currentAPIHost)
+		return err == nil, err
 	}
 	if region == "" {
 		input := in
@@ -266,7 +275,9 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			defaultRegion = configuredRegion
 			break
 		}
-		_, _ = fmt.Fprint(out, renderConfigureWelcome(out))
+		if _, err := fmt.Fprint(out, renderConfigureWelcome(out)); err != nil {
+			return false, err
+		}
 		selectedRegion, err := prompt.Selector{
 			In:            promptInput,
 			Out:           out,
@@ -288,31 +299,34 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			}
 			apiHost, err := customDomainAPIHost(domain)
 			if err != nil {
-				_, _ = fmt.Fprintf(out, "Error: %v\n", err)
-				return false, nil
+				return false, &clierror.Error{Code: "INVALID_ARGUMENT", Message: err.Error(), Cause: err}
 			}
-			manager.applyAuthConfig(currentConfig, apiHost, out)
-			if err := manager.WriteConfig(currentConfig); err != nil {
-				_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
-				return false, nil
-			}
-			_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or export CONNEXT_CLOUD_API_KEY.")
-			return true, nil
+			return manager.saveRegionConfiguration(currentConfig, apiHost, false, out)
 		}
-	} else {
-		_, _ = fmt.Fprintf(out, "%s\n\n", previewWarning)
 	}
+
 	if _, ok := RegionURLMap[region]; !ok {
-		_, _ = fmt.Fprintf(out, "Error: Invalid region '%s'. Available regions: %s\n", region, strings.Join(standardRegions(), ", "))
-		return false, nil
+		return false, invalidRegion(region)
 	}
-	manager.applyAuthConfig(currentConfig, RegionURLMap[region], out)
-	if err := manager.WriteConfig(currentConfig); err != nil {
-		_, _ = fmt.Fprintf(out, "Error updating configuration: %v\n", err)
-		return false, nil
+	return manager.saveRegionConfiguration(currentConfig, RegionURLMap[region], explicitRegion, out)
+}
+
+func invalidRegion(region string) error {
+	return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("Invalid region '%s'. Available regions: %s", region, strings.Join(standardRegions(), ", "))}
+}
+
+func (manager *Manager) saveRegionConfiguration(values map[string]string, apiHost string, showPreview bool, out io.Writer) (bool, error) {
+	var messages bytes.Buffer
+	if showPreview {
+		_, _ = fmt.Fprintf(&messages, "%s\n\n", previewWarning)
 	}
-	_, _ = fmt.Fprintln(out, "Configuration updated. Run rticloud login or export CONNEXT_CLOUD_API_KEY.")
-	return true, nil
+	manager.applyAuthConfig(values, apiHost, &messages)
+	if err := manager.WriteConfig(values); err != nil {
+		return false, fmt.Errorf("Error updating configuration: %w", err)
+	}
+	_, _ = fmt.Fprintln(&messages, "Configuration updated. Run rticloud login or export CONNEXT_CLOUD_API_KEY.")
+	_, err := io.Copy(out, &messages)
+	return err == nil, err
 }
 
 func renderConfigureWelcome(out io.Writer) string {
