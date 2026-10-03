@@ -113,10 +113,22 @@ func (manager *Manager) GetConfig() (map[string]string, error) {
 	if manager.cache != nil {
 		return copyMap(manager.cache), nil
 	}
+	config, err := manager.InspectConfig()
+	if err != nil {
+		return nil, err
+	}
+	manager.cache = config
+	return copyMap(config), nil
+}
+
+// InspectConfig reads the current file without migration, caching, or writes.
+func (manager *Manager) InspectConfig() (map[string]string, error) {
+	if manager.pathErr != nil {
+		return nil, manager.pathErr
+	}
 	data, err := os.ReadFile(manager.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			manager.cache = map[string]string{}
 			return map[string]string{}, nil
 		}
 		return nil, err
@@ -127,8 +139,7 @@ func (manager *Manager) GetConfig() (map[string]string, error) {
 			return nil, err
 		}
 	}
-	manager.cache = config
-	return copyMap(config), nil
+	return config, nil
 }
 
 func (manager *Manager) WriteConfig(config map[string]string) error {

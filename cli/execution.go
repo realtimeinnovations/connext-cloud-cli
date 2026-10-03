@@ -18,6 +18,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/doctor"
 	"github.com/spf13/cobra"
 )
 
@@ -34,6 +35,10 @@ func (err *executionError) Unwrap() error { return err.Detail }
 func ReportError(err error, errOut io.Writer) int {
 	if err == nil {
 		return 0
+	}
+	var completed *doctor.CompletedError
+	if errors.As(err, &completed) {
+		return completed.ExitCode
 	}
 	typed := clierror.From(err)
 	var execution *executionError
@@ -68,6 +73,10 @@ func requestsJSON(argv []string) bool {
 }
 
 func executionFailure(err error, jsonOutput, invoked bool) error {
+	var completed *doctor.CompletedError
+	if errors.As(err, &completed) {
+		return completed
+	}
 	typed := clierror.From(err)
 	if errors.Is(err, config.ErrNotConfigured) {
 		typed = &clierror.Error{Code: "CONFIG_REQUIRED", Message: err.Error(), RequiredAction: "configure_region", Cause: err}
@@ -84,6 +93,9 @@ func nonInteractive(cmd *cobra.Command) bool {
 
 func supportsJSON(cmd *cobra.Command) bool {
 	path := strings.Fields(cmd.CommandPath())
+	if len(path) == 2 && path[1] == "doctor" {
+		return true
+	}
 	if len(path) == 3 {
 		switch path[1] {
 		case "databus":
