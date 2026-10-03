@@ -14,6 +14,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"os"
 	"path/filepath"
 	"sort"
@@ -229,16 +232,19 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 	if configFile != "" {
 		data, err := runner.ReadFile(configFile)
 		if err != nil {
-			return fmt.Errorf("read application configuration: %w", err)
+			return invalidInput(fmt.Sprintf("read application configuration: %v", err), err)
 		}
-		var manifest applicationManifest
+		var manifest *applicationManifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
+			return invalidInput(fmt.Sprintf("parse application configuration: %v", err), err)
+		}
+		if manifest == nil {
+			return invalidInput("application configuration must be a JSON object, not null", nil)
 		}
 		kind = manifest.Kind
 		manifestPort, hasManifestPort, err := parseApplicationPort(manifest.Port)
 		if err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
+			return invalidInput(fmt.Sprintf("parse application configuration: %v", err), err)
 		}
 		if hasManifestPort && !portOverridden {
 			port = manifestPort
@@ -246,7 +252,7 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 		topicData = map[string]any{}
 		if len(manifest.TopicData) > 0 {
 			if err := json.Unmarshal(manifest.TopicData, &topicData); err != nil || topicData == nil {
-				return fmt.Errorf("application configuration topic_data must be a JSON object")
+				return invalidInput("application configuration topic_data must be a JSON object", err)
 			}
 		}
 	}
@@ -257,7 +263,7 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 		kind = "telemetry-service-collector"
 	}
 	if kind != "app" && kind != "gateway" && kind != "telemetry-service-collector" {
-		return fmt.Errorf("invalid application kind %q; expected app, gateway, or observability-collector", kind)
+		return invalidInput(fmt.Sprintf("invalid application kind %q; expected app, gateway, or observability-collector", kind), nil)
 	}
 	payload := map[string]any{"port": port, "kind": kind}
 	if appName != "" {
@@ -266,18 +272,27 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 	if configFile != "" {
 		payload["topic_data"] = topicData
 	}
-	response, err := runner.API.Post("/databuses/"+name+"/applications", payload)
+	response, err := runner.API.Post("/databuses/"+url.PathEscape(name)+"/applications", payload)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusCreated {
-		runner.printResponseBody(body)
-		return nil
+	body, err := readResponse(response, http.StatusCreated)
+	if err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	if runner.JSON {
+		var resource any
+		if len(bytes.TrimSpace(body)) != 0 {
+			if err := json.Unmarshal(body, &resource); err != nil {
+				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid application JSON: " + err.Error(), Cause: err}
+			}
+			if resource == nil {
+				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned null instead of an application result"}
+			}
+		}
+		return runner.writeResult(map[string]any{"databus": name, "application": appName, "kind": kind, "port": port, "status": "created", "resource": resource})
+	}
+	return runner.printResponseBody(body)
 }
 
 func (runner *Runner) DownloadApplication(name string, appName string, options ApplicationDownloadOptions) error {
@@ -400,38 +415,42 @@ func (runner *Runner) GetApplication(name string, appName string, generateExampl
 }
 
 func (runner *Runner) DeleteApplication(name string, appName string) error {
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName)
+	response, err := runner.API.Delete("/databuses/" + url.PathEscape(name) + "/applications/" + url.PathEscape(appName))
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Application '%s' successfully deleted from databus '%s'\n", appName, name)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"databus": name, "application": appName, "status": "deleted"}, fmt.Sprintf("Application '%s' successfully deleted from databus '%s'", appName, name))
 }
 
 func (runner *Runner) ListAppClients(name string, appName string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName + "/clients")
+	response, err := runner.API.Get("/databuses/" + url.PathEscape(name) + "/applications/" + url.PathEscape(appName) + "/clients")
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload["clients"], "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
+	body, err := readResponse(response, http.StatusOK)
+	if err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid client JSON: " + err.Error(), Cause: err}
+	}
+	clients, ok := payload["clients"]
+	if !ok || clients == nil {
+		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API response is missing the clients collection"}
+	}
+	switch clients.(type) {
+	case map[string]any, []any:
+	default:
+		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API clients must be an object or array"}
+	}
+	if runner.JSON {
+		return runner.writeResult(map[string]any{"databus": name, "application": appName, "clients": clients})
+	}
+	return runner.writeResult(clients)
 }
 
 func CreateClientBundleDirectory(databusName string, appName string, clientName string) (string, error) {
@@ -632,19 +651,14 @@ func (runner *Runner) RegisterAppClient(name string, appName string, clientID st
 
 func (runner *Runner) RevokeAppClient(name string, appName string, clientID string) error {
 	if clientID == "" {
-		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required for revoke")
-		return nil
+		return invalidInput("--client-id is required for revoke", nil)
 	}
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName + "/clients/" + clientID)
+	response, err := runner.API.Delete("/databuses/" + url.PathEscape(name) + "/applications/" + url.PathEscape(appName) + "/clients/" + url.PathEscape(clientID))
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent {
-		_, _ = fmt.Fprintf(runner.Out, "Client '%s' revoked successfully.\n", clientID)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"databus": name, "application": appName, "client_id": clientID, "status": "revoked"}, fmt.Sprintf("Client '%s' revoked successfully.", clientID))
 }

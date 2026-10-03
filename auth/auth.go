@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"golang.org/x/oauth2"
@@ -37,17 +38,18 @@ type ConfigProvider interface {
 type BrowserOpener func(string) error
 
 type Manager struct {
-	Config       ConfigProvider
-	TokenPath    string
-	HTTPClient   *http.Client
-	Env          func(string) string
-	Now          func() time.Time
-	Sleep        func(time.Duration)
-	OpenBrowser  BrowserOpener
-	Stdout       io.Writer
-	migratedPath string
-	pathErr      error
-	defaultPath  bool
+	NonInteractive bool
+	Config         ConfigProvider
+	TokenPath      string
+	HTTPClient     *http.Client
+	Env            func(string) string
+	Now            func() time.Time
+	Sleep          func(time.Duration)
+	OpenBrowser    BrowserOpener
+	Stdout         io.Writer
+	migratedPath   string
+	pathErr        error
+	defaultPath    bool
 }
 
 type tokenFile struct {
@@ -293,7 +295,7 @@ func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
-		return "", 0, fmt.Errorf("Error authenticating with API key: %d - %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return "", 0, httputil.NewStatusError(response.StatusCode, body)
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
@@ -329,6 +331,9 @@ func (manager *Manager) GetAccessTokenForCLI() (string, error) {
 			return "", err
 		}
 		return accessToken, nil
+	}
+	if manager.NonInteractive {
+		return "", clierror.AuthRequired()
 	}
 	return manager.Login()
 }
@@ -381,6 +386,9 @@ func (manager *Manager) GetAuthHeaders() (map[string]string, error) {
 }
 
 func (manager *Manager) Login() (string, error) {
+	if manager.NonInteractive {
+		return "", clierror.InputRequired("Interactive login is disabled by --non-interactive. Use existing credentials or CONNEXT_CLOUD_API_KEY.", "configure_credentials")
+	}
 	if !manager.Config.RequireConfiguration(manager.Stdout) {
 		return "", nil
 	}
@@ -523,6 +531,9 @@ type deviceTokenResponse struct {
 }
 
 func (manager *Manager) LoginWithDeviceFlow() (string, error) {
+	if manager.NonInteractive {
+		return "", clierror.InputRequired("Interactive login is disabled by --non-interactive. Use existing credentials or CONNEXT_CLOUD_API_KEY.", "configure_credentials")
+	}
 	if !manager.Config.RequireConfiguration(manager.Stdout) {
 		return "", nil
 	}

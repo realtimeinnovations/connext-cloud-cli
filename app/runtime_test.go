@@ -19,7 +19,9 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
@@ -30,7 +32,7 @@ func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
 	if err.Error() != config.NotConfiguredMessage {
 		t.Fatalf("unexpected error message: %s", err)
 	}
-	if !errors.Is(config.ErrNotConfigured, config.ErrNotConfigured) {
+	if !errors.Is(err, config.ErrNotConfigured) {
 		t.Fatal("expected sentinel error")
 	}
 }
@@ -412,5 +414,38 @@ func TestLogoutAttemptsBothStoresOnFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(valid); !os.IsNotExist(err) {
 		t.Fatal("second store was not cleared")
+	}
+}
+
+func TestAPIAdaptersAndPresentationPreserveErrorCategories(t *testing.T) {
+	for _, command := range []string{"gateway", "spy"} {
+		present := gatewayPreflightError
+		if command == "spy" {
+			present = spyPreflightError
+		}
+		project := map[string]any{"databus": "demo", "templates": map[string]any{"gateway": "gw", "app": "spy"}}
+		authErr := clierror.AuthRequired()
+		_, adapted := decodeCommandJSON(nil, authErr, "GET", "/databuses/demo", "https://api.example.test", command)
+		err := present(project, true, adapted)
+		if !errors.Is(err, authErr) || clierror.From(err).ExitCode() != 3 || strings.Contains(err.Error(), "Cannot reach") || strings.Contains(err.Error(), "reset") {
+			t.Fatalf("%s authentication error changed: %v", command, err)
+		}
+		for _, status := range []int{401, 403, 404} {
+			_, adapted := decodeCommandJSON(runtimeTextResponse(status, `{"message":"rejected"}`), nil, "GET", "/databuses/demo", "https://api.example.test", command)
+			err := present(project, true, adapted)
+			var cause *httputil.StatusError
+			expectedExit := 3
+			if status == 404 {
+				expectedExit = 4
+			}
+			if !errors.As(err, &cause) || cause.StatusCode != status || clierror.From(err).ExitCode() != expectedExit {
+				t.Fatalf("%s HTTP %d changed: %v", command, status, err)
+			}
+		}
+		// Even when presentation appends a reset hint, the typed cause survives.
+		err = present(project, true, authErr)
+		if !errors.Is(err, authErr) || clierror.From(err).ExitCode() != 3 {
+			t.Fatalf("%s presentation lost authentication: %v", command, err)
+		}
 	}
 }

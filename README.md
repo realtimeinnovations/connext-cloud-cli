@@ -62,6 +62,16 @@ First-time setup:
 rticloud configure
 ```
 
+Authenticate using browser login (`rticloud login`), device login
+(`rticloud login --device`), or a service-account API key in
+`CONNEXT_CLOUD_API_KEY`. Create an API key on the
+[Service Accounts page](https://cloud.rti.com/dashboard/service-accounts).
+Commands use API-key authentication automatically when no valid saved access
+token is available; no separate login command is required.
+
+Run `rticloud login -h` for authentication instructions and examples. Use
+`rticloud <command> -h` for a command's options, output formats, and examples.
+
 Show CLI help:
 
 ```sh
@@ -94,6 +104,105 @@ brew upgrade rticloud
 
 On Windows, run the installer again to update the CLI.
 
+## Automation and AI agents
+
+Use `--non-interactive` to disable prompts, browser actions, and automatic update
+checks. Authenticate with an existing, unexpired login or
+`CONNEXT_CLOUD_API_KEY`. Missing credentials fail immediately rather than
+starting a login flow. `configure` requires `--region` (or `--get-region`) in
+this mode. Gateway and Spy use text output and require any interactive setup to
+have been completed beforehand. Unattended edge-agent enrollment requires a
+campaign token or the service, domain-template, and participant-template flags.
+
+Databus `list`, `query`, `create`, and `delete` support `--format json`:
+
+```sh
+rticloud databus list --format json --non-interactive
+rticloud databus query --name demo --format json --non-interactive
+rticloud databus create --name demo --format json --non-interactive
+rticloud databus delete --name demo --format json --non-interactive
+```
+
+JSON mode also disables interaction and automatic update checks. Successful
+commands emit exactly one JSON document on stdout, with no progress text:
+
+```json
+{"schema_version":"1","data":{"name":"demo","status":"active"}}
+```
+
+The `data` field contains the API response for list/query/create; creation adds
+`name` if the response omits it. Deletion returns the requested `name` and
+`status: "deleted"`. Creation succeeds only after the resource reaches `active`;
+deletion succeeds only after the status endpoint confirms absence with HTTP 404.
+Other API failures and unexpected terminal states return a failure.
+
+Failures in JSON mode leave stdout empty and emit one JSON document on stderr:
+
+```json
+{"schema_version":"1","error":{"code":"AUTH_REQUIRED","message":"No usable credentials are available.","retryable":false,"required_action":"configure_credentials"}}
+```
+
+Errors include a stable `code`, a human-readable `message`, `retryable`, and,
+when applicable, `http_status` and `required_action`. Retryability is conservative:
+reconcile resource state before repeating a mutation that may already have taken
+effect. The same error categories determine exit codes in text and JSON modes:
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | API, configuration, response, operation, or other failure |
+| 2 | Invalid arguments, required interactive input, or unsupported format |
+| 3 | Authentication or permission failure |
+| 4 | Resource not found |
+| 5 | Conflict |
+| 6 | Timeout |
+| 130 | Cancellation reported by a command |
+
+Without `--format json`, the existing databus output is preserved. Errors are
+written to stderr. `--short` cannot be combined with `--format json`. JSON mode
+is currently limited to the four databus commands above; other commands retain
+their existing output conventions.
+
+## Smoke test runbook
+
+Use the installed `rticloud` and your current configured, logged-in session.
+This creates one temporary Databus and deletes it afterward; no Observability
+Service is needed. Run the lifecycle commands in order, stopping if one fails.
+
+```sh
+# Inspect the compact setup flow and detailed authentication/formatting help.
+rticloud -h
+rticloud login -h
+rticloud databus list -h
+
+# Exercise the full lifecycle with a unique name.
+RTICLOUD_SMOKE_NAME="cli-smoke-$(date +%s)-$$"
+rticloud databus create --name "$RTICLOUD_SMOKE_NAME" --replicas 1 --format json
+rticloud databus list --non-interactive
+rticloud databus list --short --non-interactive
+rticloud databus list --format json
+rticloud databus query --name "$RTICLOUD_SMOKE_NAME" --format json
+rticloud databus delete --name "$RTICLOUD_SMOKE_NAME" --format json
+
+# Confirm deletion: expect NOT_FOUND and exit code 4.
+rticloud databus query --name "$RTICLOUD_SMOKE_NAME" --format json
+printf 'Exit code (expected 4): %s\n' "$?"
+
+# Confirm argument validation: expect INVALID_ARGUMENT and exit code 2.
+rticloud databus create --format json
+printf 'Exit code (expected 2): %s\n' "$?"
+```
+
+Help should show `rticloud login` in **Get Started**, alternative authentication
+methods afterward, and formatting details in command help. Lifecycle commands
+should exit 0 without prompts; creation waits for `active`, and deletion waits
+for confirmed absence. JSON commands emit a single `schema_version: "1"` result
+on stdout, or a single structured error on stderr with stdout empty. The plain
+list keeps its existing JSON output; `--short` shows names and kinds.
+
+If interrupted before cleanup, run
+`rticloud databus delete --name "$RTICLOUD_SMOKE_NAME" --format json`.
+
 ## Known limitations on Windows
 
 The edge-sync agent (`rticloud agent`) runs on Windows with a reduced interactive
@@ -104,4 +213,3 @@ dashboard:
   Artifact renewal still happens automatically; add participants with
   `rticloud agent enroll`.
 - **Stopping the agent.** Use Ctrl+C to stop the agent.
-

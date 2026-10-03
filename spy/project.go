@@ -425,7 +425,7 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 	}
 	payload, err := app.APIPost(fmt.Sprintf("/databuses/%s/applications/%s/clients", databusName, appName), map[string]any{"client_id": clientID, "csr": csr})
 	if err != nil {
-		return UserError{Message: fmt.Sprintf("Unable to register secure spy credentials for application '%s'.\n%v", appName, err)}
+		return UserError{Message: fmt.Sprintf("Unable to register secure spy credentials for application '%s'.\n%v", appName, err), Cause: err}
 	}
 	securePayload, _ := payload["secure_files"].(map[string]any)
 	secureMap := map[string]string{}
