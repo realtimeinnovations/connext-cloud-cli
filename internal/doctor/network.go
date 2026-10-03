@@ -31,6 +31,9 @@ func probe(ctx context.Context, options Options, endpoint, token, apiKey string)
 	} else if options.Auth.HTTPClient != nil {
 		client = *options.Auth.HTTPClient
 	}
+	// The shared context owns the entire doctor network budget, including the
+	// API-key exchange. Do not cap it with the runtime client's default timeout.
+	client.Timeout = 0
 	// Even a same-host redirect could forward credentials to an unexpected route.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if apiKey != "" {
