@@ -59,8 +59,12 @@ func Execute(argv []string, out io.Writer, errOut io.Writer, runtime *app.Runtim
 	root.SetErr(errOut)
 	invoked := false
 	prepareCommands(root, runtime, &invoked)
-	if err := root.Execute(); err != nil {
+	executed, err := root.ExecuteC()
+	if err != nil {
 		return executionFailure(err, requestsJSON(argv), invoked)
+	}
+	if executed.CommandPath() == "rticloud doctor" {
+		return nil
 	}
 	nonInteractive, _ := root.PersistentFlags().GetBool("non-interactive")
 	if !nonInteractive && !requestsJSON(argv) {
@@ -92,6 +96,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 
 	root.AddCommand(
 		groupCommand(newConfigureCommand(runtime), "Setup"),
+		groupCommand(newDoctorCommand(runtime), "Setup"),
 		groupCommand(newLoginCommand(runtime), "Setup"),
 		groupCommand(newLogoutCommand(runtime), "Setup"),
 		groupCommand(newPrintAccessTokenCommand(runtime), "Setup"),
@@ -125,7 +130,7 @@ func shouldSkipUpdateNotification(argv []string) bool {
 			return true
 		}
 	}
-	if argv[0] == "update" || argv[0] == "completion" || argv[0] == "help" {
+	if argv[0] == "doctor" || argv[0] == "update" || argv[0] == "completion" || argv[0] == "help" {
 		return true
 	}
 	return false
