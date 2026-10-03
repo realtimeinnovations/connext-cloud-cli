@@ -400,3 +400,67 @@ func TestDownloadConfigurationAllowsEmptyClientDataObject(t *testing.T) {
 		t.Fatalf("unexpected configuration: %#v", config)
 	}
 }
+
+func TestRegistrationClientKeyPrecedence(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		for _, overwrite := range []bool{false, true} {
+			for _, generated := range []bool{false, true} {
+				t.Run(fmt.Sprintf("zip%v/overwrite%v/generated%v", zipOutput, overwrite, generated), func(t *testing.T) {
+					t.Chdir(t.TempDir())
+					api := registrationTestAPI(map[string]any{
+						"client_config": `<dds path="./secure/client.key"/>`, "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+					})
+					api.responses["POST /databuses/db/applications/app/clients"] = newJSONResponse(http.StatusCreated, map[string]any{
+						"client_id": "client", "secure_files": map[string]string{
+							"client.key": base64.StdEncoding.EncodeToString([]byte("manager key")),
+						},
+					})
+					runner := New(api, io.Discard)
+					runner.ReadFile = func(string) ([]byte, error) { return []byte("external CSR"), nil }
+					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
+						return []byte("generated key"), "generated CSR", nil
+					}
+					if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", generated, overwrite, zipOutput); err != nil {
+						t.Fatal(err)
+					}
+					want := "manager key"
+					if generated {
+						want = "generated key"
+					}
+					keyPath := filepath.Join("db-app-client", "secure", "client.key")
+					if !zipOutput {
+						data, err := os.ReadFile(keyPath)
+						if err != nil || string(data) != want {
+							t.Fatalf("client.key = %q, error = %v; want %q", data, err, want)
+						}
+						return
+					}
+					archive, err := zip.OpenReader("db-app-client.zip")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer archive.Close()
+					count := 0
+					for _, file := range archive.File {
+						if file.Name != filepath.ToSlash(keyPath) {
+							continue
+						}
+						count++
+						reader, err := file.Open()
+						if err != nil {
+							t.Fatal(err)
+						}
+						data, err := io.ReadAll(reader)
+						reader.Close()
+						if err != nil || string(data) != want {
+							t.Errorf("client.key = %q, error = %v; want %q", data, err, want)
+						}
+					}
+					if count != 1 {
+						t.Errorf("ZIP has %d client.key entries; want 1", count)
+					}
+				})
+			}
+		}
+	}
+}

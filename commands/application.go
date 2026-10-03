@@ -118,6 +118,9 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 	}
 	sort.Strings(secureFileNames)
 	for _, name := range secureFileNames {
+		if name == "client.key" && len(privateKey) > 0 {
+			continue
+		}
 		encoded := secureFiles[name]
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
@@ -472,6 +475,9 @@ func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey 
 		return err
 	}
 	for filename, encoded := range secureFiles {
+		if filename == "client.key" && len(privateKey) > 0 {
+			continue
+		}
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			return err
