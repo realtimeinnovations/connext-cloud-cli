@@ -1178,7 +1178,11 @@ func (runner *Runner) FetchDomainTemplateMode(edgeSystem, templateID string) (st
 	items := catalogItems(payload, []string{"domain_templates", "domainTemplates", "templates"})
 	for _, raw := range items {
 		template, ok := raw.(map[string]any)
-		if !ok || template["templateId"] != templateID {
+		if !ok {
+			continue
+		}
+		ids := idsFromItems([]any{template}, []string{"templateId", "template_id", "id"})
+		if len(ids) == 0 || ids[0] != templateID {
 			continue
 		}
 		rawMode, present := template["securityMode"]

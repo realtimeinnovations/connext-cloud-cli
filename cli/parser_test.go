@@ -20,7 +20,10 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
+	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
+	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
 
@@ -384,6 +387,126 @@ func TestParserDomainTemplateSecurityFlags(t *testing.T) {
 		args := append([]string{"edge-provisioning", "domain-template", "create", "--service", "svc"}, test.args...)
 		if err := Execute(args, io.Discard, io.Discard, nil); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("args=%v err=%v, want %q", test.args, err, test.want)
+		}
+	}
+}
+
+func TestParserEnrollmentDomainModeValidation(t *testing.T) {
+	for _, route := range []struct {
+		name            string
+		args            []string
+		participantFlag string
+	}{
+		{"campaign", []string{"edge-provisioning", "campaign", "create", "--service", "svc", "--domain-tpl-id", "0:dom", "--enrollment-list", "devices.json"}, "--participant-tpl-id"},
+		{"direct", []string{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "0:dom", "--serial", "SN", "--csr-file", "device.csr"}, "--participant-template-id"},
+		{"agent", []string{"edge-sync", "agent", "enroll", "--service", "svc", "--domain-tpl-id", "0:dom", "--serial", "SN", "--mac", "AA:BB:CC:DD:EE:FF"}, "--participant-tpl-id"},
+	} {
+		for _, test := range []struct {
+			name        string
+			mode        string
+			participant string
+			want        string
+		}{
+			{"full", "full", "part", ""},
+			{"lightweight", "lightweight", "", ""},
+			{"legacy", "", "part", ""},
+			{"missing-participant", "full", "", "is required for full-security domains"},
+			{"forbidden-participant", "lightweight", "part", "is not allowed for lightweight-security domains"},
+			{"invalid-mode", "invalid", "part", "invalid security mode"},
+			{"lookup-failure", "unavailable", "part", "catalog unavailable"},
+		} {
+			t.Run(route.name+"/"+test.name, func(t *testing.T) {
+				lookups, posts := 0, 0
+				api := cloudapi.New(func() (string, error) { return "https://api.example.test", nil },
+					func() (map[string]string, error) { return map[string]string{}, nil })
+				api.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodGet {
+						lookups++
+						if test.mode == "unavailable" {
+							return stringResponse(http.StatusServiceUnavailable, "catalog unavailable"), nil
+						}
+						template := map[string]any{"templateId": "0:dom"}
+						if test.mode != "" {
+							template["securityMode"] = test.mode
+						}
+						body, err := json.Marshal(map[string]any{"domain_templates": []any{template}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						return stringResponse(http.StatusOK, string(body)), nil
+					}
+					posts++
+					var payload map[string]any
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					participant, _ := payload["participantTemplateId"].(string)
+					if participant != test.participant {
+						t.Fatalf("participant = %q, want %q", participant, test.participant)
+					}
+					if test.participant == "" {
+						if _, present := payload["participantTemplateId"]; present {
+							t.Fatal("lightweight payload contains participantTemplateId")
+						}
+					}
+					responseCode := http.StatusCreated
+					if route.name == "direct" {
+						responseCode = http.StatusOK
+					}
+					return stringResponse(responseCode, `{"domain_template_id":"0:dom"}`), nil
+				})
+				runner := commands.New(api, io.Discard)
+				runner.ReadFile = func(string) ([]byte, error) { return []byte(`[]`), nil }
+				inbox := filepath.Join(t.TempDir(), "inbox")
+				runtime := &app.Runtime{Commands: runner, EdgeSyncAgent: &edgesyncagent.Agent{InboxDir: inbox}}
+				args := append([]string{}, route.args...)
+				if test.participant != "" {
+					args = append(args, route.participantFlag, test.participant)
+				}
+				err := Execute(args, io.Discard, io.Discard, runtime)
+				if lookups != 1 {
+					t.Fatalf("mode lookups = %d, want 1", lookups)
+				}
+				if test.want != "" {
+					if err == nil || !strings.Contains(err.Error(), test.want) {
+						t.Fatalf("error = %v, want %q", err, test.want)
+					}
+					if posts != 0 {
+						t.Fatal("submitted invalid enrollment")
+					}
+					if _, statErr := os.Stat(inbox); !os.IsNotExist(statErr) {
+						t.Fatalf("invalid enrollment created inbox: %v", statErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if route.name != "agent" {
+					if posts != 1 {
+						t.Fatalf("enrollment posts = %d, want 1", posts)
+					}
+					return
+				}
+				if posts != 0 {
+					t.Fatal("inbox producer submitted enrollment directly")
+				}
+				data, err := os.ReadFile(filepath.Join(inbox, "enroll-svc-"+test.participant+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var req edgesyncagent.EnrollRequest
+				if err := json.Unmarshal(data, &req); err != nil {
+					t.Fatal(err)
+				}
+				mode := test.mode
+				if mode == "" {
+					mode = "full"
+				}
+				if req.SecurityMode != mode || req.ParticipantID != test.participant || req.DomainTemplateID != "0:dom" || req.ServiceID != "svc" {
+					t.Fatalf("unexpected enrollment request: %+v", req)
+				}
+			})
 		}
 	}
 }

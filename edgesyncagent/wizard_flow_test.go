@@ -248,6 +248,7 @@ func TestConfigureFirstRun_HeadlessDirect(t *testing.T) {
 	a.DomainTemplateID = "1:dom"
 	a.ParticipantTemplateID = "part"
 	a.DeploymentName = "SN-004"
+	a.GetDomainTemplateModeFunc = func(string, string) (string, error) { return "full", nil }
 
 	var enrolled []string
 	wireDirectEnroll(a, ffs, "https://device.example", &enrolled)
@@ -307,25 +308,38 @@ func TestConfigureFirstRun_HeadlessLightweightDirect(t *testing.T) {
 	}
 }
 
-func TestConfigureFirstRun_HeadlessDirectRequiresParticipantForFullSecurity(t *testing.T) {
-	a := buildTestAgent(t, newFakeFS())
-	a.Service = "svc"
-	a.DomainTemplateID = "1:full"
-	a.DeploymentName = "SN-FULL"
-	a.GetDomainTemplateModeFunc = func(service, domain string) (string, error) {
-		if service != "svc" || domain != "1:full" {
-			t.Fatalf("unexpected mode lookup: %s/%s", service, domain)
-		}
-		return "full", nil
-	}
-	a.EnrollDirectFunc = func(string, string, string, string, []string, string, string, string) (string, string, error) {
-		t.Fatal("attempted direct enrollment without a participant template")
-		return "", "", nil
-	}
+func TestConfigureFirstRun_HeadlessDirectRejectsInvalidParticipant(t *testing.T) {
+	for _, test := range []struct {
+		mode        string
+		participant string
+		want        string
+	}{
+		{"full", "", "--participant-tpl-id is required for full-security domains"},
+		{"lightweight", "part", "--participant-tpl-id is not allowed for lightweight-security domains"},
+		{"invalid", "part", "invalid security mode"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			a := buildTestAgent(t, newFakeFS())
+			a.Service = "svc"
+			a.DomainTemplateID = "1:full"
+			a.DeploymentName = "SN-FULL"
+			a.ParticipantTemplateID = test.participant
+			a.GetDomainTemplateModeFunc = func(service, domain string) (string, error) {
+				if service != "svc" || domain != "1:full" {
+					t.Fatalf("unexpected mode lookup: %s/%s", service, domain)
+				}
+				return test.mode, nil
+			}
+			a.EnrollDirectFunc = func(string, string, string, string, []string, string, string, string) (string, string, error) {
+				t.Fatal("attempted direct enrollment with an invalid participant/domain combination")
+				return "", "", nil
+			}
 
-	err := a.ConfigureFirstRun(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "--participant-tpl-id is required for full-security domains") {
-		t.Fatalf("unexpected error: %v", err)
+			err := a.ConfigureFirstRun(context.Background())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

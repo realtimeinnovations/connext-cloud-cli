@@ -976,17 +976,19 @@ func TestFetchDomainTemplateMode(t *testing.T) {
 
 func TestFetchDomainTemplateMode_CatalogEnvelopes(t *testing.T) {
 	for _, envelope := range []string{"domain_templates", "domainTemplates", "templates", "items"} {
-		t.Run(envelope, func(t *testing.T) {
-			api := &fakeAPI{responses: map[string]*http.Response{
-				"GET /edge-systems/alpha/domain-templates": newJSONResponse(http.StatusOK, map[string]any{
-					envelope: []any{map[string]any{"templateId": "0:micro", "securityMode": "lightweight"}},
-				}),
-			}}
-			mode, err := New(api, &bytes.Buffer{}).FetchDomainTemplateMode("alpha", "0:micro")
-			if err != nil || mode != "lightweight" {
-				t.Fatalf("mode=%q err=%v, want lightweight", mode, err)
-			}
-		})
+		for _, idKey := range []string{"templateId", "template_id", "id"} {
+			t.Run(envelope+"/"+idKey, func(t *testing.T) {
+				api := &fakeAPI{responses: map[string]*http.Response{
+					"GET /edge-systems/alpha/domain-templates": newJSONResponse(http.StatusOK, map[string]any{
+						envelope: []any{map[string]any{idKey: "0:micro", "securityMode": "lightweight"}},
+					}),
+				}}
+				mode, err := New(api, &bytes.Buffer{}).FetchDomainTemplateMode("alpha", "0:micro")
+				if err != nil || mode != "lightweight" {
+					t.Fatalf("mode=%q err=%v, want lightweight", mode, err)
+				}
+			})
+		}
 	}
 }
 

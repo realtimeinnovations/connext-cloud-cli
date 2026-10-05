@@ -144,24 +144,7 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 		return a.enrollHeadlessCampaign()
 	}
 	if a.Service != "" && a.DomainTemplateID != "" {
-		if a.ParticipantTemplateID != "" {
-			return a.enrollHeadlessDirect()
-		}
-		if a.GetDomainTemplateModeFunc == nil {
-			return fmt.Errorf("domain template mode lookup is not configured")
-		}
-		securityMode, err := a.GetDomainTemplateModeFunc(a.Service, a.DomainTemplateID)
-		if err != nil {
-			return fmt.Errorf("getting security mode for domain template %q: %w", a.DomainTemplateID, err)
-		}
-		switch securityMode {
-		case "lightweight":
-			return a.enrollHeadlessDirect()
-		case "full":
-			return fmt.Errorf("--participant-tpl-id is required for full-security domains")
-		default:
-			return fmt.Errorf("domain template %q has invalid security mode %q", a.DomainTemplateID, securityMode)
-		}
+		return a.enrollHeadlessDirect()
 	}
 
 	// Offer to reuse an enrollment already present on disk (performed
@@ -535,6 +518,25 @@ func (a *Agent) enrollHeadlessCampaign() error {
 // domain template and participant template with no prompting (requires a
 // logged-in management token).
 func (a *Agent) enrollHeadlessDirect() error {
+	if a.GetDomainTemplateModeFunc == nil {
+		return fmt.Errorf("domain template mode lookup is not configured")
+	}
+	securityMode, err := a.GetDomainTemplateModeFunc(a.Service, a.DomainTemplateID)
+	if err != nil {
+		return fmt.Errorf("getting security mode for domain template %q: %w", a.DomainTemplateID, err)
+	}
+	switch securityMode {
+	case "lightweight":
+		if a.ParticipantTemplateID != "" {
+			return fmt.Errorf("--participant-tpl-id is not allowed for lightweight-security domains")
+		}
+	case "full":
+		if a.ParticipantTemplateID == "" {
+			return fmt.Errorf("--participant-tpl-id is required for full-security domains")
+		}
+	default:
+		return fmt.Errorf("domain template %q has invalid security mode %q", a.DomainTemplateID, securityMode)
+	}
 	serial, macs, err := a.headlessSerialAndMACs(false)
 	if err != nil {
 		return err
@@ -543,6 +545,7 @@ func (a *Agent) enrollHeadlessDirect() error {
 		ServiceID:        a.Service,
 		DomainTemplateID: a.DomainTemplateID,
 		ParticipantID:    a.ParticipantTemplateID,
+		SecurityMode:     securityMode,
 		Serial:           serial,
 		MACs:             macs,
 	}

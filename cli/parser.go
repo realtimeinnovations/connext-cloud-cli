@@ -1432,6 +1432,20 @@ func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.
 
 // ── edge-provisioning campaign ───────────────────────────────────────────────
 
+func validateDomainTemplateParticipant(runtime *app.Runtime, service, domain, participant, flag string) (string, error) {
+	mode, err := runtime.Commands.FetchDomainTemplateMode(service, domain)
+	if err != nil {
+		return "", err
+	}
+	if mode == "full" && participant == "" {
+		return "", fmt.Errorf("%s is required for full-security domains", flag)
+	}
+	if mode == "lightweight" && participant != "" {
+		return "", fmt.Errorf("%s is not allowed for lightweight-security domains", flag)
+	}
+	return mode, nil
+}
+
 func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("campaign", "Manage Campaigns")
 
@@ -1450,6 +1464,9 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 				}
 				if domainTemplateID == "" {
 					return fmt.Errorf("--domain-tpl-id is required")
+				}
+				if _, err := validateDomainTemplateParticipant(runtime, edgeSystem, domainTemplateID, participantID, "--participant-tpl-id"); err != nil {
+					return err
 				}
 				return runtime.Commands.CreateCampaign(edgeSystem, participantID, enrollmentList, domainTemplateID)
 			},
@@ -1759,14 +1776,8 @@ Example (generate the key locally):
 				if !genKey && csrFile == "" {
 					return fmt.Errorf("either --csr-file or --gen-key is required")
 				}
-				if participantTemplateIDFlag == "" {
-					mode, err := runtime.Commands.FetchDomainTemplateMode(service, domainTemplateIDFlag)
-					if err != nil {
-						return err
-					}
-					if mode == "full" {
-						return fmt.Errorf("--participant-template-id is required for full-security domains")
-					}
+				if _, err := validateDomainTemplateParticipant(runtime, service, domainTemplateIDFlag, participantTemplateIDFlag, "--participant-template-id"); err != nil {
+					return err
 				}
 				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile, genKey)
 				return err
@@ -2057,12 +2068,20 @@ runs the full enrollment flow autonomously.
 
 With --campaign-token, the token is decoded to extract the service ID and
 participant ID automatically.  Without it, pass --service, --domain-tpl-id and
---participant-tpl-id for a direct (operator-initiated) enrollment using the
-agent's management login.`,
+--participant-tpl-id for a full-security domain, or omit --participant-tpl-id
+for a lightweight domain. Direct enrollment uses the agent's management login.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
-					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
-						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
+					var securityMode string
+					if campaignToken == "" {
+						if service == "" || domainID == "" {
+							return fmt.Errorf("provide --campaign-token, or --service and --domain-tpl-id for direct enrollment")
+						}
+						var err error
+						securityMode, err = validateDomainTemplateParticipant(runtime, service, domainID, participantID, "--participant-tpl-id")
+						if err != nil {
+							return err
+						}
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
 					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
@@ -2096,6 +2115,7 @@ agent's management login.`,
 							ServiceID:        service,
 							DomainTemplateID: domainID,
 							ParticipantID:    participantID,
+							SecurityMode:     securityMode,
 							Serial:           serial,
 							MACs:             macs,
 							DeviceName:       deviceName,
@@ -2112,7 +2132,7 @@ agent's management login.`,
 					return nil
 				},
 			}
-			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (omit for direct enrollment via --service/--domain-tpl-id/--participant-tpl-id)")
+			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (omit for direct enrollment; --participant-tpl-id is required only for full security)")
 			enroll.Flags().StringVar(&deviceName, "device-name", "", "Device name as registered in the inventory (used as CSR Common Name prefix)")
 			enroll.Flags().StringVar(&serial, "serial", "", "Device serial number (auto-detected if omitted)")
 			enroll.Flags().StringArrayVar(&macs, "mac", nil, "MAC address (auto-detected if omitted; repeatable)")
