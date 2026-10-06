@@ -398,8 +398,8 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 		participantFlag string
 	}{
 		{"campaign", []string{"edge-provisioning", "campaign", "create", "--service", "svc", "--domain-tpl-id", "0:dom", "--enrollment-list", "devices.json"}, "--participant-tpl-id"},
-		{"direct", []string{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "0:dom", "--serial", "SN", "--csr-file", "device.csr"}, "--participant-template-id"},
-		{"agent", []string{"edge-sync", "agent", "enroll", "--service", "svc", "--domain-tpl-id", "0:dom", "--serial", "SN", "--mac", "AA:BB:CC:DD:EE:FF"}, "--participant-tpl-id"},
+		{"direct", []string{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "0:dom", "--deployment-name", "SN", "--csr-file", "device.csr"}, "--participant-template-id"},
+		{"agent", []string{"edge-sync", "agent", "enroll", "--service", "svc", "--domain-tpl-id", "0:dom", "--deployment-name", "SN", "--mac", "AA:BB:CC:DD:EE:FF"}, "--participant-tpl-id"},
 	} {
 		for _, test := range []struct {
 			name        string
@@ -439,6 +439,9 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 					var payload map[string]any
 					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 						t.Fatal(err)
+					}
+					if route.name == "direct" && payload["serial"] != "SN" {
+						t.Fatalf("deployment name = %v, want SN", payload["serial"])
 					}
 					participant, _ := payload["participantTemplateId"].(string)
 					if participant != test.participant {
@@ -503,10 +506,49 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 				if mode == "" {
 					mode = "full"
 				}
-				if req.SecurityMode != mode || req.ParticipantID != test.participant || req.DomainTemplateID != "0:dom" || req.ServiceID != "svc" {
+				if req.SecurityMode != mode || req.ParticipantID != test.participant || req.DomainTemplateID != "0:dom" || req.ServiceID != "svc" || req.Serial != "SN" {
 					t.Fatalf("unexpected enrollment request: %+v", req)
 				}
 			})
+		}
+	}
+}
+
+func TestParserDeploymentNameHelp(t *testing.T) {
+	for _, args := range [][]string{
+		{"edge-sync"},
+		{"edge-sync", "enroll"},
+		{"edge-sync", "enroll-direct"},
+		{"edge-sync", "agent"},
+		{"edge-sync", "agent", "enroll"},
+		{"edge-sync", "identity"},
+		{"edge-sync", "permissions"},
+		{"edge-sync", "psk"},
+		{"edge-sync", "crl"},
+		{"edge-sync", "renew-cert"},
+		{"edge-sync", "status"},
+		{"edge-provisioning", "participant", "revoke"},
+	} {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			var out bytes.Buffer
+			if err := Execute(append(args, "--help"), &out, &out, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "--deployment-name") || strings.Contains(out.String(), "--serial") {
+				t.Fatalf("inconsistent deployment flag help: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestParserRequiresDeploymentName(t *testing.T) {
+	for _, args := range [][]string{
+		{"edge-sync", "enroll"},
+		{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "dom"},
+		{"edge-provisioning", "participant", "revoke", "--service", "svc", "--participant-id", "part", "--campaign-id", "campaign"},
+	} {
+		if err := Execute(args, io.Discard, io.Discard, nil); err == nil || err.Error() != "--deployment-name is required" {
+			t.Fatalf("args=%v error=%v, want missing deployment name", args, err)
 		}
 	}
 }

@@ -278,7 +278,7 @@ func (a *Agent) chooseAdoptable(adoptable []adoptableNode) ([]adoptableNode, err
 
 // adoptableLabel renders a discovered enrollment for the reuse pick-list.
 func adoptableLabel(n adoptableNode) string {
-	return fmt.Sprintf("%s / %s / %s (serial %s)", n.service, n.domain, n.participant, n.node)
+	return fmt.Sprintf("%s / %s / %s (deployment name %s)", n.service, n.domain, n.participant, n.node)
 }
 
 // campaignWizard drives campaign enrollment: the user pastes a campaign token
@@ -571,7 +571,7 @@ func (a *Agent) headlessSerialAndMACs(macsRequired bool) (string, []string, erro
 		serial = DetectSerial()
 	}
 	if serial == "" {
-		return "", nil, fmt.Errorf("could not auto-detect a serial number; pass --deployment-name")
+		return "", nil, fmt.Errorf("could not auto-detect a deployment name; pass --deployment-name")
 	}
 	macs := a.MACs
 	if len(macs) == 0 {
@@ -617,7 +617,7 @@ func (a *Agent) resolveSerial() (string, error) {
 		if serial != "" {
 			return serial, nil
 		}
-		_, _ = fmt.Fprintln(a.Out, "Error: serial number is required")
+		_, _ = fmt.Fprintln(a.Out, "Error: deployment name is required")
 	}
 }
 

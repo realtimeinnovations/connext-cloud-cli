@@ -29,7 +29,7 @@ const commandGroupAnnotation = "rticloud.commandGroup"
 
 // slotResolutionNote is embedded in --url and --output flag descriptions to
 // document when the value is auto-resolved from the local store.
-const slotResolutionNote = "when --service, --domain-tpl-id, --participant-tpl-id and --serial are set"
+const slotResolutionNote = "when --service, --domain-tpl-id, --participant-tpl-id and --deployment-name are set"
 
 var rootCommandGroups = []string{
 	"Connect to Connext Cloud",
@@ -247,7 +247,7 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 		return rawURL, nil
 	}
 	if serial == "" {
-		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
+		return "", fmt.Errorf("--deployment-name is required when using --service and --participant-tpl-id without --url")
 	}
 	if u := rt.EdgeStore.ResolveNodeURL(service, domainID, participantID, serial); u != "" {
 		return u, nil
@@ -256,13 +256,13 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 	others := rt.EdgeStore.ListNodesWithURL()
 	if len(others) > 0 {
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "no enrolled node for service %q / domain %q / participant %q / serial %s.\n\tfound instead:", service, domainID, participantID, serial)
+		fmt.Fprintf(&sb, "no enrolled node for service %q / domain %q / participant %q / deployment name %s.\n\tfound instead:", service, domainID, participantID, serial)
 		for _, ni := range others {
 			ts := ""
 			if !ni.EnrolledAt.IsZero() {
 				ts = "  (enrolled " + ni.EnrolledAt.UTC().Format(time.RFC3339) + ")"
 			}
-			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --serial %s%s",
+			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --deployment-name %s%s",
 				ni.Service, ni.Domain, ni.Participant, ni.Node, ts)
 		}
 		return "", fmt.Errorf("%s", sb.String())
@@ -1579,7 +1579,7 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 					return fmt.Errorf("--campaign-id is required")
 				}
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return fmt.Errorf("--deployment-name is required")
 				}
 				return runtime.Commands.RevokeDevice(edgeSystem, participantID, campaignID, serial)
 			},
@@ -1587,7 +1587,7 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 		c.Flags().StringVar(&edgeSystem, "service", "", "Provisioning Service name")
 		c.Flags().StringVar(&participantID, "participant-id", "", "Participant ID")
 		c.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign ID")
-		c.Flags().StringVar(&serial, "serial", "", "Device serial number")
+		c.Flags().StringVar(&serial, "deployment-name", "", "Identifier of the deployment unit")
 		cmd.AddCommand(c)
 	}
 
@@ -1627,7 +1627,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&service, "service", "", "Provisioning Service ID (selects the store slot)")
 	cmd.PersistentFlags().StringVar(&domainID, "domain-tpl-id", "", "Domain Template ID")
 	cmd.PersistentFlags().StringVar(&participantID, "participant-tpl-id", "", "Participant Template ID")
-	cmd.PersistentFlags().StringVar(&serial, "serial", "", "Device serial number (node id; selects the store slot)")
+	cmd.PersistentFlags().StringVar(&serial, "deployment-name", "", "Identifier of the deployment unit (node id; selects the store slot); auto-detected from the local serial number for agent enrollment if omitted")
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Log HTTP request and response bodies to stdout (or to --log-file for the agent subcommand)")
 
 	// All edge-sync endpoints use mTLS and require certificate verification.
@@ -1662,7 +1662,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return fmt.Errorf("--deployment-name is required")
 				}
 				if len(macs) == 0 {
 					return fmt.Errorf("--mac is required (at least one)")
@@ -1732,7 +1732,7 @@ with your regular login credentials and performs enrollment in a single API call
 Supply --participant-template-id for full-security domains; omit it for
 lightweight domains.
 
-The --serial flag identifies this participant on the Provisioning Service.
+The --deployment-name flag identifies this deployment on the Provisioning Service.
 You may choose any stable, unique string (e.g. device serial number, hostname,
 or UUID) — it is stored permanently and cannot be changed after enrollment.
 
@@ -1748,7 +1748,7 @@ Example (bring your own CSR):
     --service my-provisioning-service \
     --domain-template-id 1:my-domain \
     --participant-template-id my-participant \
-    --serial my-device-001 \
+	--deployment-name my-device-001 \
     --csr-file device.csr \
     --key-file device.key
 
@@ -1757,7 +1757,7 @@ Example (generate the key locally):
     --service my-provisioning-service \
     --domain-template-id 1:my-domain \
     --participant-template-id my-participant \
-    --serial my-device-001 \
+	--deployment-name my-device-001 \
     --gen-key`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -1768,7 +1768,7 @@ Example (generate the key locally):
 					return fmt.Errorf("--domain-template-id is required")
 				}
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return fmt.Errorf("--deployment-name is required")
 				}
 				if genKey && csrFile != "" {
 					return fmt.Errorf("--csr-file and --gen-key are mutually exclusive")
@@ -1989,7 +1989,6 @@ mtls_artifacts/ directory.`,
 		var crlInterval time.Duration
 		var logFile string
 		var manualMode bool
-		var deploymentName string
 		var agentMACs []string
 		var campaignToken string
 		c := &cobra.Command{
@@ -2003,8 +2002,9 @@ PSK, and CRL for one or more Participant Profiles.
 On first run an interactive wizard enrolls the device, either directly with
 your Connext Cloud account (pick the Provisioning Service, Domain Template and
 Participant Template from lists; requires 'rticloud login') or with a campaign
-token issued by an operator.  The serial number and MAC addresses are
-auto-detected; use --manual to confirm or override them.
+token issued by an operator. The deployment name defaults to the local serial
+number; use --deployment-name to override it. MAC addresses are auto-detected;
+use --manual to confirm or override these values.
 
 For unattended provisioning skip the wizard entirely by passing either
 --campaign-token, or --service and --domain-tpl-id (plus
@@ -2024,12 +2024,7 @@ your container runtime for supervision.`,
 				}
 				runtime.EdgeSyncAgent.LogFile = logFile
 				runtime.EdgeSyncAgent.ManualMode = manualMode
-				// The edge-sync --serial persistent flag doubles as the agent
-				// device id so slot flags and first-run enrollment agree.
-				if deploymentName == "" {
-					deploymentName = serial
-				}
-				runtime.EdgeSyncAgent.DeploymentName = deploymentName
+				runtime.EdgeSyncAgent.DeploymentName = serial
 				runtime.EdgeSyncAgent.MACs = agentMACs
 				runtime.EdgeSyncAgent.CampaignToken = campaignToken
 				runtime.EdgeSyncAgent.Service = service
@@ -2050,13 +2045,12 @@ your container runtime for supervision.`,
 		}
 		c.Flags().DurationVar(&crlInterval, "crl-interval", 5*time.Minute, "How often to refresh the Certificate Revocation List")
 		c.Flags().StringVar(&logFile, "log-file", ".connext/agent/rticloud-edge-agent.log", "Path to the agent log file (empty to disable)")
-		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override auto-detected serial number and MAC addresses during first-run enrollment")
-		c.Flags().StringVar(&deploymentName, "deployment-name", "", "Identifier of the deployment unit, if unspecified the local serial number will be used.")
+		c.Flags().BoolVar(&manualMode, "manual", false, "Prompt to confirm or override the deployment name and MAC addresses during first-run enrollment")
 		c.Flags().StringSliceVar(&agentMACs, "macs", nil, "Comma-separated MAC addresses to use instead of auto-detecting")
 		c.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT for headless first-run enrollment (skips the wizard)")
 
 		{ // agent enroll
-			var campaignToken, serial, deviceName string
+			var campaignToken, deviceName string
 			var macs []string
 			enroll := &cobra.Command{
 				Use:   "enroll",
@@ -2134,7 +2128,6 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 			}
 			enroll.Flags().StringVar(&campaignToken, "campaign-token", "", "Campaign enrollment JWT (omit for direct enrollment; --participant-tpl-id is required only for full security)")
 			enroll.Flags().StringVar(&deviceName, "device-name", "", "Device name as registered in the inventory (used as CSR Common Name prefix)")
-			enroll.Flags().StringVar(&serial, "serial", "", "Device serial number (auto-detected if omitted)")
 			enroll.Flags().StringArrayVar(&macs, "mac", nil, "MAC address (auto-detected if omitted; repeatable)")
 			c.AddCommand(enroll)
 		}
