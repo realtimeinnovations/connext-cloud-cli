@@ -284,10 +284,10 @@ func (runner *Runner) CreateApplication(name string, appName string, port int, k
 		var resource any
 		if len(bytes.TrimSpace(body)) != 0 {
 			if err := json.Unmarshal(body, &resource); err != nil {
-				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid application JSON: " + err.Error(), Cause: err}
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid application JSON: " + err.Error(), Cause: err}
 			}
 			if resource == nil {
-				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned null instead of an application result"}
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of an application result"}
 			}
 		}
 		return runner.writeResult(map[string]any{"databus": name, "application": appName, "kind": kind, "port": port, "status": "created", "resource": resource})
@@ -436,16 +436,16 @@ func (runner *Runner) ListAppClients(name string, appName string) error {
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid client JSON: " + err.Error(), Cause: err}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid client JSON: " + err.Error(), Cause: err}
 	}
 	clients, ok := payload["clients"]
 	if !ok || clients == nil {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API response is missing the clients collection"}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API response is missing the clients collection"}
 	}
 	switch clients.(type) {
 	case map[string]any, []any:
 	default:
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API clients must be an object or array"}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API clients must be an object or array"}
 	}
 	if runner.JSON {
 		return runner.writeResult(map[string]any{"databus": name, "application": appName, "clients": clients})

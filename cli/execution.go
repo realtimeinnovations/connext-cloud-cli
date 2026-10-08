@@ -18,6 +18,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/doctor"
 	"github.com/spf13/cobra"
 )
 
@@ -34,6 +35,10 @@ func (err *executionError) Unwrap() error { return err.Detail }
 func ReportError(err error, errOut io.Writer) int {
 	if err == nil {
 		return 0
+	}
+	var completed *doctor.CompletedError
+	if errors.As(err, &completed) {
+		return completed.ExitCode
 	}
 	typed := clierror.From(err)
 	var execution *executionError
@@ -68,11 +73,15 @@ func requestsJSON(argv []string) bool {
 }
 
 func executionFailure(err error, jsonOutput, invoked bool) error {
+	var completed *doctor.CompletedError
+	if errors.As(err, &completed) {
+		return completed
+	}
 	typed := clierror.From(err)
 	if errors.Is(err, config.ErrNotConfigured) {
-		typed = &clierror.Error{Code: "CONFIG_REQUIRED", Message: err.Error(), RequiredAction: "configure_region", Cause: err}
-	} else if !invoked && typed.Code == "COMMAND_FAILED" {
-		typed = &clierror.Error{Code: "INVALID_ARGUMENT", Message: err.Error(), Cause: err}
+		typed = &clierror.Error{Code: clierror.CodeConfigRequired, Message: err.Error(), RequiredAction: "configure_region", Cause: err}
+	} else if !invoked && typed.Code == clierror.CodeCommandFailed {
+		typed = &clierror.Error{Code: clierror.CodeInvalidArgument, Message: err.Error(), Cause: err}
 	}
 	return &executionError{Detail: typed, JSON: jsonOutput}
 }
@@ -84,6 +93,9 @@ func nonInteractive(cmd *cobra.Command) bool {
 
 func supportsJSON(cmd *cobra.Command) bool {
 	path := strings.Fields(cmd.CommandPath())
+	if len(path) == 2 && path[1] == "doctor" {
+		return true
+	}
 	if len(path) == 3 {
 		switch path[1] {
 		case "databus":
@@ -114,17 +126,17 @@ func prepareCommands(root *cobra.Command, runtime *app.Runtime, invoked *bool) {
 						if supportsJSON(cmd) {
 							allowed = "text or json"
 						}
-						return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("invalid --format %q; expected %s", format, allowed)}
+						return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("invalid --format %q; expected %s", format, allowed)}
 					}
 					if format == "json" && !supportsJSON(cmd) {
-						return &clierror.Error{Code: "FORMAT_UNSUPPORTED", Message: "--format json is not supported for this command"}
+						return &clierror.Error{Code: clierror.CodeFormatUnsupported, Message: "--format json is not supported for this command"}
 					}
 				}
 				jsonOutput := format == "json"
 				if jsonOutput {
 					short, _ := cmd.Flags().GetBool("short")
 					if short {
-						return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--short cannot be combined with --format json"}
+						return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--short cannot be combined with --format json"}
 					}
 				}
 				if nonInteractive(cmd) || jsonOutput {

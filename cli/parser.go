@@ -59,8 +59,12 @@ func Execute(argv []string, out io.Writer, errOut io.Writer, runtime *app.Runtim
 	root.SetErr(errOut)
 	invoked := false
 	prepareCommands(root, runtime, &invoked)
-	if err := root.Execute(); err != nil {
+	executed, err := root.ExecuteC()
+	if err != nil {
 		return executionFailure(err, requestsJSON(argv), invoked)
+	}
+	if executed.CommandPath() == "rticloud doctor" {
+		return nil
 	}
 	nonInteractive, _ := root.PersistentFlags().GetBool("non-interactive")
 	if !nonInteractive && !requestsJSON(argv) {
@@ -92,6 +96,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 
 	root.AddCommand(
 		groupCommand(newConfigureCommand(runtime), "Setup"),
+		groupCommand(newDoctorCommand(runtime), "Setup"),
 		groupCommand(newLoginCommand(runtime), "Setup"),
 		groupCommand(newLogoutCommand(runtime), "Setup"),
 		groupCommand(newPrintAccessTokenCommand(runtime), "Setup"),
@@ -125,7 +130,7 @@ func shouldSkipUpdateNotification(argv []string) bool {
 			return true
 		}
 	}
-	if argv[0] == "update" || argv[0] == "completion" || argv[0] == "help" {
+	if argv[0] == "doctor" || argv[0] == "update" || argv[0] == "completion" || argv[0] == "help" {
 		return true
 	}
 	return false
@@ -341,7 +346,7 @@ func parentCommand(use string, short string) *cobra.Command {
 }
 
 func argumentError(format string, args ...any) error {
-	return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf(format, args...)}
+	return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf(format, args...)}
 }
 
 func jsonParentCommand(use, short string) *cobra.Command {
@@ -529,10 +534,10 @@ Formatting:
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
+					return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--name is required"}
 				}
 				if replicas < 1 {
-					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--replicas must be greater than zero"}
+					return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--replicas must be greater than zero"}
 				}
 				return runtime.Commands.CreateDatabus(name, replicas, obsService, networkName, !nonSecure)
 			},
@@ -591,7 +596,7 @@ Formatting:
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
+					return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--name is required"}
 				}
 				return runtime.Commands.QueryDatabus(name)
 			},
@@ -619,7 +624,7 @@ Formatting:
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
+					return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--name is required"}
 				}
 				return runtime.Commands.DeleteDatabus(name)
 			},
@@ -2330,7 +2335,7 @@ agent's management login.`,
 						}
 						serviceID, tokenParticipantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
 						if err != nil {
-							return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("invalid campaign token: %v", err), Cause: err}
+							return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("invalid campaign token: %v", err), Cause: err}
 						}
 						req = edgesyncagent.EnrollRequest{
 							ServiceID:     serviceID,

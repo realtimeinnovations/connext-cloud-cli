@@ -15,6 +15,25 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
+// Error codes are stable values in the CLI JSON error contract.
+const (
+	CodeAPIError          = "API_ERROR"
+	CodeAuthRequired      = "AUTH_REQUIRED"
+	CodeCanceled          = "CANCELED"
+	CodeCommandFailed     = "COMMAND_FAILED"
+	CodeConfigRequired    = "CONFIG_REQUIRED"
+	CodeConflict          = "CONFLICT"
+	CodeFormatUnsupported = "FORMAT_UNSUPPORTED"
+	CodeInputRequired     = "INPUT_REQUIRED"
+	CodeInvalidArgument   = "INVALID_ARGUMENT"
+	CodeInvalidResponse   = "INVALID_RESPONSE"
+	CodeNotFound          = "NOT_FOUND"
+	CodeOperationFailed   = "OPERATION_FAILED"
+	CodePermissionDenied  = "PERMISSION_DENIED"
+	CodeRateLimited       = "RATE_LIMITED"
+	CodeTimeout           = "TIMEOUT"
+)
+
 type Error struct {
 	Code           string `json:"code"`
 	Message        string `json:"message"`
@@ -30,17 +49,17 @@ func (err *Error) Unwrap() error { return err.Cause }
 // ExitCode is stable across text and JSON output modes.
 func (err *Error) ExitCode() int {
 	switch err.Code {
-	case "INVALID_ARGUMENT", "INPUT_REQUIRED", "FORMAT_UNSUPPORTED":
+	case CodeInvalidArgument, CodeInputRequired, CodeFormatUnsupported:
 		return 2
-	case "AUTH_REQUIRED", "PERMISSION_DENIED":
+	case CodeAuthRequired, CodePermissionDenied:
 		return 3
-	case "NOT_FOUND":
+	case CodeNotFound:
 		return 4
-	case "CONFLICT":
+	case CodeConflict:
 		return 5
-	case "TIMEOUT":
+	case CodeTimeout:
 		return 6
-	case "CANCELED":
+	case CodeCanceled:
 		return 130
 	default:
 		return 1
@@ -48,12 +67,12 @@ func (err *Error) ExitCode() int {
 }
 
 func InputRequired(message, action string) *Error {
-	return &Error{Code: "INPUT_REQUIRED", Message: message, RequiredAction: action}
+	return &Error{Code: CodeInputRequired, Message: message, RequiredAction: action}
 }
 
 func AuthRequired() *Error {
 	return &Error{
-		Code: "AUTH_REQUIRED", Message: "No usable credentials are available. Run 'rticloud login' interactively or set CONNEXT_CLOUD_API_KEY.",
+		Code: CodeAuthRequired, Message: "No usable credentials are available. Run 'rticloud login' interactively or set CONNEXT_CLOUD_API_KEY.",
 		RequiredAction: "configure_credentials",
 	}
 }
@@ -63,29 +82,29 @@ func From(err error) *Error {
 	if errors.As(err, &typed) {
 		return typed
 	}
-	result := &Error{Code: "COMMAND_FAILED", Message: err.Error(), Cause: err}
+	result := &Error{Code: CodeCommandFailed, Message: err.Error(), Cause: err}
 	var status *httputil.StatusError
 	var network net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
-		result.Code = "CANCELED"
+		result.Code = CodeCanceled
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &network) && network.Timeout():
-		result.Code = "TIMEOUT"
+		result.Code = CodeTimeout
 	case errors.As(err, &status):
 		result.HTTPStatus = status.StatusCode
 		switch status.StatusCode {
 		case 401:
-			result.Code, result.RequiredAction = "AUTH_REQUIRED", "configure_credentials"
+			result.Code, result.RequiredAction = CodeAuthRequired, "configure_credentials"
 		case 403:
-			result.Code = "PERMISSION_DENIED"
+			result.Code = CodePermissionDenied
 		case 404:
-			result.Code = "NOT_FOUND"
+			result.Code = CodeNotFound
 		case 409:
-			result.Code = "CONFLICT"
+			result.Code = CodeConflict
 		case 429:
-			result.Code = "RATE_LIMITED"
+			result.Code = CodeRateLimited
 		default:
-			result.Code = "API_ERROR"
+			result.Code = CodeAPIError
 		}
 	}
 	// Retryability is conservative: a failed mutation may already have taken
