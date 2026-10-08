@@ -327,6 +327,36 @@ func TestLocalFailuresRemainScoped(t *testing.T) {
 	}
 }
 
+func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
+	o, home, _ := fixture(t)
+	rtiRoot := filepath.Join(home, ".rti")
+	target := filepath.Join(home, "rti-target")
+	if err := os.Rename(rtiRoot, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, rtiRoot); err != nil {
+		t.Skip(err)
+	}
+	before := snapshot(t, target)
+	r := Run(context.Background(), o)
+	c := check(t, r, "managed_connext")
+	if c.Status != CheckFail || c.Code != "CONNEXT_INVALID" || c.RequiredAction != "repair_connext" {
+		t.Fatalf("symlinked RTI root should block installation: %+v", c)
+	}
+	if r.Healthy || r.ExitCode != 1 {
+		t.Fatalf("expected unhealthy report with exit 1: %+v", r)
+	}
+	for _, id := range []string{"gateway_tools", "spy_tool", "license"} {
+		c := check(t, r, id)
+		if c.Status != CheckSkip || !reflect.DeepEqual(c.BlockedBy, []string{"managed_connext"}) || c.RequiredAction != "" || c.NextStep != "" {
+			t.Fatalf("%s should be blocked by installation: %+v", id, c)
+		}
+	}
+	if !reflect.DeepEqual(before, snapshot(t, target)) {
+		t.Fatal("inspection changed files under the symlink target")
+	}
+}
+
 func TestMissingAndIncompleteInstallation(t *testing.T) {
 	for _, marker := range []bool{false, true} {
 		t.Run(map[bool]string{false: "missing", true: "incomplete"}[marker], func(t *testing.T) {

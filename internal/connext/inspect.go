@@ -26,7 +26,7 @@ func InspectManagedInstallation() (install Install, exists bool, err error) {
 		return install, false, err
 	}
 	install = Install{Path: artifact.installationPath(root), Version: artifact.version, Reason: "rticloud-managed installation"}
-	if err := safeManagedPath(filepath.Dir(root), install.Path); err != nil {
+	if err := safeManagedPath(filepath.Dir(filepath.Dir(root)), install.Path); err != nil {
 		return install, true, err
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(install.Path), installationPendingFile)); !os.IsNotExist(err) {
