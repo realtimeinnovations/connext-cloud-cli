@@ -22,6 +22,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -38,15 +39,33 @@ var rootCommandGroups = []string{
 	"Setup",
 }
 
+const rootGettingStarted = `
+Get Started:
+  Configure your region:
+    rticloud configure
+    rticloud configure --region us-east-2
+
+  Sign in using your browser:
+    rticloud login
+
+  Device login and service-account API keys are also available.
+  Run 'rticloud login -h' for authentication options and examples.
+`
+
 func Execute(argv []string, out io.Writer, errOut io.Writer, runtime *app.Runtime) error {
 	root := newRootCommand(runtime)
 	root.SetArgs(argv)
 	root.SetOut(out)
 	root.SetErr(errOut)
+	invoked := false
+	prepareCommands(root, runtime, &invoked)
 	if err := root.Execute(); err != nil {
-		return err
+		return executionFailure(err, requestsJSON(argv), invoked)
 	}
-	notifyUpdate(argv, runtime, errOut)
+	nonInteractive, _ := root.PersistentFlags().GetBool("non-interactive")
+	if !nonInteractive && !requestsJSON(argv) {
+		notifyUpdate(argv, runtime, errOut)
+	}
 	return nil
 }
 
@@ -55,7 +74,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "rticloud [command]",
 		Short:         "RTI Connext Cloud CLI",
-		Long:          "RTI Connext Cloud CLI. First-time setup: run 'rticloud configure'.",
+		Long:          "RTI Connext Cloud CLI.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -68,6 +87,7 @@ func newRootCommand(runtime *app.Runtime) *cobra.Command {
 		},
 	}
 	root.Flags().BoolVar(&versionFlag, "version", false, "Print version and build metadata")
+	root.PersistentFlags().Bool("non-interactive", false, "Disable prompts, browser actions and automatic update checks")
 	root.SetHelpFunc(groupedRootHelp)
 
 	root.AddCommand(
@@ -131,6 +151,7 @@ func groupedRootHelp(cmd *cobra.Command, _ []string) {
 		_, _ = fmt.Fprintln(out, cmd.Short)
 	}
 	_, _ = fmt.Fprintf(out, "\nUsage:\n  %s\n", cmd.UseLine())
+	_, _ = fmt.Fprint(out, rootGettingStarted)
 	for _, group := range rootCommandGroups {
 		commands := visibleCommandsInGroup(cmd.Commands(), group)
 		if len(commands) == 0 {
@@ -145,7 +166,7 @@ func groupedRootHelp(cmd *cobra.Command, _ []string) {
 	if flags := strings.TrimRight(cmd.InheritedFlags().FlagUsages(), "\n"); flags != "" {
 		_, _ = fmt.Fprintf(out, "\nGlobal Flags:\n%s\n", flags)
 	}
-	_, _ = fmt.Fprintf(out, "\nUse \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
+	_, _ = fmt.Fprintf(out, "\nUse '%s <command> -h' for options, output formats, and examples.\n", cmd.CommandPath())
 }
 
 func visibleCommandsInGroup(commands []*cobra.Command, group string) []*cobra.Command {
@@ -166,6 +187,9 @@ func defaultHelp(cmd *cobra.Command) {
 		_, _ = fmt.Fprintln(out, cmd.Short)
 	}
 	_, _ = fmt.Fprintf(out, "\nUsage:\n  %s\n", cmd.UseLine())
+	if examples := strings.TrimRight(cmd.Example, "\n"); examples != "" {
+		_, _ = fmt.Fprintf(out, "\nExamples:\n%s\n", examples)
+	}
 	if cmd.HasAvailableSubCommands() {
 		_, _ = fmt.Fprintln(out, "\nAvailable Commands:")
 		printCommandList(out, visibleCommands(cmd.Commands()))
@@ -177,7 +201,7 @@ func defaultHelp(cmd *cobra.Command) {
 		_, _ = fmt.Fprintf(out, "\nGlobal Flags:\n%s\n", flags)
 	}
 	if cmd.HasAvailableSubCommands() {
-		_, _ = fmt.Fprintf(out, "\nUse \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
+		_, _ = fmt.Fprintf(out, "\nUse '%s <command> -h' for options, output formats, and examples.\n", cmd.CommandPath())
 	}
 }
 
@@ -248,7 +272,7 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 		return rawURL, nil
 	}
 	if serial == "" {
-		return "", fmt.Errorf("--serial is required when using --service and --participant-tpl-id without --url")
+		return "", argumentError("--serial is required when using --service and --participant-tpl-id without --url")
 	}
 	if u := rt.EdgeStore.ResolveNodeURL(service, domainID, participantID, serial); u != "" {
 		return u, nil
@@ -266,9 +290,9 @@ func resolveConnextURL(rt *app.Runtime, serial, service, domainID, participantID
 			fmt.Fprintf(&sb, "\n\t  --service %s --domain-tpl-id %s --participant-tpl-id %s --serial %s%s",
 				ni.Service, ni.Domain, ni.Participant, ni.Node, ts)
 		}
-		return "", fmt.Errorf("%s", sb.String())
+		return "", argumentError("%s", sb.String())
 	}
-	return "", fmt.Errorf("--url is required (node_url not found in store at %s)",
+	return "", argumentError("--url is required (node_url not found in store at %s)",
 		rt.EdgeStore.NodeURLPath(service, domainID, participantID, serial))
 }
 
@@ -316,16 +340,39 @@ func parentCommand(use string, short string) *cobra.Command {
 	}
 }
 
+func argumentError(format string, args ...any) error {
+	return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf(format, args...)}
+}
+
+func jsonParentCommand(use, short string) *cobra.Command {
+	cmd := parentCommand(use, short)
+	cmd.Long = short + `.
+
+Formatting:
+  --format json emits one versioned result on stdout or a structured error on
+  stderr. JSON mode disables prompts and automatic update checks.`
+	cmd.PersistentFlags().String("format", "", "Output format: text or json (JSON disables interaction)")
+	return cmd
+}
+
 func newConfigureCommand(runtime *app.Runtime) *cobra.Command {
 	var region string
 	var getRegion bool
 	cmd := &cobra.Command{
 		Use:   "configure",
 		Short: "Configure CLI region settings",
-		Args:  cobra.NoArgs,
+		Example: `  # Choose a region interactively
+  rticloud configure
+
+  # Configure a region without prompts
+  rticloud configure --region us-east-2 --non-interactive
+
+  # Show the current region
+  rticloud configure --get-region`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if region != "" && getRegion {
-				return fmt.Errorf("exactly one of --region or --get-region is allowed")
+				return argumentError("exactly one of --region or --get-region is allowed")
 			}
 			_, err := runtime.Config.ConfigureRegion(region, getRegion, os.Stdin, cmd.OutOrStdout())
 			return err
@@ -341,7 +388,40 @@ func newLoginCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Login to Connext Cloud",
-		Args:  cobra.NoArgs,
+		Long: `Sign in to Connext Cloud. Configure your region first with 'rticloud configure'.
+
+Browser Login:
+  Opens your browser to complete sign-in and saves the access token
+  for subsequent commands.
+
+Device Login:
+  Use --device to display an authorization URL and code, then wait for approval.
+  You can complete authorization in a browser on another device.
+  The CLI also attempts to open the local browser automatically.
+
+API Key Authentication:
+  Create a service-account API key at:
+    https://cloud.rti.com/dashboard/service-accounts
+
+  Set CONNEXT_CLOUD_API_KEY in your environment, then run commands directly.
+  No separate login command is required.
+
+Credential Selection:
+  Commands reuse a valid saved access token first. If none is available,
+  they authenticate using CONNEXT_CLOUD_API_KEY. Otherwise, they may start
+  browser login unless --non-interactive is set.
+
+  Saved access tokens are reused until they expire. --non-interactive requires
+  existing credentials or an API key and blocks both browser and device login.`,
+		Example: `  # Sign in using your browser
+  rticloud login
+
+  # Approve sign-in from a browser on another device
+  rticloud login --device
+
+  # With CONNEXT_CLOUD_API_KEY already set, run commands directly
+  rticloud databus list --non-interactive`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if device {
 				_, err := runtime.Auth.LoginWithDeviceFlow()
@@ -351,7 +431,7 @@ func newLoginCommand(runtime *app.Runtime) *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().BoolVar(&device, "device", false, "Login using device authorization flow")
+	cmd.Flags().BoolVar(&device, "device", false, "Sign in using an authorization URL and code (supports remote approval)")
 	return cmd
 }
 
@@ -410,6 +490,23 @@ func newUpdateCommand(runtime *app.Runtime) *cobra.Command {
 func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("databus", "Manage Databuses")
 	cmd.Use = "databus [command]"
+	cmd.Long = `Manage Databuses.
+
+Formatting:
+  Databus resource commands support --format json, which emits one versioned
+  result on stdout or a structured error on stderr. JSON mode disables prompts
+  and automatic update checks. app create/delete and app client list/revoke
+  also support JSON mode; app get and app client register retain their output.
+  list also supports --short for compact output; it cannot be combined with JSON.`
+	cmd.Example = `  # List Databuses as structured JSON
+  rticloud databus list --format json
+
+  # List Databuses in compact form
+  rticloud databus list --short
+
+  # Inspect creation options and examples
+  rticloud databus create -h`
+	cmd.PersistentFlags().String("format", "", "Output format for supported commands: text or json (JSON disables interaction)")
 
 	{ // create
 		var name, obsService, networkName string
@@ -418,10 +515,24 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 		c := &cobra.Command{
 			Use:   "create",
 			Short: "Create a Databus",
-			Args:  cobra.NoArgs,
+			Long: `Create a Databus and wait until its status is active.
+
+Formatting:
+  --format json emits the completed resource in a versioned JSON result.
+  Progress text is omitted and interaction is disabled.
+  Failed creation or an unexpected terminal state returns a nonzero exit code.`,
+			Example: `  # Create a secure Databus with the default replica count
+  rticloud databus create --name demo
+
+  # Return the completed resource as structured JSON
+  rticloud databus create --name demo --format json`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
+				}
+				if replicas < 1 {
+					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--replicas must be greater than zero"}
 				}
 				return runtime.Commands.CreateDatabus(name, replicas, obsService, networkName, !nonSecure)
 			},
@@ -439,7 +550,21 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 		c := &cobra.Command{
 			Use:   "list",
 			Short: "List Databuses",
-			Args:  cobra.NoArgs,
+			Long: `List Databuses.
+
+Formatting:
+  The default output is the API response formatted as JSON.
+  --format json wraps it in a versioned result and disables interaction.
+  --short prints compact resource names and kinds; it cannot be combined with JSON.`,
+			Example: `  # List Databuses with full details
+  rticloud databus list
+
+  # Print compact names and kinds
+  rticloud databus list --short
+
+  # Emit a versioned JSON result without prompts
+  rticloud databus list --format json`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return runtime.Commands.ListDatabuses(short)
 			},
@@ -453,10 +578,20 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 		c := &cobra.Command{
 			Use:   "query",
 			Short: "Show Databus details",
-			Args:  cobra.NoArgs,
+			Long: `Show Databus details.
+
+Formatting:
+  The default output is the API response formatted as JSON.
+  --format json wraps it in a versioned result and disables interaction.`,
+			Example: `  # Show Databus details
+  rticloud databus query --name demo
+
+  # Emit a versioned JSON result
+  rticloud databus query --name demo --format json`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
 				}
 				return runtime.Commands.QueryDatabus(name)
 			},
@@ -470,10 +605,21 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 		c := &cobra.Command{
 			Use:   "delete",
 			Short: "Delete a Databus",
-			Args:  cobra.NoArgs,
+			Long: `Delete a Databus and wait until its absence is confirmed.
+
+Formatting:
+  --format json emits the resource name and status "deleted" in a versioned result.
+  Progress text is omitted and interaction is disabled.
+  Failed deletion or an unconfirmed outcome returns a nonzero exit code.`,
+			Example: `  # Delete a Databus and wait for completion
+  rticloud databus delete --name demo
+
+  # Return structured confirmation of deletion
+  rticloud databus delete --name demo --format json`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--name is required"}
 				}
 				return runtime.Commands.DeleteDatabus(name)
 			},
@@ -490,7 +636,7 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.UpdateDatabusStatus(name, "disable")
 			},
@@ -507,7 +653,7 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.UpdateDatabusStatus(name, "resume")
 			},
@@ -525,10 +671,10 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if (service == "") == !unlink {
-					return fmt.Errorf("exactly one of --service or --unlink is required")
+					return argumentError("exactly one of --service or --unlink is required")
 				}
 				var svc any = service
 				if unlink {
@@ -551,10 +697,10 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if filters == "" {
-					return fmt.Errorf("--filters is required")
+					return argumentError("--filters is required")
 				}
 				return runtime.Commands.UpdateFilters(name, filters)
 			},
@@ -572,10 +718,10 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if email == "" {
-					return fmt.Errorf("--email is required")
+					return argumentError("--email is required")
 				}
 				return runtime.Commands.AddUserToDatabus(name, email)
 			},
@@ -593,10 +739,10 @@ func newDatabusCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if email == "" {
-					return fmt.Errorf("--email is required")
+					return argumentError("--email is required")
 				}
 				return runtime.Commands.RemoveUserFromDatabus(name, email)
 			},
@@ -623,7 +769,7 @@ func newTopicCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.ListTopics(name)
 			},
@@ -641,10 +787,10 @@ func newTopicCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if topicName == "" {
-					return fmt.Errorf("--topic is required")
+					return argumentError("--topic is required")
 				}
 				return runtime.Commands.GetTopic(name, topicName, typeXML)
 			},
@@ -659,7 +805,9 @@ func newTopicCommand(runtime *app.Runtime) *cobra.Command {
 }
 
 func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("observability", "Manage Observability Services")
+	cmd := jsonParentCommand("observability", "Manage Observability Services")
+	cmd.Long += "\n  create waits for active; delete waits for confirmed absence.\n  --short cannot be combined with --format json."
+	cmd.Example = "  rticloud observability list --format json\n  rticloud observability create --name demo-obs --format json"
 
 	{ // create
 		var name, networkName string
@@ -670,7 +818,7 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.CreateObsService(name, networkName, !nonSecure)
 			},
@@ -711,7 +859,7 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				switch sub.action {
 				case "query":
@@ -732,26 +880,33 @@ func newObservabilityCommand(runtime *app.Runtime) *cobra.Command {
 
 func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("app", "Manage Databus applications")
+	cmd.Long = `Manage Databus applications.
+
+Formatting:
+  create and delete support --format json for versioned results and errors.
+  JSON mode disables interaction. get retains its existing file output.`
+	cmd.Example = "  rticloud databus app create --name demo --app-name subscriber --format json"
 
 	{ // create
 		var name, appName, kind, configFile string
 		var port int
 		c := &cobra.Command{
-			Use:   "create",
-			Short: "Create a Databus application",
-			Args:  cobra.NoArgs,
+			Use:     "create",
+			Short:   "Create a Databus application",
+			Example: "  rticloud databus app create --name demo --app-name subscriber --format json",
+			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if configFile != "" && cmd.Flags().Changed("kind") {
-					return fmt.Errorf("--kind cannot be used with --config")
+					return argumentError("--kind cannot be used with --config")
 				}
 				if configFile == "" && kind != "app" && kind != "gateway" && kind != "observability-collector" {
-					return fmt.Errorf("invalid --kind %q; expected app, gateway, or observability-collector", kind)
+					return argumentError("invalid --kind %q; expected app, gateway, or observability-collector", kind)
 				}
 				return runtime.Commands.CreateApplication(name, appName, port, kind, configFile, cmd.Flags().Changed("port"))
 			},
@@ -773,19 +928,19 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if output != "" && example {
-					return fmt.Errorf("--example cannot be used with --output")
+					return argumentError("--example cannot be used with --output")
 				}
 				if output != "" && (manifest || zipOutput) {
-					return fmt.Errorf("--output cannot be combined with artifact flags")
+					return argumentError("--output cannot be combined with artifact flags")
 				}
 				if zipOutput && (example || manifest) {
-					return fmt.Errorf("--zip cannot be combined with --example or --manifest")
+					return argumentError("--zip cannot be combined with --example or --manifest")
 				}
 				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
 					GenerateExample: example,
@@ -809,15 +964,16 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 	{ // delete
 		var name, appName string
 		c := &cobra.Command{
-			Use:   "delete",
-			Short: "Delete a Databus application",
-			Args:  cobra.NoArgs,
+			Use:     "delete",
+			Short:   "Delete a Databus application",
+			Example: "  rticloud databus app delete --name demo --app-name subscriber --format json",
+			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				return runtime.Commands.DeleteApplication(name, appName)
 			},
@@ -833,19 +989,26 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 
 func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("client", "Manage application clients")
+	cmd.Long = `Manage application clients.
+
+Formatting:
+  list and revoke support --format json for versioned results and errors.
+  JSON mode disables interaction. register retains its existing file output.`
+	cmd.Example = "  rticloud databus app client list --name demo --app-name subscriber --format json"
 
 	{ // list
 		var name, appName string
 		c := &cobra.Command{
-			Use:   "list",
-			Short: "List application clients",
-			Args:  cobra.NoArgs,
+			Use:     "list",
+			Short:   "List application clients",
+			Example: "  rticloud databus app client list --name demo --app-name subscriber --format json",
+			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				return runtime.Commands.ListAppClients(name, appName)
 			},
@@ -864,16 +1027,16 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if clientID == "" {
-					return fmt.Errorf("--client-id is required")
+					return argumentError("--client-id is required")
 				}
 				if (csrFile == "") == !genPrivateKey {
-					return fmt.Errorf("exactly one of --csr-file or --gen-private-key is required")
+					return argumentError("exactly one of --csr-file or --gen-private-key is required")
 				}
 				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, force, zipOutput)
 			},
@@ -891,18 +1054,19 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 	{ // revoke
 		var name, appName, clientID string
 		c := &cobra.Command{
-			Use:   "revoke",
-			Short: "Revoke an application client",
-			Args:  cobra.NoArgs,
+			Use:     "revoke",
+			Short:   "Revoke an application client",
+			Example: "  rticloud databus app client revoke --name demo --app-name subscriber --client-id device-1 --format json",
+			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if appName == "" {
-					return fmt.Errorf("--app-name is required")
+					return argumentError("--app-name is required")
 				}
 				if clientID == "" {
-					return fmt.Errorf("--client-id is required")
+					return argumentError("--client-id is required")
 				}
 				return runtime.Commands.RevokeAppClient(name, appName, clientID)
 			},
@@ -917,7 +1081,8 @@ func newApplicationClientCommand(runtime *app.Runtime) *cobra.Command {
 }
 
 func newNetworkCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("network", "Manage networks")
+	cmd := jsonParentCommand("network", "Manage networks")
+	cmd.Example = "  rticloud network list --format json"
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
@@ -936,7 +1101,7 @@ func newNetworkCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.DeleteNetwork(name)
 			},
@@ -949,7 +1114,9 @@ func newNetworkCommand(runtime *app.Runtime) *cobra.Command {
 }
 
 func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("license", "Download your RTI license file")
+	cmd := jsonParentCommand("license", "Download your RTI license file")
+	cmd.Long += "\n  get writes the license file and reports its absolute artifact_path in JSON mode."
+	cmd.Example = "  rticloud license get --output rti_license.dat --format json"
 
 	{ // get
 		var expirationDays int
@@ -960,7 +1127,7 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if cmd.Flags().Changed("expiration-days") && expirationDays < 0 {
-					return fmt.Errorf("expiration-days must be greater than or equal to 0")
+					return argumentError("expiration-days must be greater than or equal to 0")
 				}
 				var days *int
 				if cmd.Flags().Changed("expiration-days") {
@@ -983,10 +1150,27 @@ func newGatewayCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Connect your applications to Connext Cloud",
-		Args:  cobra.NoArgs,
+		Long: `Connect your applications to Connext Cloud.
+
+Formatting:
+  The default output uses a live dashboard when supported by the terminal.
+  --format text prints plain events instead of the dashboard.
+  --non-interactive also selects text output and requires existing project setup.`,
+		Example: `  # Connect using the default display
+  rticloud gateway
+
+  # Print plain events
+  rticloud gateway --format text
+
+  # Show the current project status
+  rticloud gateway status`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
 			if format != "" && format != "text" {
-				return fmt.Errorf("invalid --format %q; expected text", format)
+				return argumentError("invalid --format %q; expected text", format)
+			}
+			if nonInteractive(cmd) && format == "" {
+				format = "text"
 			}
 			return runtime.RunGateway(format, skipPreflight)
 		},
@@ -1028,10 +1212,27 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "spy",
 		Short: "Inspect Databus topics and samples with RTI DDS Spy",
-		Args:  cobra.NoArgs,
+		Long: `Inspect Databus topics and samples with RTI DDS Spy.
+
+Formatting:
+  The default output uses a live dashboard when supported by the terminal.
+  --format text prints plain events instead of the dashboard.
+  --non-interactive also selects text output and requires existing project setup.`,
+		Example: `  # Inspect topics and samples using the default display
+  rticloud spy
+
+  # Print plain events
+  rticloud spy --format text
+
+  # Show the current project status
+  rticloud spy status`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, cmdArgs []string) error {
 			if format != "" && format != "text" {
-				return fmt.Errorf("invalid --format %q; expected text", format)
+				return argumentError("invalid --format %q; expected text", format)
+			}
+			if nonInteractive(cmd) && format == "" {
+				format = "text"
 			}
 			return runtime.RunSpy(format, skipPreflight)
 		},
@@ -1062,7 +1263,9 @@ func newSpyCommand(runtime *app.Runtime) *cobra.Command {
 // ── Edge Provisioning (parent) ────────────────────────────────────────────────
 
 func newEdgeProvisioningCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := parentCommand("edge-provisioning", "Manage Edge Provisioning Services")
+	cmd := jsonParentCommand("edge-provisioning", "Manage Edge Provisioning Services")
+	cmd.Long += "\n  Mutations report the target path; creation also includes the backend response.\n  Service creation is reported as accepted; query it to check its current state."
+	cmd.Example = "  rticloud edge-provisioning service list --format json"
 	cmd.AddCommand(
 		newEdgeProvisioningServiceCommand(runtime),
 		newEdgeProvisioningGovernanceTemplateCommand(runtime),
@@ -1100,7 +1303,7 @@ func newEdgeProvisioningServiceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.CreateEdgeSystem(name, description)
 			},
@@ -1118,7 +1321,7 @@ func newEdgeProvisioningServiceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.QueryEdgeSystem(name)
 			},
@@ -1135,7 +1338,7 @@ func newEdgeProvisioningServiceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.DeleteEdgeSystem(name)
 			},
@@ -1160,13 +1363,13 @@ func newEdgeProvisioningGovernanceTemplateCommand(runtime *app.Runtime) *cobra.C
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if xmlFile == "" {
-					return fmt.Errorf("--governance-file is required")
+					return argumentError("--governance-file is required")
 				}
 				return runtime.Commands.CreateGovernanceTemplate(edgeSystem, name, xmlFile)
 			},
@@ -1185,7 +1388,7 @@ func newEdgeProvisioningGovernanceTemplateCommand(runtime *app.Runtime) *cobra.C
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListGovernanceTemplates(edgeSystem)
 			},
@@ -1202,10 +1405,10 @@ func newEdgeProvisioningGovernanceTemplateCommand(runtime *app.Runtime) *cobra.C
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateName == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.DeleteGovernanceTemplate(edgeSystem, templateName)
 			},
@@ -1231,13 +1434,13 @@ func newEdgeProvisioningPermissionsTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if xmlFile == "" {
-					return fmt.Errorf("--permissions-file is required")
+					return argumentError("--permissions-file is required")
 				}
 				return runtime.Commands.CreatePermissionsTemplate(edgeSystem, name, xmlFile)
 			},
@@ -1256,7 +1459,7 @@ func newEdgeProvisioningPermissionsTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListPermissionsTemplates(edgeSystem)
 			},
@@ -1273,10 +1476,10 @@ func newEdgeProvisioningPermissionsTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateName == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.GetPermissionsTemplate(edgeSystem, templateName)
 			},
@@ -1294,10 +1497,10 @@ func newEdgeProvisioningPermissionsTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateName == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.DeletePermissionsTemplate(edgeSystem, templateName)
 			},
@@ -1328,13 +1531,13 @@ To see available Governance Templates for a service, run:
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if governanceTemplate == "" && customGovernanceFile == "" {
-					return fmt.Errorf("--governance-template is required (or provide --custom-governance-file to create one inline)")
+					return argumentError("--governance-template is required (or provide --custom-governance-file to create one inline)")
 				}
 				if customGovernanceFile != "" && customGovernanceName == "" {
-					return fmt.Errorf("--custom-governance-name is required when --custom-governance-file is provided")
+					return argumentError("--custom-governance-name is required when --custom-governance-file is provided")
 				}
 				return runtime.Commands.CreateDomainTemplate(edgeSystem, domainID, governanceTemplate, domainTag, customGovernanceFile, customGovernanceName)
 			},
@@ -1356,7 +1559,7 @@ To see available Governance Templates for a service, run:
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListDomainTemplates(edgeSystem)
 			},
@@ -1373,10 +1576,10 @@ To see available Governance Templates for a service, run:
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateID == "" {
-					return fmt.Errorf("--template-id is required")
+					return argumentError("--template-id is required")
 				}
 				return runtime.Commands.DeleteDomainTemplate(edgeSystem, templateID)
 			},
@@ -1403,13 +1606,13 @@ func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if name == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				if permissionsRef == "" {
-					return fmt.Errorf("--permissions-ref is required")
+					return argumentError("--permissions-ref is required")
 				}
 				return runtime.Commands.CreateParticipantTemplate(edgeSystem, name, permissionsRef, artifactMaxTTLMinutes)
 			},
@@ -1429,7 +1632,7 @@ func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListParticipantTemplates(edgeSystem)
 			},
@@ -1446,10 +1649,10 @@ func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateName == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.GetParticipantTemplate(edgeSystem, templateName)
 			},
@@ -1467,10 +1670,10 @@ func newEdgeProvisioningParticipantTemplateCommand(runtime *app.Runtime) *cobra.
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if templateName == "" {
-					return fmt.Errorf("--name is required")
+					return argumentError("--name is required")
 				}
 				return runtime.Commands.DeleteParticipantTemplate(edgeSystem, templateName)
 			},
@@ -1496,16 +1699,16 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if participantID == "" {
-					return fmt.Errorf("--participant-tpl-id is required")
+					return argumentError("--participant-tpl-id is required")
 				}
 				if enrollmentList == "" {
-					return fmt.Errorf("--enrollment-list is required")
+					return argumentError("--enrollment-list is required")
 				}
 				if domainTemplateID == "" {
-					return fmt.Errorf("--domain-tpl-id is required")
+					return argumentError("--domain-tpl-id is required")
 				}
 				return runtime.Commands.CreateCampaign(edgeSystem, participantID, enrollmentList, domainTemplateID)
 			},
@@ -1525,7 +1728,7 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListCampaigns(edgeSystem)
 			},
@@ -1542,10 +1745,10 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if campaignID == "" {
-					return fmt.Errorf("--campaign-id is required")
+					return argumentError("--campaign-id is required")
 				}
 				return runtime.Commands.ListCampaignDevices(edgeSystem, campaignID)
 			},
@@ -1563,10 +1766,10 @@ func newEdgeProvisioningCampaignCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if campaignID == "" {
-					return fmt.Errorf("--campaign-id is required")
+					return argumentError("--campaign-id is required")
 				}
 				return runtime.Commands.DeleteCampaign(edgeSystem, campaignID)
 			},
@@ -1592,7 +1795,7 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				return runtime.Commands.ListEdgeDevices(edgeSystem)
 			},
@@ -1609,16 +1812,16 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if edgeSystem == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				if campaignID == "" {
-					return fmt.Errorf("--campaign-id is required")
+					return argumentError("--campaign-id is required")
 				}
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return argumentError("--serial is required")
 				}
 				return runtime.Commands.RevokeDevice(edgeSystem, participantID, campaignID, serial)
 			},
@@ -1643,7 +1846,7 @@ func ensureConnextDir(path string) error {
 	info, err := os.Stat(path)
 	if err == nil {
 		if !info.IsDir() {
-			return fmt.Errorf("--connext-dir %q exists but is not a directory", path)
+			return argumentError("--connext-dir %q exists but is not a directory", path)
 		}
 		return nil
 	}
@@ -1701,13 +1904,13 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return argumentError("--serial is required")
 				}
 				if len(macs) == 0 {
-					return fmt.Errorf("--mac is required (at least one)")
+					return argumentError("--mac is required (at least one)")
 				}
 				if csrFile == "" {
-					return fmt.Errorf("--csr-file is required")
+					return argumentError("--csr-file is required")
 				}
 				// Auto-populate service, participant-id and domain-id from the campaign
 				// token when the user has not supplied them explicitly.
@@ -1724,10 +1927,10 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 					}
 				}
 				if effectiveService == "" {
-					return fmt.Errorf("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
+					return argumentError("--service is required (or provide a --campaign-token that includes the edge_system_id claim)")
 				}
 				if effectiveParticipant == "" {
-					return fmt.Errorf("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
+					return argumentError("--participant-id is required (or provide a --campaign-token that includes the participant_id claim)")
 				}
 				domainTemplateID, err := runtime.Commands.EnrollDevice(effectiveService, effectiveParticipant, serial, macs, csrFile, keyFile, campaignToken)
 				if err != nil {
@@ -1739,7 +1942,7 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 				if runtime.EdgeStore != nil {
 					domain := edgesyncagent.CampaignTokenDeviceDomain(campaignToken)
 					if domain == "" {
-						return fmt.Errorf("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
+						return argumentError("campaign token does not contain a device_domain claim; cannot determine device endpoint URL")
 					}
 					deviceURL := "https://" + domain
 					if err := runtime.EdgeStore.WriteNodeURL(effectiveService, domainTemplateID, effectiveParticipant, serial, deviceURL); err != nil {
@@ -1798,22 +2001,22 @@ Example (generate the key locally):
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if service == "" {
-					return fmt.Errorf("--service is required")
+					return argumentError("--service is required")
 				}
 				if domainTemplateIDFlag == "" {
-					return fmt.Errorf("--domain-template-id is required")
+					return argumentError("--domain-template-id is required")
 				}
 				if participantTemplateIDFlag == "" {
-					return fmt.Errorf("--participant-template-id is required")
+					return argumentError("--participant-template-id is required")
 				}
 				if serial == "" {
-					return fmt.Errorf("--serial is required")
+					return argumentError("--serial is required")
 				}
 				if genKey && csrFile != "" {
-					return fmt.Errorf("--csr-file and --gen-key are mutually exclusive")
+					return argumentError("--csr-file and --gen-key are mutually exclusive")
 				}
 				if !genKey && csrFile == "" {
-					return fmt.Errorf("either --csr-file or --gen-key is required")
+					return argumentError("either --csr-file or --gen-key is required")
 				}
 				_, _, err := runtime.Commands.EnrollDeviceDirect(service, domainTemplateIDFlag, participantTemplateIDFlag, serial, macs, deviceName, csrFile, keyFile, genKey)
 				return err
@@ -1837,7 +2040,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -1869,7 +2072,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -1928,7 +2131,7 @@ Example (generate the key locally):
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if participantID == "" {
-					return fmt.Errorf("--participant-id is required")
+					return argumentError("--participant-id is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -1970,7 +2173,7 @@ mtls_artifacts/ directory.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if csrFile == "" {
-					return fmt.Errorf("--csr-file is required")
+					return argumentError("--csr-file is required")
 				}
 				cert, key, ca := certFile, keyFile, caFile
 				if runtime != nil && runtime.EdgeStore != nil {
@@ -2108,7 +2311,7 @@ agent's management login.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
 					if campaignToken == "" && (service == "" || domainID == "" || participantID == "") {
-						return fmt.Errorf("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
+						return argumentError("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
 					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
@@ -2123,11 +2326,11 @@ agent's management login.`,
 					var req edgesyncagent.EnrollRequest
 					if campaignToken != "" {
 						if deviceName == "" {
-							return fmt.Errorf("--device-name is required (the name registered in the inventory)")
+							return argumentError("--device-name is required (the name registered in the inventory)")
 						}
 						serviceID, tokenParticipantID, err := edgesyncagent.ParseCampaignToken(campaignToken)
 						if err != nil {
-							return fmt.Errorf("invalid campaign token: %w", err)
+							return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("invalid campaign token: %v", err), Cause: err}
 						}
 						req = edgesyncagent.EnrollRequest{
 							ServiceID:     serviceID,

@@ -9,6 +9,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 )
 
 type fakeAPI struct {
@@ -354,11 +357,11 @@ func TestCreateEdgeSystemError(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateEdgeSystem("", ""); err != nil {
-		t.Fatal(err)
+	if err := runner.CreateEdgeSystem("", ""); err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("expected returned API error, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Error") {
-		t.Fatalf("expected error output: %s", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("error wrote stdout: %s", out.String())
 	}
 }
 
@@ -803,6 +806,60 @@ func TestEnrollDeviceDirect_GenKeyRejected_LeavesKeyFileIntact(t *testing.T) {
 		if path == "existing.key" {
 			t.Fatal("generated key was written to --key-file despite the enrollment being rejected; " +
 				"the operator's existing private key would be destroyed")
+		}
+	}
+}
+
+func TestCreateApplicationRejectsInvalidManifestBeforeAPI(t *testing.T) {
+	for _, body := range []string{`{broken`, `null`, `[]`, `{"port":"not-a-number"}`, `{"kind":"unknown"}`, `{"topic_data":null}`} {
+		var out bytes.Buffer
+		api := &fakeAPI{}
+		runner := New(api, &out)
+		runner.JSON = true
+		runner.ReadFile = func(string) ([]byte, error) { return []byte(body), nil }
+		err := runner.CreateApplication("demo", "subscriber", 7777, "", "app.json", false)
+		if err == nil || clierror.From(err).ExitCode() != 2 || out.Len() != 0 || api.lastPath != "" {
+			t.Fatalf("manifest=%q error=%v stdout=%q request=%q", body, err, out.String(), api.lastPath)
+		}
+	}
+}
+
+func TestSimpleApplicationCommandsEscapeTargetPaths(t *testing.T) {
+	for _, tc := range []struct {
+		request string
+		run     func(*Runner) error
+	}{
+		{"POST /databuses/demo%2Fone/applications", func(r *Runner) error { return r.CreateApplication("demo/one", "app/two", 7777, "app", "", false) }},
+		{"DELETE /databuses/demo%2Fone/applications/app%2Ftwo", func(r *Runner) error { return r.DeleteApplication("demo/one", "app/two") }},
+		{"GET /databuses/demo%2Fone/applications/app%2Ftwo/clients", func(r *Runner) error { return r.ListAppClients("demo/one", "app/two") }},
+		{"DELETE /databuses/demo%2Fone/applications/app%2Ftwo/clients/client%2Fthree", func(r *Runner) error { return r.RevokeAppClient("demo/one", "app/two", "client/three") }},
+	} {
+		status := http.StatusOK
+		if strings.HasPrefix(tc.request, "POST ") {
+			status = http.StatusCreated
+		}
+		api := &fakeAPI{responses: map[string]*http.Response{tc.request: newJSONResponse(status, map[string]any{"clients": map[string]any{}})}}
+		runner := New(api, failingDatabusWriter{})
+		runner.JSON = true
+		// Reaching the output writer demonstrates that the intended escaped
+		// endpoint succeeded; the output failure must still propagate.
+		if err := tc.run(runner); !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("%s: error=%v actual path=%s", tc.request, err, api.lastPath)
+		}
+	}
+}
+
+func TestListAppClientsPreservesCollectionTextOutput(t *testing.T) {
+	for _, clients := range []any{map[string]any{}, []any{}, map[string]any{"device-1": map[string]any{"id": "device-1"}}, []any{map[string]any{"id": "device-1"}}} {
+		api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/demo/applications/subscriber/clients": newJSONResponse(http.StatusOK, map[string]any{"clients": clients})}}
+		var out bytes.Buffer
+		runner := New(api, &out)
+		if err := runner.ListAppClients("demo", "subscriber"); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := json.MarshalIndent(clients, "", "  ")
+		if out.String() != string(expected)+"\n" {
+			t.Fatalf("client text output changed: %q", out.String())
 		}
 	}
 }
