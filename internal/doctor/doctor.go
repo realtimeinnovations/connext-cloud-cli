@@ -68,11 +68,11 @@ func Run(ctx context.Context, options Options) Report {
 }
 
 func installation() Check {
-	c := Check{ID: "cli", Label: "CLI", Status: "pass", Message: buildinfo.Version() + " · " + runtime.GOOS + "/" + runtime.GOARCH}
+	c := Check{ID: "cli", Label: "CLI", Status: CheckPass, Message: buildinfo.Version() + " · " + runtime.GOOS + "/" + runtime.GOARCH}
 	c.Details = append(c.Details, detail("Build", strings.ReplaceAll(strings.TrimSpace(buildinfo.VersionString()), "\n", " · ")))
 	executable, err := os.Executable()
 	if err != nil {
-		c.Status, c.Code, c.Message = "warn", "EXECUTABLE_UNKNOWN", "Cannot determine the running executable"
+		c.Status, c.Code, c.Message = CheckWarn, "EXECUTABLE_UNKNOWN", "Cannot determine the running executable"
 		return c
 	}
 	c.Details = append(c.Details, detail("Executable", executable))
@@ -81,7 +81,7 @@ func installation() Check {
 		c.Details = append(c.Details, detail("Other copy", other))
 	}
 	if len(others) > 0 {
-		c.Status, c.Code = "warn", "MULTIPLE_INSTALLATIONS"
+		c.Status, c.Code = CheckWarn, "MULTIPLE_INSTALLATIONS"
 		c.NextStep = "Check PATH order when upgrading: other rticloud executables are present."
 	}
 	return c
@@ -128,24 +128,24 @@ func pathCopies(active, path string) []string {
 }
 
 func configuration(manager *config.Manager, r *Report) (string, bool) {
-	c := Check{ID: "configuration", Label: "Configuration", Status: "pass", Details: []Detail{detail("Source", manager.Path)}}
+	c := Check{ID: "configuration", Label: "Configuration", Status: CheckPass, Details: []Detail{detail("Source", manager.Path)}}
 	values, err := manager.InspectConfig()
 	if err != nil {
-		c.Status, c.Code, c.Message, c.RequiredAction = "fail", "CONFIG_INVALID", "Configuration cannot be read or parsed", "repair_configuration"
+		c.Status, c.Code, c.Message, c.RequiredAction = CheckFail, "CONFIG_INVALID", "Configuration cannot be read or parsed", "repair_configuration"
 		c.NextStep = "Repair the configuration file, then run rticloud doctor."
 		r.add(c)
 		return "", false
 	}
 	endpoint := values["api_host"]
 	if endpoint == "" {
-		c.Status, c.Code, c.Message, c.RequiredAction = "fail", "CONFIG_REQUIRED", "No Cloud endpoint configured", "configure_region"
+		c.Status, c.Code, c.Message, c.RequiredAction = CheckFail, "CONFIG_REQUIRED", "No Cloud endpoint configured", "configure_region"
 		c.NextStep = "Run rticloud configure (or rticloud configure --region us-east-2 --non-interactive). Existing legacy files are migrated by configure."
 		r.add(c)
 		return "", false
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		c.Status, c.Code, c.Message, c.RequiredAction = "fail", "CONFIG_INVALID", "Cloud endpoint must be an HTTP(S) URL without credentials, query, or fragment", "configure_region"
+		c.Status, c.Code, c.Message, c.RequiredAction = CheckFail, "CONFIG_INVALID", "Cloud endpoint must be an HTTP(S) URL without credentials, query, or fragment", "configure_region"
 		c.NextStep = "Run rticloud configure to correct the Cloud endpoint."
 		r.add(c)
 		return "", false
@@ -164,7 +164,7 @@ func configuration(manager *config.Manager, r *Report) (string, bool) {
 }
 
 func credentials(manager *auth.Manager, now time.Time, r *Report) (string, string, bool) {
-	c := Check{ID: "credentials", Label: "Credentials", Status: "pass", Details: []Detail{detail("Token cache", manager.TokenPath)}}
+	c := Check{ID: "credentials", Label: "Credentials", Status: CheckPass, Details: []Detail{detail("Token cache", manager.TokenPath)}}
 	apiKey := ""
 	if manager.Env != nil {
 		apiKey = manager.Env("CONNEXT_CLOUD_API_KEY")
@@ -173,16 +173,16 @@ func credentials(manager *auth.Manager, now time.Time, r *Report) (string, strin
 	copy.Now = func() time.Time { return now }
 	inspection, err := copy.InspectCredentials()
 	if err != nil {
-		c.Status, c.Code, c.Message, c.RequiredAction = "fail", "CREDENTIALS_UNREADABLE", "Token cache cannot be read", "repair_credentials"
+		c.Status, c.Code, c.Message, c.RequiredAction = CheckFail, "CREDENTIALS_UNREADABLE", "Token cache cannot be read", "repair_credentials"
 		c.NextStep = "Check access to the token cache file, then run rticloud doctor."
 		r.add(c)
 		return "", "", false
 	}
-	c.Details = append(c.Details, detail("Cached token", inspection.State))
+	c.Details = append(c.Details, detail("Cached token", string(inspection.State)))
 	if !inspection.ExpiresAt.IsZero() {
 		c.Details = append(c.Details, detail("Usable until", inspection.ExpiresAt.Format(time.RFC3339)))
 	}
-	if inspection.State == "usable" {
+	if inspection.State == auth.CredentialUsable {
 		c.Message = fmt.Sprintf("Reusing cached access token · usable for another %s", inspection.ExpiresAt.Sub(now).Round(time.Second))
 		if apiKey != "" {
 			c.Details = append(c.Details, detail("API key", "Present · available to obtain a new token when the cache expires"))
@@ -198,7 +198,7 @@ func credentials(manager *auth.Manager, now time.Time, r *Report) (string, strin
 		r.add(c)
 		return "", apiKey, true
 	}
-	c.Status, c.Code, c.Message, c.RequiredAction = "fail", "AUTH_REQUIRED", "No usable credentials; cached token is "+inspection.State, "configure_credentials"
+	c.Status, c.Code, c.Message, c.RequiredAction = CheckFail, "AUTH_REQUIRED", "No usable credentials; cached token is "+string(inspection.State), "configure_credentials"
 	c.Details = append(c.Details, detail("API key", "CONNEXT_CLOUD_API_KEY is not set"))
 	c.NextStep = "Run rticloud login (rticloud login --device remotely), or supply CONNEXT_CLOUD_API_KEY through your secret store."
 	r.add(c)

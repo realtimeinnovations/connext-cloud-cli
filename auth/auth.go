@@ -211,21 +211,30 @@ func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if inspection.State == "usable" {
+	if inspection.State == CredentialUsable {
 		return inspection.AccessToken, nil
 	}
-	if inspection.State != "missing" {
+	if inspection.State != CredentialMissing {
 		_ = os.Remove(manager.TokenPath)
 	}
 	return "", nil
 }
 
+type CredentialState string
+
+const (
+	CredentialMissing   CredentialState = "missing"
+	CredentialMalformed CredentialState = "malformed"
+	CredentialExpired   CredentialState = "expired"
+	CredentialUsable    CredentialState = "usable"
+)
+
 // CredentialInspection contains local metadata, not server validation.
 // AccessToken is deliberately excluded from serialization.
 type CredentialInspection struct {
-	State       string    `json:"state"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	AccessToken string    `json:"-"`
+	State       CredentialState `json:"state"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	AccessToken string          `json:"-"`
 }
 
 // InspectCredentials never migrates, deletes, refreshes, or saves credentials.
@@ -235,23 +244,23 @@ func (manager *Manager) InspectCredentials() (CredentialInspection, error) {
 	}
 	data, err := os.ReadFile(manager.TokenPath)
 	if os.IsNotExist(err) {
-		return CredentialInspection{State: "missing"}, nil
+		return CredentialInspection{State: CredentialMissing}, nil
 	}
 	if err != nil {
 		return CredentialInspection{}, err
 	}
 	var token tokenFile
 	if err := json.Unmarshal(data, &token); err != nil || token.AccessToken == "" || token.ExpiresAt == "" {
-		return CredentialInspection{State: "malformed"}, nil
+		return CredentialInspection{State: CredentialMalformed}, nil
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, token.ExpiresAt)
 	if err != nil {
-		return CredentialInspection{State: "malformed"}, nil
+		return CredentialInspection{State: CredentialMalformed}, nil
 	}
 	if !manager.Now().Before(expiresAt) {
-		return CredentialInspection{State: "expired", ExpiresAt: expiresAt}, nil
+		return CredentialInspection{State: CredentialExpired, ExpiresAt: expiresAt}, nil
 	}
-	return CredentialInspection{State: "usable", ExpiresAt: expiresAt, AccessToken: token.AccessToken}, nil
+	return CredentialInspection{State: CredentialUsable, ExpiresAt: expiresAt, AccessToken: token.AccessToken}, nil
 }
 
 func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {

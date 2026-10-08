@@ -336,9 +336,9 @@ func TestMissingAndIncompleteInstallation(t *testing.T) {
 				writeFile(t, filepath.Join(filepath.Dir(install.Path), ".rticloud-installing"), "pending")
 			}
 			r := Run(context.Background(), o)
-			want := "warn"
+			want := CheckWarn
 			if marker {
-				want = "fail"
+				want = CheckFail
 			}
 			if check(t, r, "managed_connext").Status != want || check(t, r, "gateway_tools").Status != "skip" {
 				t.Fatal(r)

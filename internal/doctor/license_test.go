@@ -16,8 +16,9 @@ func TestLicenseMetadataCalendarBoundaries(t *testing.T) {
 	// Date-only arithmetic remains stable across DST and local/UTC boundaries.
 	now := time.Date(2026, 10, 3, 23, 59, 0, 0, time.FixedZone("PDT", -7*3600))
 	cases := []struct {
-		date, status string
-		days         int
+		date   string
+		status LicenseStatus
+		days   int
 	}{
 		{"18-oct-2026", "current", 15}, {"17-oct-2026", "expiring", 14}, {"03-oct-2026", "expiring", 0}, {"02-oct-2026", "expired", -1}, {"12-OCT-26", "expiring", 9},
 	}

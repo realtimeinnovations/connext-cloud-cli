@@ -22,7 +22,7 @@ import (
 )
 
 func probe(ctx context.Context, options Options, endpoint, token, apiKey string) (c Check) {
-	c = Check{ID: "cloud_access", Label: "Cloud access", Status: "pass", Message: "Permission to list databuses verified", Details: []Detail{detail("Probe", "GET /databuses")}}
+	c = Check{ID: "cloud_access", Label: "Cloud access", Status: CheckPass, Message: "Permission to list databuses verified", Details: []Detail{detail("Probe", "GET /databuses")}}
 	start := time.Now()
 	defer func() { c.DurationMS = time.Since(start).Milliseconds() }()
 	client := http.Client{}
@@ -46,7 +46,7 @@ func probe(ctx context.Context, options Options, endpoint, token, apiKey string)
 			return networkFailure(c, err, "API-key exchange")
 		}
 		if token == "" {
-			c.Status, c.Code, c.Message = "fail", "INVALID_RESPONSE", "API-key exchange returned no access token"
+			c.Status, c.Code, c.Message = CheckFail, "INVALID_RESPONSE", "API-key exchange returned no access token"
 			return c
 		}
 	}
@@ -57,7 +57,7 @@ func probe(ctx context.Context, options Options, endpoint, token, apiKey string)
 	c.Details = []Detail{detail("Probe", "GET /databuses"), detail("Token source", tokenSource)}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/databuses", nil)
 	if err != nil {
-		c.Status, c.Code, c.Message = "fail", "CONFIG_INVALID", "Could not construct the Cloud API request"
+		c.Status, c.Code, c.Message = CheckFail, "CONFIG_INVALID", "Could not construct the Cloud API request"
 		return c
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -79,13 +79,13 @@ func probe(ctx context.Context, options Options, endpoint, token, apiKey string)
 		return networkFailure(c, err, "Reading Cloud response")
 	}
 	if len(data) > 8*1024*1024 || json.Unmarshal(data, &payload) != nil || payload.Databuses == nil {
-		c.Status, c.Code, c.Message = "fail", "INVALID_RESPONSE", "Cloud response was not a supported databus list"
+		c.Status, c.Code, c.Message = CheckFail, "INVALID_RESPONSE", "Cloud response was not a supported databus list"
 	}
 	return c
 }
 
 func networkFailure(c Check, err error, stage string) Check {
-	c.Status = "fail"
+	c.Status = CheckFail
 	c.Code = clierror.From(err).Code
 	var status *httputil.StatusError
 	var dns *net.DNSError

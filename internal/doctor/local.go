@@ -19,7 +19,7 @@ import (
 
 func localChecks(r *Report, options Options) {
 	install, exists, err := connext.InspectManagedInstallation()
-	c := Check{ID: "managed_connext", Label: "Managed Connext", Status: "pass", Message: install.Version + " · installation metadata verified"}
+	c := Check{ID: "managed_connext", Label: "Managed Connext", Status: CheckPass, Message: install.Version + " · installation metadata verified"}
 	if install.Path != "" {
 		c.Details = append(c.Details, detail("Location", install.Path))
 	}
@@ -30,17 +30,17 @@ func localChecks(r *Report, options Options) {
 	}
 	switch {
 	case err != nil && install.Path == "":
-		c.Status, c.Code, c.Message = "warn", "MANAGED_UNAVAILABLE", "Managed installation is unavailable for this platform or home directory"
+		c.Status, c.Code, c.Message = CheckWarn, "MANAGED_UNAVAILABLE", "Managed installation is unavailable for this platform or home directory"
 		c.Details = append(c.Details, detail("Optional setup", "Gateway/Spy can use an external Connext installation selected interactively."))
 	case err != nil:
-		c.Status, c.Code, c.Message = "fail", "CONNEXT_INVALID", "Managed installation is incomplete or its metadata is invalid"
+		c.Status, c.Code, c.Message = CheckFail, "CONNEXT_INVALID", "Managed installation is incomplete or its metadata is invalid"
 		c.RequiredAction, c.NextStep = "repair_connext", "Run rticloud gateway or rticloud spy interactively to repair the managed installation."
 	case !exists:
-		c.Status, c.Code, c.Message = "warn", "CONNEXT_MISSING", "Not installed; required for Gateway/Spy using managed Connext"
+		c.Status, c.Code, c.Message = CheckWarn, "CONNEXT_MISSING", "Not installed; required for Gateway/Spy using managed Connext"
 		c.Details = append(c.Details, detail("Optional setup", "Installed on first interactive Gateway/Spy setup; not needed for Cloud commands."))
 	}
 	r.add(c)
-	if c.Status != "pass" {
+	if c.Status != CheckPass {
 		r.add(skip("gateway_tools", "Gateway tools", "Managed installation unavailable", "managed_connext"))
 		r.add(skip("spy_tool", "Spy tool", "Managed installation unavailable", "managed_connext"))
 		r.add(skip("license", "Connext license", "Managed installation unavailable", "managed_connext"))
@@ -61,10 +61,10 @@ func localChecks(r *Report, options Options) {
 }
 
 func toolsCheck(install connext.Install, id, label, minimum string, tools []string) Check {
-	c := Check{ID: id, Label: label, Status: "pass", Message: "Required launchers present and executable"}
+	c := Check{ID: id, Label: label, Status: CheckPass, Message: "Required launchers present and executable"}
 	for _, tool := range tools {
 		if err := connext.ValidateManagedTool(install, tool, minimum); err != nil {
-			c.Status, c.Code, c.Message = "fail", "CONNEXT_COMPONENT_INVALID", "Required launcher missing, invalid, or Connext version too old"
+			c.Status, c.Code, c.Message = CheckFail, "CONNEXT_COMPONENT_INVALID", "Required launcher missing, invalid, or Connext version too old"
 			c.RequiredAction, c.NextStep = "repair_connext", "Run rticloud gateway or rticloud spy interactively to repair the managed installation."
 			c.Details = append(c.Details, detail(tool, "Failed · "+connext.Executable(install.Path, tool)))
 		} else {
@@ -75,15 +75,15 @@ func toolsCheck(install connext.Install, id, label, minimum string, tools []stri
 }
 
 func licenseCheck(install connext.Install, options Options) Check {
-	c := Check{ID: "license", Label: "Connext license", Status: "pass", Message: "Expiration metadata read; Connext validates the license at runtime"}
+	c := Check{ID: "license", Label: "Connext license", Status: CheckPass, Message: "Expiration metadata read; Connext validates the license at runtime"}
 	inspection, err := connext.InspectManagedLicense(install)
 	if err != nil {
-		c.Status, c.Code, c.Message = "fail", "LICENSE_UNREADABLE", "License source cannot be read safely"
+		c.Status, c.Code, c.Message = CheckFail, "LICENSE_UNREADABLE", "License source cannot be read safely"
 		c.RequiredAction, c.NextStep = "repair_license", "Check the configured license file paths and permissions, then run rticloud doctor."
 		return c
 	}
 	if inspection.Contents == nil {
-		c.Status, c.Code, c.Message = "warn", "LICENSE_MISSING", "No readable license found"
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_MISSING", "No readable license found"
 		c.RequiredAction, c.NextStep = "setup_license", "Run rticloud gateway or rticloud spy interactively to provision a Connext license."
 		return c
 	}
@@ -91,33 +91,33 @@ func licenseCheck(install connext.Install, options Options) Check {
 	if inspection.CopyMatches {
 		c.Details = append(c.Details, detail("Installation", "License copy matches source"))
 	} else {
-		c.Status, c.Code = "warn", "LICENSE_COPY_PENDING"
+		c.Status, c.Code = CheckWarn, "LICENSE_COPY_PENDING"
 		c.Details = append(c.Details, detail("Installation", "License copy needs provisioning on next Gateway/Spy run"))
 	}
 	c.Features = licenseFeatures(inspection.Contents, options.Now)
 	unknown, expiring, expired := len(c.Features) == 0, false, false
 	for _, f := range c.Features {
-		unknown = unknown || f.Status == "unknown"
-		expiring = expiring || f.Status == "expiring"
-		expired = expired || f.Status == "expired"
+		unknown = unknown || f.Status == LicenseUnknown
+		expiring = expiring || f.Status == LicenseExpiring
+		expired = expired || f.Status == LicenseExpired
 	}
 	// Concatenated license files can contain alternative grants for a feature.
 	// Report expired records, but do not infer runtime rejection from those alone.
 	switch {
 	case expired:
-		c.Status, c.Code, c.Message = "warn", "LICENSE_EXPIRED_RECORDS", "License contains expired feature records; runtime acceptance is not verified"
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRED_RECORDS", "License contains expired feature records; runtime acceptance is not verified"
 		c.RequiredAction, c.NextStep = "review_license", "If using Gateway/Spy, review or renew expired license records before running them."
 	case unknown:
-		c.Status, c.Code, c.Message = "warn", "LICENSE_EXPIRATION_UNKNOWN", "Some license expiration metadata is unrecognized"
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRATION_UNKNOWN", "Some license expiration metadata is unrecognized"
 	case expiring:
-		c.Status, c.Code, c.Message = "warn", "LICENSE_EXPIRING", "License feature records expire within 14 days"
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRING", "License feature records expire within 14 days"
 		c.RequiredAction, c.NextStep = "renew_license", "If using Gateway/Spy, renew the Connext license before the reported expiration date."
 	}
 	return c
 }
 
 func projectCheck(command, path string) Check {
-	c := Check{ID: command + "_config", Label: map[string]string{"gateway": "Gateway config", "spy": "Spy config"}[command], Status: "pass", Message: "YAML parsed successfully; runtime resources not checked", Details: []Detail{detail("Source", path)}}
+	c := Check{ID: command + "_config", Label: map[string]string{"gateway": "Gateway config", "spy": "Spy config"}[command], Status: CheckPass, Message: "YAML parsed successfully; runtime resources not checked", Details: []Detail{detail("Source", path)}}
 	// Use each command's own YAML reader, without its setup/preflight workflow.
 	workDir := filepath.Dir(filepath.Dir(path))
 	var values map[string]any
@@ -128,12 +128,14 @@ func projectCheck(command, path string) Check {
 		values, err = spy.NewApp(workDir, io.Discard).ReadConfig()
 	}
 	if err != nil {
-		c.Status, c.Code, c.Message = "fail", "PROJECT_CONFIG_INVALID", "Project configuration cannot be read or parsed"
-		c.RequiredAction, c.NextStep = "repair_project_configuration", fmt.Sprintf("Repair %s, then run rticloud doctor.", path)
+		c.Status, c.Message = CheckFail, "Project configuration cannot be read or parsed"
 	} else if _, statErr := os.Stat(path); values == nil && os.IsNotExist(statErr) {
-		c.Status, c.Code, c.Message = "skip", "PROJECT_NOT_CONFIGURED", "Not configured in this directory · optional, no action needed"
+		c.Status, c.Code, c.Message = CheckSkip, "PROJECT_NOT_CONFIGURED", "Not configured in this directory · optional, no action needed"
 	} else if len(values) == 0 {
-		c.Status, c.Code, c.Message = "fail", "PROJECT_CONFIG_INVALID", "Project configuration is empty"
+		c.Status, c.Message = CheckFail, "Project configuration is empty"
+	}
+	if c.Status == CheckFail {
+		c.Code = "PROJECT_CONFIG_INVALID"
 		c.RequiredAction, c.NextStep = "repair_project_configuration", fmt.Sprintf("Repair %s, then run rticloud doctor.", path)
 	}
 	return c

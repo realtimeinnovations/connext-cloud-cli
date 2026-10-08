@@ -18,6 +18,15 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 )
 
+type CheckStatus string
+
+const (
+	CheckPass CheckStatus = "pass"
+	CheckWarn CheckStatus = "warn"
+	CheckFail CheckStatus = "fail"
+	CheckSkip CheckStatus = "skip"
+)
+
 type Detail struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
@@ -26,7 +35,7 @@ type Detail struct {
 type Check struct {
 	ID             string           `json:"id"`
 	Label          string           `json:"label"`
-	Status         string           `json:"status"`
+	Status         CheckStatus      `json:"status"`
 	Message        string           `json:"message"`
 	Code           string           `json:"code,omitempty"`
 	RequiredAction string           `json:"required_action,omitempty"`
@@ -55,13 +64,13 @@ type Report struct {
 func (r *Report) add(c Check) {
 	r.Checks = append(r.Checks, c)
 	switch c.Status {
-	case "pass":
+	case CheckPass:
 		r.Summary.Passed++
-	case "warn":
+	case CheckWarn:
 		r.Summary.Warnings++
-	case "skip":
+	case CheckSkip:
 		r.Summary.Skipped++
-	case "fail":
+	case CheckFail:
 		r.Summary.Failed++
 		// Stable precedence: first failing check in report order determines exit.
 		if r.ExitCode == 0 {
@@ -86,7 +95,7 @@ func (r Report) Write(out io.Writer, format string) error {
 	}
 	var b strings.Builder
 	b.WriteString("RTI Connext Cloud · Doctor\n\n")
-	symbols := map[string]string{"pass": "✓", "warn": "!", "fail": "✗", "skip": "–"}
+	symbols := map[CheckStatus]string{CheckPass: "✓", CheckWarn: "!", CheckFail: "✗", CheckSkip: "–"}
 	for _, c := range r.Checks {
 		fmt.Fprintf(&b, "%s %s  %s\n", symbols[c.Status], c.Label, safeText(c.Message))
 		for _, d := range c.Details {
@@ -103,7 +112,7 @@ func (r Report) Write(out io.Writer, format string) error {
 		b.WriteByte('\n')
 	}
 	seen := map[string]bool{}
-	for _, status := range []string{"fail", "warn", "skip"} {
+	for _, status := range []CheckStatus{CheckFail, CheckWarn, CheckSkip} {
 		for _, c := range r.Checks {
 			if c.Status == status && c.NextStep != "" && !seen[c.NextStep] {
 				if len(seen) == 0 {
@@ -134,5 +143,5 @@ func safeText(s string) string {
 
 func detail(label, value string) Detail { return Detail{label, value} }
 func skip(id, label, message string, dependencies ...string) Check {
-	return Check{ID: id, Label: label, Status: "skip", Message: message, BlockedBy: dependencies}
+	return Check{ID: id, Label: label, Status: CheckSkip, Message: message, BlockedBy: dependencies}
 }

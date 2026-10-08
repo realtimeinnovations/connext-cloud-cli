@@ -12,13 +12,23 @@ import (
 	"time"
 )
 
+type LicenseStatus string
+
+const (
+	LicenseUnknown   LicenseStatus = "unknown"
+	LicensePermanent LicenseStatus = "permanent"
+	LicenseCurrent   LicenseStatus = "current"
+	LicenseExpired   LicenseStatus = "expired"
+	LicenseExpiring  LicenseStatus = "expiring"
+)
+
 // LicenseFeature is unverified, human-readable FEATURE/INCREMENT metadata.
 // Never include signatures, license keys, or the original record in a report.
 type LicenseFeature struct {
-	Feature       string  `json:"feature"`
-	ExpiresOn     *string `json:"expires_on"`
-	DaysRemaining *int    `json:"days_remaining"`
-	Status        string  `json:"status"`
+	Feature       string        `json:"feature"`
+	ExpiresOn     *string       `json:"expires_on"`
+	DaysRemaining *int          `json:"days_remaining"`
+	Status        LicenseStatus `json:"status"`
 }
 
 func licenseFeatures(contents []byte, now time.Time) []LicenseFeature {
@@ -30,7 +40,7 @@ func licenseFeatures(contents []byte, now time.Time) []LicenseFeature {
 		if len(fields) == 0 || (fields[0] != "FEATURE" && fields[0] != "INCREMENT") {
 			continue
 		}
-		f := LicenseFeature{Feature: "unknown", Status: "unknown"}
+		f := LicenseFeature{Feature: "unknown", Status: LicenseUnknown}
 		if len(fields) > 1 {
 			// Only RTI feature identifiers are reportable, never arbitrary file text.
 			if validFeature(fields[1]) {
@@ -40,7 +50,7 @@ func licenseFeatures(contents []byte, now time.Time) []LicenseFeature {
 		if len(fields) >= 5 && f.Feature != "unknown" && fields[2] == "RTI" {
 			value := strings.ToLower(fields[4])
 			if value == "permanent" {
-				f.Status = "permanent"
+				f.Status = LicensePermanent
 			} else {
 				for _, layout := range []string{"2-Jan-2006", "2-Jan-06"} {
 					expiration, err := time.Parse(layout, value)
@@ -50,11 +60,11 @@ func licenseFeatures(contents []byte, now time.Time) []LicenseFeature {
 					date := expiration.Format("2006-01-02")
 					days := int(expiration.Sub(today) / (24 * time.Hour))
 					f.ExpiresOn, f.DaysRemaining = &date, &days
-					f.Status = "current"
+					f.Status = LicenseCurrent
 					if days < 0 {
-						f.Status = "expired"
+						f.Status = LicenseExpired
 					} else if days <= 14 {
-						f.Status = "expiring"
+						f.Status = LicenseExpiring
 					}
 					break
 				}
@@ -78,7 +88,7 @@ func validFeature(s string) bool {
 }
 
 func (f LicenseFeature) description() string {
-	if f.Status == "permanent" {
+	if f.Status == LicensePermanent {
 		return "No expiration (declared in file)"
 	}
 	if f.DaysRemaining == nil {
