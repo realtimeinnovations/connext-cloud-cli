@@ -44,7 +44,7 @@ func (runner *Runner) mutationResult(data any, message string) error {
 }
 
 func invalidInput(message string, cause error) error {
-	return &clierror.Error{Code: "INVALID_ARGUMENT", Message: message, Cause: cause}
+	return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: message, Cause: cause}
 }
 
 func readResponse(response *http.Response, allowed ...int) ([]byte, error) {
@@ -71,20 +71,16 @@ func (runner *Runner) progress(message string) error {
 }
 
 func decodeDatabus(response *http.Response) (map[string]any, error) {
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	body, err := readResponse(response, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode != http.StatusOK {
-		return nil, httputil.NewStatusError(response.StatusCode, body)
-	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid databus JSON: " + err.Error(), Cause: err}
+		return nil, &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid databus JSON: " + err.Error(), Cause: err}
 	}
 	if payload == nil {
-		return nil, &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned null instead of a databus object"}
+		return nil, &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of a databus object"}
 	}
 	return payload, nil
 }
@@ -104,7 +100,7 @@ func (runner *Runner) fetchDatabus(name string) (map[string]any, bool, error) {
 
 func (runner *Runner) ListDatabuses(short bool) error {
 	if runner.JSON && short {
-		return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--short cannot be combined with --format json"}
+		return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--short cannot be combined with --format json"}
 	}
 	path := "/databuses"
 	if !short {
@@ -120,7 +116,7 @@ func (runner *Runner) ListDatabuses(short bool) error {
 	}
 	resources, ok := payload["databuses"].(map[string]any)
 	if !ok {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API response is missing the databuses object"}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API response is missing the databuses object"}
 	}
 	if !short {
 		return runner.writeResult(payload)
@@ -172,7 +168,7 @@ func (runner *Runner) waitForResourceTerminal(name, kind string, deleting bool) 
 			if deleting {
 				return map[string]any{"name": name, "status": "deleted"}, nil
 			}
-			return nil, &clierror.Error{Code: "OPERATION_FAILED", Message: fmt.Sprintf("%s %q disappeared before creation completed", kind, name)}
+			return nil, &clierror.Error{Code: clierror.CodeOperationFailed, Message: fmt.Sprintf("%s %q disappeared before creation completed", kind, name)}
 		}
 		status, _ := payload["status"].(string)
 		if !deleting && status == "active" {
@@ -186,10 +182,10 @@ func (runner *Runner) waitForResourceTerminal(name, kind string, deleting bool) 
 			pending = "deleting"
 		}
 		if status != pending {
-			return nil, &clierror.Error{Code: "OPERATION_FAILED", Message: fmt.Sprintf("%s %q left %q with unexpected status %q", kind, name, pending, status)}
+			return nil, &clierror.Error{Code: clierror.CodeOperationFailed, Message: fmt.Sprintf("%s %q left %q with unexpected status %q", kind, name, pending, status)}
 		}
 		if waited >= databusStatusWaitTimeout {
-			return nil, &clierror.Error{Code: "TIMEOUT", Message: fmt.Sprintf("timed out waiting for %s %q to leave %q after %s", kind, name, pending, databusStatusWaitTimeout)}
+			return nil, &clierror.Error{Code: clierror.CodeTimeout, Message: fmt.Sprintf("timed out waiting for %s %q to leave %q after %s", kind, name, pending, databusStatusWaitTimeout)}
 		}
 		runner.Sleep(databusStatusPollInterval)
 	}

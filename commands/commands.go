@@ -184,7 +184,7 @@ func (runner *Runner) ListObservabilityServices(short bool) error {
 	}
 	resources, ok := payload["databuses"].(map[string]any)
 	if !ok {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API response is missing the databuses object"}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API response is missing the databuses object"}
 	}
 	observability := map[string]any{}
 	for name, rawInfo := range resources {
@@ -411,10 +411,10 @@ func edgePath(segments ...string) string {
 func (runner *Runner) printJSON(body []byte) error {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid JSON: " + err.Error(), Cause: err}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid JSON: " + err.Error(), Cause: err}
 	}
 	if payload == nil {
-		return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned null instead of a result"}
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of a result"}
 	}
 	return runner.writeResult(payload)
 }
@@ -450,10 +450,10 @@ func (runner *Runner) postJSON(path string, payload any, successStatus int) erro
 		var result any
 		if len(bytes.TrimSpace(body)) != 0 {
 			if err := json.Unmarshal(body, &result); err != nil {
-				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned invalid JSON: " + err.Error(), Cause: err}
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid JSON: " + err.Error(), Cause: err}
 			}
 			if result == nil {
-				return &clierror.Error{Code: "INVALID_RESPONSE", Message: "API returned null instead of a result"}
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of a result"}
 			}
 		}
 		status := "created"

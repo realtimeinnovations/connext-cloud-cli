@@ -235,7 +235,7 @@ func (manager *Manager) RequireConfiguration(out io.Writer) bool {
 
 func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Reader, out io.Writer) (bool, error) {
 	if region != "" && getRegion {
-		return false, &clierror.Error{Code: "INVALID_ARGUMENT", Message: "exactly one of --region or --get-region is allowed"}
+		return false, &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "exactly one of --region or --get-region is allowed"}
 	}
 	if region != "" {
 		if _, ok := RegionURLMap[region]; !ok {
@@ -310,7 +310,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			}
 			apiHost, err := customDomainAPIHost(domain)
 			if err != nil {
-				return false, &clierror.Error{Code: "INVALID_ARGUMENT", Message: err.Error(), Cause: err}
+				return false, &clierror.Error{Code: clierror.CodeInvalidArgument, Message: err.Error(), Cause: err}
 			}
 			return manager.saveRegionConfiguration(currentConfig, apiHost, false, out)
 		}
@@ -323,7 +323,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 }
 
 func invalidRegion(region string) error {
-	return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("Invalid region '%s'. Available regions: %s", region, strings.Join(standardRegions(), ", "))}
+	return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("Invalid region '%s'. Available regions: %s", region, strings.Join(standardRegions(), ", "))}
 }
 
 func (manager *Manager) saveRegionConfiguration(values map[string]string, apiHost string, showPreview bool, out io.Writer) (bool, error) {

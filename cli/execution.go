@@ -79,9 +79,9 @@ func executionFailure(err error, jsonOutput, invoked bool) error {
 	}
 	typed := clierror.From(err)
 	if errors.Is(err, config.ErrNotConfigured) {
-		typed = &clierror.Error{Code: "CONFIG_REQUIRED", Message: err.Error(), RequiredAction: "configure_region", Cause: err}
-	} else if !invoked && typed.Code == "COMMAND_FAILED" {
-		typed = &clierror.Error{Code: "INVALID_ARGUMENT", Message: err.Error(), Cause: err}
+		typed = &clierror.Error{Code: clierror.CodeConfigRequired, Message: err.Error(), RequiredAction: "configure_region", Cause: err}
+	} else if !invoked && typed.Code == clierror.CodeCommandFailed {
+		typed = &clierror.Error{Code: clierror.CodeInvalidArgument, Message: err.Error(), Cause: err}
 	}
 	return &executionError{Detail: typed, JSON: jsonOutput}
 }
@@ -126,17 +126,17 @@ func prepareCommands(root *cobra.Command, runtime *app.Runtime, invoked *bool) {
 						if supportsJSON(cmd) {
 							allowed = "text or json"
 						}
-						return &clierror.Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("invalid --format %q; expected %s", format, allowed)}
+						return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("invalid --format %q; expected %s", format, allowed)}
 					}
 					if format == "json" && !supportsJSON(cmd) {
-						return &clierror.Error{Code: "FORMAT_UNSUPPORTED", Message: "--format json is not supported for this command"}
+						return &clierror.Error{Code: clierror.CodeFormatUnsupported, Message: "--format json is not supported for this command"}
 					}
 				}
 				jsonOutput := format == "json"
 				if jsonOutput {
 					short, _ := cmd.Flags().GetBool("short")
 					if short {
-						return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--short cannot be combined with --format json"}
+						return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--short cannot be combined with --format json"}
 					}
 				}
 				if nonInteractive(cmd) || jsonOutput {

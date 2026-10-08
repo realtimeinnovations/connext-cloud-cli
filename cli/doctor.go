@@ -26,7 +26,7 @@ func newDoctorCommand(runtime *app.Runtime) *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if timeout <= 0 {
-				return &clierror.Error{Code: "INVALID_ARGUMENT", Message: "--timeout must be greater than zero"}
+				return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: "--timeout must be greater than zero"}
 			}
 			options := doctor.Options{Timeout: timeout}
 			if runtime != nil {
