@@ -479,12 +479,7 @@ func newUpdateCommand(runtime *app.Runtime) *cobra.Command {
 		Short: "Update rticloud to the latest release",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if runtime == nil || runtime.Updater == nil {
-				return fmt.Errorf("update manager is not configured")
-			}
-			runtime.Updater.Out = cmd.OutOrStdout()
-			runtime.Updater.ErrOut = cmd.ErrOrStderr()
-			return runtime.Updater.Run(cmd.Context(), update.Options{CheckOnly: checkOnly, Force: force})
+			return runtime.RunUpdate(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), update.Options{CheckOnly: checkOnly, Force: force})
 		},
 	}
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Check whether an update is available without installing it")
@@ -1867,27 +1862,6 @@ func newEdgeProvisioningDeviceCommand(runtime *app.Runtime) *cobra.Command {
 
 // ── edge-sync ─────────────────────────────────────────────────────────────────
 
-// ensureConnextDir validates and, if needed, creates the directory given to
-// --connext-dir. Failing fast here (instead of deep inside enrollment) avoids
-// surfacing a raw filesystem error such as "mkdir rafa: not a directory" from
-// a path whose parent already exists as a regular file.
-func ensureConnextDir(path string) error {
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.IsDir() {
-			return argumentError("--connext-dir %q exists but is not a directory", path)
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("--connext-dir %q: %w", path, err)
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
-	}
-	return nil
-}
-
 func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("edge-sync", "Sync security artifacts from a Provisioning Service to this device")
 
@@ -1906,11 +1880,8 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 		// --connext-dir relocates only the Connext artifacts tree; the agent
 		// base (inbox, log, mTLS, state) stays under BaseDir.
 		if connextDir != "" {
-			if err := ensureConnextDir(connextDir); err != nil {
+			if err := runtime.ConfigureConnextDir(connextDir); err != nil {
 				return err
-			}
-			if runtime != nil && runtime.EdgeStore != nil {
-				runtime.EdgeStore.ConnextDir = connextDir
 			}
 		}
 		if runtime != nil {
@@ -2412,10 +2383,7 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 place. The next run of the agent will trigger the first-run enrollment wizard.`,
 				Args: cobra.NoArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
-					if err := runtime.EdgeSyncAgent.Reset(); err != nil {
-						return fmt.Errorf("reset failed: %w", err)
-					}
-					return nil
+					return runtime.EdgeSyncAgent.Reset()
 				},
 			}
 			c.AddCommand(reset)

@@ -1334,7 +1334,7 @@ func (a *Agent) Reset() error {
 			_, _ = fmt.Fprintln(a.Out, "No agent state found.")
 			return nil
 		}
-		return err
+		return fmt.Errorf("reset failed: %w", err)
 	}
 	logName := filepath.Base(a.Store.LogPath())
 	removed := false
@@ -1344,7 +1344,7 @@ func (a *Agent) Reset() error {
 		}
 		path := filepath.Join(agentDir, entry.Name())
 		if err := os.RemoveAll(path); err != nil {
-			return err
+			return fmt.Errorf("reset failed: %w", err)
 		}
 		_, _ = fmt.Fprintf(a.Out, "Removed %s\n", path)
 		removed = true

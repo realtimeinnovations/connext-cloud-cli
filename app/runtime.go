@@ -7,6 +7,7 @@
 package app
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -163,6 +164,35 @@ func NewRuntime(workDir string, out io.Writer) *Runtime {
 		EdgeSyncAgent: agentApp,
 		Updater:       updater,
 	}
+}
+
+func (runtime *Runtime) RunUpdate(ctx context.Context, out, errOut io.Writer, options update.Options) error {
+	if runtime == nil || runtime.Updater == nil {
+		return fmt.Errorf("update manager is not configured")
+	}
+	runtime.Updater.Out = out
+	runtime.Updater.ErrOut = errOut
+	return runtime.Updater.Run(ctx, options)
+}
+
+func (runtime *Runtime) ConfigureConnextDir(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("--connext-dir %q exists but is not a directory", path)}
+		}
+	} else {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("--connext-dir %q: %w", path, err)
+		}
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
+		}
+	}
+	if runtime != nil && runtime.EdgeStore != nil {
+		runtime.EdgeStore.ConnextDir = path
+	}
+	return nil
 }
 
 func (runtime *Runtime) Logout() error {
