@@ -54,6 +54,56 @@ func TestFindAdoptableNodes_DetectsOrphansOnly(t *testing.T) {
 	}
 }
 
+func TestAdoptProfile_LightweightModeSurvivesRestart(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	nonFiringTimers(a)
+	seedOrphanEnrollment(a, ffs, "svc", "0:light", "", "SN-light", "https://device.example")
+	ffs.WriteFile(a.Store.NodeSecurityModePath("svc", "0:light", "", "SN-light"), []byte("lightweight"), 0o644)
+	a.RequestIdentityFunc = func(string, string, string, string, string, string, string) error {
+		t.Fatal("lightweight adoption must not request identity")
+		return nil
+	}
+	a.RequestPermissionsFunc = func(string, string, string, string, string, string) error {
+		t.Fatal("lightweight adoption must not request permissions")
+		return nil
+	}
+	a.GetCRLFunc = func(string, string, string, string, string, string) error {
+		t.Fatal("lightweight adoption must not request CRL")
+		return nil
+	}
+	nodes := a.findAdoptableNodes()
+	if len(nodes) != 1 || nodes[0].securityMode != "lightweight" || nodes[0].participant != "" {
+		t.Fatalf("lightweight adoptable nodes = %+v", nodes)
+	}
+	if err := a.adoptProfile(nodes[0]); err != nil {
+		t.Fatal(err)
+	}
+	restarted := buildTestAgent(t, ffs)
+	nonFiringTimers(restarted)
+	restarted.rehydrate()
+	value, ok := restarted.profiles.Load(profileKey("0:light", "", "SN-light"))
+	if !ok || value.(*profile).securityMode != "lightweight" {
+		t.Fatalf("lightweight mode not restored: profile=%v", value)
+	}
+	tracked := value.(*profile)
+	tracked.notAfter[ArtifactIdentity] = restarted.Now().Add(time.Hour)
+	restarted.scheduleAll(tracked)
+	if _, scheduled := tracked.timers[ArtifactIdentity]; scheduled {
+		t.Fatal("lightweight profile scheduled a stale identity artifact")
+	}
+}
+
+func TestFindAdoptableNodes_LegacyLightweightWithoutModeMarker(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	seedOrphanEnrollment(a, ffs, "svc", "0:light", "", "SN-light", "https://device.example")
+	nodes := a.findAdoptableNodes()
+	if len(nodes) != 1 || nodes[0].securityMode != "lightweight" {
+		t.Fatalf("legacy lightweight adoptable nodes = %+v", nodes)
+	}
+}
+
 func TestFindAdoptableNodes_ExcludesInMemoryProfile(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)
@@ -256,6 +306,7 @@ func TestConfigureFirstRun_NoReuseChoiceWithoutOrphans(t *testing.T) {
 	a.MACs = []string{"AA:BB:CC:DD:EE:01"}
 	a.ListServicesFunc = func() ([]string, error) { return []string{"svc"}, nil }
 	a.ListDomainTemplatesFunc = func(string) ([]string, error) { return []string{"1:dom"}, nil }
+	a.GetDomainTemplateModeFunc = func(string, string) (string, error) { return "full", nil }
 	a.ListParticipantTemplatesFunc = func(string) ([]string, error) { return []string{"part"}, nil }
 
 	var enrolled []string

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 )
 
 type fakeAPI struct {
@@ -491,6 +492,21 @@ func TestCreateCampaign(t *testing.T) {
 	}
 }
 
+func TestCreateCampaignRejectsNullEnrollmentList(t *testing.T) {
+	api := &fakeAPI{}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(`null`), nil }
+	err := runner.CreateCampaign("svc", "", "devices.json", "0:light")
+	var typed *clierror.Error
+	if !errors.As(err, &typed) || typed.Code != clierror.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+	}
+	if api.lastPath != "" || out.Len() != 0 {
+		t.Fatalf("invalid input made API request %q or wrote stdout %q", api.lastPath, out.String())
+	}
+}
+
 func TestCreateCampaignCSV(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /edge-systems/alpha/campaigns": newJSONResponse(http.StatusCreated, map[string]any{
@@ -589,6 +605,101 @@ func TestRevokeDevice(t *testing.T) {
 	}
 }
 
+func TestCreateDomainTemplate_Lightweight(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/svc/domain-templates": newTextResponse(http.StatusCreated, "{}"),
+	}}
+	runner := New(api, io.Discard)
+	if err := runner.CreateDomainTemplate("svc", 7, "", "light", "", "", "lightweight", 60, 120); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if payload["securityMode"] != "lightweight" || payload["pskTtlMinutes"] != 60 || payload["deviceCertTtlMinutes"] != 120 {
+		t.Fatalf("unexpected lightweight domain payload: %#v", payload)
+	}
+	if _, present := payload["governanceTemplate"]; present {
+		t.Fatal("lightweight domain payload includes governance")
+	}
+}
+
+func TestCreateCampaign_LightweightOmitsParticipant(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/svc/campaigns": newTextResponse(http.StatusCreated, "{}"),
+	}}
+	runner := New(api, io.Discard)
+	runner.ReadFile = func(string) ([]byte, error) {
+		return []byte(`[{"serial":"SN-light"}]`), nil
+	}
+	if err := runner.CreateCampaign("svc", "", "devices.json", "0:light"); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := api.lastPayload.(map[string]any)["participantTemplateId"]; present {
+		t.Fatal("lightweight campaign payload includes participant template")
+	}
+}
+
+func TestEnrollmentSecurityMode(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response map[string]any
+		want     string
+	}{
+		{"legacy", map[string]any{}, "full"},
+		{"full", map[string]any{"security_mode": "full"}, "full"},
+		{"lightweight", map[string]any{"security_mode": "lightweight"}, "lightweight"},
+		{"empty", map[string]any{"security_mode": ""}, ""},
+		{"unknown", map[string]any{"security_mode": "invalid"}, ""},
+		{"wrong-type", map[string]any{"security_mode": 123}, ""},
+		{"null", map[string]any{"security_mode": nil}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mode, err := enrollmentSecurityMode(test.response)
+			if mode != test.want || (err != nil) != (test.want == "") {
+				t.Fatalf("mode=%q err=%v, want %q", mode, err, test.want)
+			}
+		})
+	}
+}
+
+func TestEnrollDevice_LightweightPersistsParticipantlessCredentials(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
+			path := "/edge-systems/svc/enroll"
+			if direct {
+				path += "-node"
+			}
+			api := &fakeAPI{responses: map[string]*http.Response{
+				"POST " + path: newJSONResponse(http.StatusOK, map[string]any{
+					"domain_template_id": "0:light", "security_mode": "lightweight",
+					"certificate": "CERT", "caChain": "CA", "governanceP7s": "UNUSED",
+				}),
+			}}
+			runner := New(api, io.Discard)
+			runner.EdgeStore = edgestore.New(t.TempDir())
+			runner.ReadFile = func(string) ([]byte, error) { return []byte("KEY-OR-CSR"), nil }
+			var err error
+			if direct {
+				_, _, err = runner.EnrollDeviceDirect("svc", "0:light", "", "SN-light", nil, "", "csr", "key", false)
+			} else {
+				_, err = runner.EnrollDevice("svc", "", "SN-light", []string{"AA:BB"}, "csr", "key", "campaign")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			mode, err := os.ReadFile(runner.EdgeStore.NodeSecurityModePath("svc", "0:light", "", "SN-light"))
+			if err != nil || string(mode) != "lightweight" {
+				t.Fatalf("stored mode=%q err=%v", mode, err)
+			}
+			if _, err := os.Stat(runner.EdgeStore.NodeKeyPath("svc", "0:light", "", "SN-light")); err != nil {
+				t.Fatalf("missing stored private key: %v", err)
+			}
+			if _, err := os.Stat(runner.EdgeStore.GovernancePath("svc", "0:light")); !os.IsNotExist(err) {
+				t.Fatal("lightweight enrollment wrote DDS governance")
+			}
+		})
+	}
+}
+
 func TestEnrollDevice(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{
 		"POST /edge-systems/ces-alpha-123/enroll": newJSONResponse(http.StatusOK, map[string]any{
@@ -665,6 +776,69 @@ func TestFetchDomainTemplates(t *testing.T) {
 	}
 }
 
+func TestFetchDomainTemplateMode(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mode      any
+		present   bool
+		want      string
+		wantError bool
+	}{
+		{name: "legacy", want: "full"},
+		{name: "full", mode: "full", present: true, want: "full"},
+		{name: "lightweight", mode: "lightweight", present: true, want: "lightweight"},
+		{name: "unknown", mode: "unknown", present: true, wantError: true},
+		{name: "empty", mode: "", present: true, wantError: true},
+		{name: "null", present: true, wantError: true},
+		{name: "number", mode: 42, present: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			template := map[string]any{"templateId": "1:dom-a"}
+			if test.present {
+				template["securityMode"] = test.mode
+			}
+			api := &fakeAPI{responses: map[string]*http.Response{
+				"GET /edge-systems/alpha/domain-templates": newJSONResponse(http.StatusOK, map[string]any{
+					"domain_templates": []any{map[string]any{"templateId": "2:other", "securityMode": "lightweight"}, template},
+				}),
+			}}
+			mode, err := New(api, &bytes.Buffer{}).FetchDomainTemplateMode("alpha", "1:dom-a")
+			if (err != nil) != test.wantError || mode != test.want {
+				t.Fatalf("mode=%q err=%v, want %q error=%v", mode, err, test.want, test.wantError)
+			}
+		})
+	}
+}
+
+func TestFetchDomainTemplateMode_CatalogEnvelopes(t *testing.T) {
+	for _, envelope := range []string{"domain_templates", "domainTemplates", "templates", "items"} {
+		for _, idKey := range []string{"templateId", "template_id", "id"} {
+			t.Run(envelope+"/"+idKey, func(t *testing.T) {
+				api := &fakeAPI{responses: map[string]*http.Response{
+					"GET /edge-systems/alpha/domain-templates": newJSONResponse(http.StatusOK, map[string]any{
+						envelope: []any{map[string]any{idKey: "0:micro", "securityMode": "lightweight"}},
+					}),
+				}}
+				mode, err := New(api, &bytes.Buffer{}).FetchDomainTemplateMode("alpha", "0:micro")
+				if err != nil || mode != "lightweight" {
+					t.Fatalf("mode=%q err=%v, want lightweight", mode, err)
+				}
+			})
+		}
+	}
+}
+
+func TestFetchDomainTemplateMode_MissingOrUnavailable(t *testing.T) {
+	for _, responseCode := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+		api := &fakeAPI{responses: map[string]*http.Response{
+			"GET /edge-systems/alpha/domain-templates": newJSONResponse(responseCode, map[string]any{"domain_templates": []any{}}),
+		}}
+		if _, err := New(api, &bytes.Buffer{}).FetchDomainTemplateMode("alpha", "missing"); err == nil {
+			t.Fatalf("expected error for status %d", responseCode)
+		}
+	}
+}
+
 func TestFetchParticipantTemplates(t *testing.T) {
 	// Real response shape: the list lives under "participants".
 	api := &fakeAPI{responses: map[string]*http.Response{
@@ -733,6 +907,35 @@ func TestEnrollDeviceDirect_ReturnsNodeURL(t *testing.T) {
 	payload := api.lastPayload.(map[string]any)
 	if payload["serial"] != "SN001" || payload["domainTemplateId"] != "1:dom-a" || payload["participantTemplateId"] != "sensor-net" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestEnrollDeviceDirect_LightweightOmitsParticipant(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"POST /edge-systems/ces-alpha-123/enroll-node": newJSONResponse(http.StatusOK, map[string]any{
+			"certificate":        "-----BEGIN CERTIFICATE-----\nMIIB...",
+			"caChain":            "-----BEGIN CERTIFICATE-----\nMIIC...",
+			"domain_template_id": "0:micro",
+			"nodeUrl":            "https://svc.devices.cloud.rti.com",
+		}),
+	}}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.EdgeStore = edgestore.New(t.TempDir())
+	runner.ReadFile = func(string) ([]byte, error) { return []byte("test CSR"), nil }
+	if _, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "0:micro", "", "SN001", nil, "", "device.csr", "device.key", false); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.lastPayload.(map[string]any)
+	if _, present := payload["participantTemplateId"]; present {
+		t.Fatalf("lightweight enrollment must omit participantTemplateId: %#v", payload)
+	}
+	cert, key, ca := runner.EdgeStore.ResolveNodeMTLS("ces-alpha-123", "0:micro", "", "SN001", "", "", "")
+	if cert == "" || key == "" || ca == "" {
+		t.Fatalf("lightweight mTLS credentials not saved: cert=%q key=%q ca=%q", cert, key, ca)
+	}
+	if url := runner.EdgeStore.ResolveNodeURL("ces-alpha-123", "0:micro", "", "SN001"); url != "https://svc.devices.cloud.rti.com" {
+		t.Fatalf("lightweight endpoint URL = %q", url)
 	}
 }
 

@@ -163,7 +163,7 @@ func greenOperations() []struct {
 		{"permissions list", "GET /edge-systems/demo/permissions-templates", func(r *Runner) error { return r.ListPermissionsTemplates("demo") }},
 		{"permissions get", "GET /edge-systems/demo/permissions-templates/tpl", func(r *Runner) error { return r.GetPermissionsTemplate("demo", "tpl") }},
 		{"permissions delete", "DELETE /edge-systems/demo/permissions-templates/tpl", func(r *Runner) error { return r.DeletePermissionsTemplate("demo", "tpl") }},
-		{"domain create", "POST /edge-systems/demo/domain-templates", func(r *Runner) error { return r.CreateDomainTemplate("demo", 0, "gov", "", "", "") }},
+		{"domain create", "POST /edge-systems/demo/domain-templates", func(r *Runner) error { return r.CreateDomainTemplate("demo", 0, "gov", "", "", "", "full", 0, 0) }},
 		{"domain list", "GET /edge-systems/demo/domain-templates", func(r *Runner) error { return r.ListDomainTemplates("demo") }},
 		{"domain delete", "DELETE /edge-systems/demo/domain-templates/tpl", func(r *Runner) error { return r.DeleteDomainTemplate("demo", "tpl") }},
 		{"participant template create", "POST /edge-systems/demo/participant-templates", func(r *Runner) error { return r.CreateParticipantTemplate("demo", "tpl", "perms", 60) }},
@@ -275,7 +275,7 @@ func TestGreenFileValidationFailsBeforeAPI(t *testing.T) {
 		func(r *Runner) error { return r.UpdateFilters("demo", "input") },
 		func(r *Runner) error { return r.CreateGovernanceTemplate("demo", "tpl", "input") },
 		func(r *Runner) error { return r.CreatePermissionsTemplate("demo", "tpl", "input") },
-		func(r *Runner) error { return r.CreateDomainTemplate("demo", 0, "", "", "input", "gov") },
+		func(r *Runner) error { return r.CreateDomainTemplate("demo", 0, "", "", "input", "gov", "full", 0, 0) },
 		func(r *Runner) error { return r.CreateCampaign("demo", "tpl", "input", "domain") },
 	}
 	for i, run := range operations {
