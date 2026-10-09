@@ -297,6 +297,48 @@ func TestParserRecognizesNestedApplicationClientCommands(t *testing.T) {
 	}
 }
 
+func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
+	var out bytes.Buffer
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"databus", "app", "get", "--help"}, []string{"--manifest", "--zip", "Export application configuration JSON"}},
+		{[]string{"databus", "app", "client", "register", "--help"}, []string{"--zip"}},
+		{[]string{"databus", "topic", "get", "--help"}, []string{"--topic", "--type-xml"}},
+	} {
+		out.Reset()
+		if err := Execute(test.args, &out, io.Discard, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range test.want {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("%v help missing %q: %s", test.args, want, out.String())
+			}
+		}
+	}
+}
+
+func TestParserRejectsConflictingApplicationZIPFlags(t *testing.T) {
+	for _, test := range []struct {
+		flags []string
+		want  string
+	}{
+		{[]string{"--zip", "--example"}, "--zip cannot be combined with --example or --manifest"},
+		{[]string{"--zip", "--manifest"}, "--zip cannot be combined with --example or --manifest"},
+		{[]string{"--zip", "--output", "application.json"}, "--output cannot be combined with artifact flags"},
+		{[]string{"--bundle"}, "unknown flag: --bundle"},
+	} {
+		t.Run(strings.Join(test.flags, " "), func(t *testing.T) {
+			args := append([]string{"databus", "app", "get", "--name", "db", "--app-name", "shapes"}, test.flags...)
+			err := Execute(args, io.Discard, io.Discard, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("unexpected error: %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestParserReportsMissingValuesWithoutPanic(t *testing.T) {
 	err := Execute([]string{"databus", "query", "--name"}, io.Discard, io.Discard, nil)
 	if err == nil {

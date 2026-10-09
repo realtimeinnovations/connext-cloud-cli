@@ -9,6 +9,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
@@ -534,5 +536,81 @@ func TestMigrationGateRetriesFailureAndPreservesError(t *testing.T) {
 	}
 	if got, err := manager.GetAPIURL(); err != nil || got != "https://example.test" {
 		t.Fatalf("retry failed: %q %v", got, err)
+	}
+}
+
+func TestConfigureRegionReturnsValidationErrorsWithoutOutput(t *testing.T) {
+	for _, tc := range []struct {
+		region string
+		get    bool
+	}{{"invalid", false}, {"us-east-2", true}} {
+		manager := New(filepath.Join(t.TempDir(), "config.json"))
+		manager.NonInteractive = true
+		var out bytes.Buffer
+		ok, err := manager.ConfigureRegion(tc.region, tc.get, strings.NewReader(""), &out)
+		if ok || err == nil || clierror.From(err).Code != "INVALID_ARGUMENT" || out.Len() != 0 {
+			t.Fatalf("region=%s get=%t ok=%t err=%v stdout=%q", tc.region, tc.get, ok, err, out.String())
+		}
+		if _, err := os.Stat(manager.Path); !os.IsNotExist(err) {
+			t.Fatalf("invalid input wrote config: %v", err)
+		}
+	}
+}
+
+func TestConfigureRegionReturnsCustomDomainValidationError(t *testing.T) {
+	manager := New(filepath.Join(t.TempDir(), "config.json"))
+	var out bytes.Buffer
+	ok, err := manager.ConfigureRegion("", false, strings.NewReader("3\nhttps://\n"), &out)
+	if ok || err == nil || clierror.From(err).Code != "INVALID_ARGUMENT" || !strings.Contains(err.Error(), "domain") {
+		t.Fatalf("ok=%t error=%v stdout=%q", ok, err, out.String())
+	}
+	if strings.Contains(out.String(), "Error:") {
+		t.Fatalf("failure printed instead of returned: %q", out.String())
+	}
+}
+
+func TestConfigureRegionPreservesWriteFailure(t *testing.T) {
+	server := newAuthConfigTestServer(t)
+	useTestRegionURL(t, "us-east-2", server.URL+"/api/v1")
+	for _, custom := range []bool{false, true} {
+		blocker := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(blocker, []byte("block"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		manager := New(filepath.Join(blocker, "config.json"))
+		manager.cache = map[string]string{}
+		manager.HTTPClient = server.Client()
+		region, input := "us-east-2", ""
+		if custom {
+			region, input = "", "3\n"+server.URL+"\n"
+		}
+		var out bytes.Buffer
+		ok, err := manager.ConfigureRegion(region, false, strings.NewReader(input), &out)
+		var cause *os.PathError
+		if ok || !errors.As(err, &cause) || !strings.Contains(err.Error(), "Error updating configuration") {
+			t.Fatalf("custom=%t ok=%t error=%v stdout=%q", custom, ok, err, out.String())
+		}
+		if strings.Contains(out.String(), "Configuration updated") || strings.Contains(out.String(), "Error updating configuration") || (!custom && out.Len() != 0) {
+			t.Fatalf("write failure printed success/diagnostics: %q", out.String())
+		}
+	}
+}
+
+type failedConfigWriter struct{}
+
+func (failedConfigWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestConfigureRegionReturnsOutputFailure(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		manager := New(filepath.Join(t.TempDir(), "config.json"))
+		if configured {
+			if err := manager.WriteConfig(map[string]string{"api_host": "https://custom.example.test"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ok, err := manager.ConfigureRegion("", true, strings.NewReader(""), failedConfigWriter{})
+		if ok || !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("ok=%t output failure=%v", ok, err)
+		}
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"golang.org/x/oauth2"
@@ -37,17 +38,18 @@ type ConfigProvider interface {
 type BrowserOpener func(string) error
 
 type Manager struct {
-	Config       ConfigProvider
-	TokenPath    string
-	HTTPClient   *http.Client
-	Env          func(string) string
-	Now          func() time.Time
-	Sleep        func(time.Duration)
-	OpenBrowser  BrowserOpener
-	Stdout       io.Writer
-	migratedPath string
-	pathErr      error
-	defaultPath  bool
+	NonInteractive bool
+	Config         ConfigProvider
+	TokenPath      string
+	HTTPClient     *http.Client
+	Env            func(string) string
+	Now            func() time.Time
+	Sleep          func(time.Duration)
+	OpenBrowser    BrowserOpener
+	Stdout         io.Writer
+	migratedPath   string
+	pathErr        error
+	defaultPath    bool
 }
 
 type tokenFile struct {
@@ -205,32 +207,60 @@ func (manager *Manager) GetAccessTokenFromHomeFile() (string, error) {
 	if err := manager.migrateLegacy(); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(manager.TokenPath)
+	inspection, err := manager.InspectCredentials()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
 		return "", err
 	}
-	var token tokenFile
-	if err := json.Unmarshal(data, &token); err != nil {
-		_ = os.Remove(manager.TokenPath)
-		return "", nil
+	if inspection.State == CredentialUsable {
+		return inspection.AccessToken, nil
 	}
-	if token.AccessToken == "" || token.ExpiresAt == "" {
+	if inspection.State != CredentialMissing {
 		_ = os.Remove(manager.TokenPath)
-		return "", nil
+	}
+	return "", nil
+}
+
+type CredentialState string
+
+const (
+	CredentialMissing   CredentialState = "missing"
+	CredentialMalformed CredentialState = "malformed"
+	CredentialExpired   CredentialState = "expired"
+	CredentialUsable    CredentialState = "usable"
+)
+
+// CredentialInspection contains local metadata, not server validation.
+// AccessToken is deliberately excluded from serialization.
+type CredentialInspection struct {
+	State       CredentialState `json:"state"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	AccessToken string          `json:"-"`
+}
+
+// InspectCredentials never migrates, deletes, refreshes, or saves credentials.
+func (manager *Manager) InspectCredentials() (CredentialInspection, error) {
+	if manager.pathErr != nil {
+		return CredentialInspection{}, manager.pathErr
+	}
+	data, err := os.ReadFile(manager.TokenPath)
+	if os.IsNotExist(err) {
+		return CredentialInspection{State: CredentialMissing}, nil
+	}
+	if err != nil {
+		return CredentialInspection{}, err
+	}
+	var token tokenFile
+	if err := json.Unmarshal(data, &token); err != nil || token.AccessToken == "" || token.ExpiresAt == "" {
+		return CredentialInspection{State: CredentialMalformed}, nil
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, token.ExpiresAt)
 	if err != nil {
-		_ = os.Remove(manager.TokenPath)
-		return "", nil
+		return CredentialInspection{State: CredentialMalformed}, nil
 	}
-	if manager.Now().Before(expiresAt) {
-		return token.AccessToken, nil
+	if !manager.Now().Before(expiresAt) {
+		return CredentialInspection{State: CredentialExpired, ExpiresAt: expiresAt}, nil
 	}
-	_ = os.Remove(manager.TokenPath)
-	return "", nil
+	return CredentialInspection{State: CredentialUsable, ExpiresAt: expiresAt, AccessToken: token.AccessToken}, nil
 }
 
 func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
@@ -281,7 +311,12 @@ func (manager *Manager) usesDefaultPath() bool {
 }
 
 func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (string, int, error) {
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(apiURL, "/")+"/service-accounts/auth/token", nil)
+	return manager.GetAccessTokenFromAPIKeyContext(context.Background(), apiKey, apiURL)
+}
+
+// GetAccessTokenFromAPIKeyContext exchanges a key without persisting the token.
+func (manager *Manager) GetAccessTokenFromAPIKeyContext(ctx context.Context, apiKey string, apiURL string) (string, int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(apiURL, "/")+"/service-accounts/auth/token", nil)
 	if err != nil {
 		return "", 0, err
 	}
@@ -293,7 +328,7 @@ func (manager *Manager) GetAccessTokenFromAPIKey(apiKey string, apiURL string) (
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
-		return "", 0, fmt.Errorf("Error authenticating with API key: %d - %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return "", 0, httputil.NewStatusError(response.StatusCode, body)
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
@@ -329,6 +364,9 @@ func (manager *Manager) GetAccessTokenForCLI() (string, error) {
 			return "", err
 		}
 		return accessToken, nil
+	}
+	if manager.NonInteractive {
+		return "", clierror.AuthRequired()
 	}
 	return manager.Login()
 }
@@ -381,6 +419,9 @@ func (manager *Manager) GetAuthHeaders() (map[string]string, error) {
 }
 
 func (manager *Manager) Login() (string, error) {
+	if manager.NonInteractive {
+		return "", clierror.InputRequired("Interactive login is disabled by --non-interactive. Use existing credentials or CONNEXT_CLOUD_API_KEY.", "configure_credentials")
+	}
 	if !manager.Config.RequireConfiguration(manager.Stdout) {
 		return "", nil
 	}
@@ -523,6 +564,9 @@ type deviceTokenResponse struct {
 }
 
 func (manager *Manager) LoginWithDeviceFlow() (string, error) {
+	if manager.NonInteractive {
+		return "", clierror.InputRequired("Interactive login is disabled by --non-interactive. Use existing credentials or CONNEXT_CLOUD_API_KEY.", "configure_credentials")
+	}
 	if !manager.Config.RequireConfiguration(manager.Stdout) {
 		return "", nil
 	}

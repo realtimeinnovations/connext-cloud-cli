@@ -98,7 +98,7 @@ func safeManagedPath(root, target string) error {
 	return nil
 }
 
-func validateManaged(directory, version string, options DiscoveryOptions) (Install, error) {
+func validateManagedMetadata(directory, version string) (Install, error) {
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(directory), installationPendingFile)); !os.IsNotExist(err) {
 		return Install{}, fmt.Errorf("Connext installation is incomplete at %s", directory)
 	}
@@ -121,22 +121,20 @@ func validateManaged(directory, version string, options DiscoveryOptions) (Insta
 	if host.Version != version || host.Directory != "rti_connext_dds-"+base || filepath.Base(directory) != host.Directory {
 		return Install{}, fmt.Errorf("invalid Connext metadata at %s: expected version %s", directory, version)
 	}
+	return Install{Path: directory, Version: host.Version, Reason: "rticloud-managed installation"}, nil
+}
+
+func validateManaged(directory, version string, options DiscoveryOptions) (Install, error) {
+	if _, err := validateManagedMetadata(directory, version); err != nil {
+		return Install{}, err
+	}
 	install, err := ValidateInstall(directory, options)
 	if err != nil {
 		return Install{}, err
 	}
 	for _, tool := range []string{"rtiddsspy", "rtiroutingservice", "rticollectorservicelite"} {
-		executable := Executable(directory, tool)
-		if err := safeManagedPath(directory, executable); err != nil {
+		if err := ValidateManagedTool(install, tool, options.MinVersion); err != nil {
 			return Install{}, err
-		}
-		info, err := os.Lstat(executable)
-		if err != nil {
-			return Install{}, err
-		}
-		platform, _ := Platform()
-		if !info.Mode().IsRegular() || (platform != "windows" && info.Mode().Perm()&0o111 == 0) {
-			return Install{}, fmt.Errorf("invalid Connext executable: %s", executable)
 		}
 	}
 	install.Reason = "rticloud-managed installation"

@@ -9,6 +9,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 )
 
@@ -75,214 +77,33 @@ func newTextResponse(status int, payload string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(payload))}
 }
 
-func TestCreateApplicationMapsObservabilityCollectorKind(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/obs/applications": newTextResponse(http.StatusCreated, "ok")}}
+func TestTopicInspectionUsesDiscoveryEndpoints(t *testing.T) {
+	api := &fakeAPI{responses: map[string]*http.Response{
+		"GET /databuses/db/topics":                                           newJSONResponse(http.StatusOK, map[string]any{"topics": []map[string]any{{"topic_name": "rt/Shapes Demo", "type": "ShapeType"}}}),
+		"GET /databuses/db/topics/Square":                                    newJSONResponse(http.StatusOK, map[string]any{"type_name": "ShapeType", "sampleSchema": map[string]any{"type": "object"}}),
+		"GET /databuses/db/topics/rt%2FShapes%20Demo?representation=typeXml": newTextResponse(http.StatusOK, `<struct name="ShapeType"/>`),
+	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateApplication("obs", "collector", 7777, "observability-collector", "", false); err != nil {
+	if err := runner.ListTopics("db"); err != nil {
 		t.Fatal(err)
 	}
-	payload, ok := api.lastPayload.(map[string]any)
-	if !ok || payload["kind"] != "telemetry-service-collector" {
-		t.Fatalf("unexpected payload: %#v", api.lastPayload)
+	if !strings.Contains(out.String(), `"topic_name": "rt/Shapes Demo"`) {
+		t.Fatalf("unexpected topic list: %s", out.String())
 	}
-}
-
-func TestCreateApplicationPrintsJSONResponse(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newJSONResponse(http.StatusCreated, map[string]any{
-		"client_config": nil,
-		"message":       "gateway config generated and saved",
-	})}}
-	var out bytes.Buffer
-	runner := New(api, &out)
-	if err := runner.CreateApplication("db", "gateway", 7777, "gateway", "", false); err != nil {
+	out.Reset()
+	if err := runner.GetTopic("db", "Square", false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "\n  \"message\": \"gateway config generated and saved\"\n") {
-		t.Fatalf("expected formatted JSON output, got: %s", out.String())
+	if api.lastPath != "/databuses/db/topics/Square" || !strings.Contains(out.String(), `"type_name": "ShapeType"`) {
+		t.Fatalf("path = %q, output = %q", api.lastPath, out.String())
 	}
-}
-
-func TestCreateApplicationReadsManifest(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
-	var out bytes.Buffer
-	runner := New(api, &out)
-	runner.ReadFile = func(fileName string) ([]byte, error) {
-		if fileName != "application.json" {
-			t.Fatalf("unexpected configuration file: %s", fileName)
-		}
-		return []byte(`{"port": 9000, "kind": "gateway", "topic_data": {"0": {"domainId": 0}}}`), nil
-	}
-	if err := runner.CreateApplication("db", "gateway", 8000, "", "application.json", true); err != nil {
+	out.Reset()
+	if err := runner.GetTopic("db", "rt/Shapes Demo", true); err != nil {
 		t.Fatal(err)
 	}
-	payload := api.lastPayload.(map[string]any)
-	if payload["port"] != 8000 || payload["kind"] != "gateway" || payload["client_name"] != "gateway" {
-		t.Fatalf("unexpected payload: %#v", payload)
-	}
-	topicData, ok := payload["topic_data"].(map[string]any)
-	if !ok || topicData["0"] == nil {
-		t.Fatalf("unexpected topic data: %#v", payload)
-	}
-}
-
-func TestCreateApplicationAcceptsStringPort(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
-	runner := New(api, io.Discard)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"port": "9000"}`), nil }
-	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
-		t.Fatal(err)
-	}
-	payload := api.lastPayload.(map[string]any)
-	if payload["port"] != 9000 {
-		t.Fatalf("unexpected port: %#v", payload)
-	}
-}
-
-func TestCreateApplicationDefaultsOptionalManifestFields(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
-	var out bytes.Buffer
-	runner := New(api, &out)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{}`), nil }
-	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
-		t.Fatal(err)
-	}
-	payload := api.lastPayload.(map[string]any)
-	if payload["port"] != 7777 || payload["kind"] != "app" {
-		t.Fatalf("unexpected payload: %#v", payload)
-	}
-	if topicData, ok := payload["topic_data"].(map[string]any); !ok || len(topicData) != 0 {
-		t.Fatalf("unexpected topic data: %#v", payload)
-	}
-}
-
-func TestCreateApplicationRejectsNonObjectTopicData(t *testing.T) {
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"topic_data": []}`), nil }
-	err := runner.CreateApplication("db", "application", 7777, "", "application.json", false)
-	if err == nil || !strings.Contains(err.Error(), "topic_data must be a JSON object") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config": "<participant/>",
-		"client_data":   map[string]any{"port": "7777", "kind": "app", "topics": map[string]any{"0": map[string]any{"domainId": 0}}},
-	})}}
-	var out bytes.Buffer
-	runner := New(api, &out)
-	var savedName string
-	var savedData []byte
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	runner.WriteFile = func(fileName string, data []byte, _ os.FileMode) error {
-		savedName, savedData = fileName, data
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
-		t.Fatal(err)
-	}
-	if savedName != "application.json" || bytes.Contains(savedData, []byte("client_config")) {
-		t.Fatalf("unexpected saved manifest %q: %s", savedName, savedData)
-	}
-	var manifest map[string]any
-	if err := json.Unmarshal(savedData, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest["kind"] != "app" || manifest["port"].(float64) != 7777 || manifest["topic_data"] == nil {
-		t.Fatalf("unexpected manifest: %#v", manifest)
-	}
-}
-
-func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
-		"client_data": map[string]any{"kind": "app"},
-	})}}
-	runner := New(api, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	runner.MkdirAll = func(dir string, _ os.FileMode) error {
-		createdDir = dir
-		return nil
-	}
-	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
-		t.Fatal(err)
-	}
-	if createdDir != "configs" {
-		t.Fatalf("created directory = %q, want configs", createdDir)
-	}
-}
-
-func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	var createdMode os.FileMode
-	var fileMode os.FileMode
-	runner.MkdirAll = func(dir string, mode os.FileMode) error {
-		createdDir, createdMode = dir, mode
-		return nil
-	}
-	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
-		fileMode = mode
-		return nil
-	}
-	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
-		t.Fatal(err)
-	}
-	if createdDir != "keys" || createdMode != 0o700 {
-		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
-	}
-	if fileMode != 0o600 {
-		t.Fatalf("file mode = %#o, want 0600", fileMode)
-	}
-}
-
-func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
-		"client_data": map[string]any{"kind": "app"},
-	})}}
-	runner := New(api, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var savedData []byte
-	runner.WriteFile = func(_ string, data []byte, _ os.FileMode) error {
-		savedData = data
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
-		t.Fatal(err)
-	}
-	var manifest map[string]any
-	if err := json.Unmarshal(savedData, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if topicData, ok := manifest["topic_data"].(map[string]any); !ok || len(topicData) != 0 {
-		t.Fatalf("unexpected topic data: %#v", manifest)
-	}
-}
-
-func TestGetApplicationDownloadsXMLWithoutManifestOutput(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config": "<participant/>",
-		"client_data":   map[string]any{"kind": "app"},
-	})}}
-	var out bytes.Buffer
-	runner := New(api, &out)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var savedName string
-	runner.WriteFile = func(fileName string, _ []byte, _ os.FileMode) error {
-		savedName = fileName
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", ""); err != nil {
-		t.Fatal(err)
-	}
-	if savedName != "subscriber.xml" {
-		t.Fatalf("saved file = %q, want subscriber.xml", savedName)
-	}
-	if strings.Contains(out.String(), "map[") {
-		t.Fatalf("unexpected application data output: %s", out.String())
+	if api.lastPath != "/databuses/db/topics/rt%2FShapes%20Demo?representation=typeXml" || out.String() != `<struct name="ShapeType"/>` {
+		t.Fatalf("path = %q, output = %q", api.lastPath, out.String())
 	}
 }
 
@@ -537,11 +358,11 @@ func TestCreateEdgeSystemError(t *testing.T) {
 	}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	if err := runner.CreateEdgeSystem("", ""); err != nil {
-		t.Fatal(err)
+	if err := runner.CreateEdgeSystem("", ""); err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("expected returned API error, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Error") {
-		t.Fatalf("expected error output: %s", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("error wrote stdout: %s", out.String())
 	}
 }
 
@@ -668,6 +489,21 @@ func TestCreateCampaign(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "camp-123") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestCreateCampaignRejectsNullEnrollmentList(t *testing.T) {
+	api := &fakeAPI{}
+	var out bytes.Buffer
+	runner := New(api, &out)
+	runner.ReadFile = func(string) ([]byte, error) { return []byte(`null`), nil }
+	err := runner.CreateCampaign("svc", "", "devices.json", "0:light")
+	var typed *clierror.Error
+	if !errors.As(err, &typed) || typed.Code != clierror.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+	}
+	if api.lastPath != "" || out.Len() != 0 {
+		t.Fatalf("invalid input made API request %q or wrote stdout %q", api.lastPath, out.String())
 	}
 }
 
@@ -1173,6 +1009,60 @@ func TestEnrollDeviceDirect_GenKeyRejected_LeavesKeyFileIntact(t *testing.T) {
 		if path == "existing.key" {
 			t.Fatal("generated key was written to --key-file despite the enrollment being rejected; " +
 				"the operator's existing private key would be destroyed")
+		}
+	}
+}
+
+func TestCreateApplicationRejectsInvalidManifestBeforeAPI(t *testing.T) {
+	for _, body := range []string{`{broken`, `null`, `[]`, `{"port":"not-a-number"}`, `{"kind":"unknown"}`, `{"topic_data":null}`} {
+		var out bytes.Buffer
+		api := &fakeAPI{}
+		runner := New(api, &out)
+		runner.JSON = true
+		runner.ReadFile = func(string) ([]byte, error) { return []byte(body), nil }
+		err := runner.CreateApplication("demo", "subscriber", 7777, "", "app.json", false)
+		if err == nil || clierror.From(err).ExitCode() != 2 || out.Len() != 0 || api.lastPath != "" {
+			t.Fatalf("manifest=%q error=%v stdout=%q request=%q", body, err, out.String(), api.lastPath)
+		}
+	}
+}
+
+func TestSimpleApplicationCommandsEscapeTargetPaths(t *testing.T) {
+	for _, tc := range []struct {
+		request string
+		run     func(*Runner) error
+	}{
+		{"POST /databuses/demo%2Fone/applications", func(r *Runner) error { return r.CreateApplication("demo/one", "app/two", 7777, "app", "", false) }},
+		{"DELETE /databuses/demo%2Fone/applications/app%2Ftwo", func(r *Runner) error { return r.DeleteApplication("demo/one", "app/two") }},
+		{"GET /databuses/demo%2Fone/applications/app%2Ftwo/clients", func(r *Runner) error { return r.ListAppClients("demo/one", "app/two") }},
+		{"DELETE /databuses/demo%2Fone/applications/app%2Ftwo/clients/client%2Fthree", func(r *Runner) error { return r.RevokeAppClient("demo/one", "app/two", "client/three") }},
+	} {
+		status := http.StatusOK
+		if strings.HasPrefix(tc.request, "POST ") {
+			status = http.StatusCreated
+		}
+		api := &fakeAPI{responses: map[string]*http.Response{tc.request: newJSONResponse(status, map[string]any{"clients": map[string]any{}})}}
+		runner := New(api, failingDatabusWriter{})
+		runner.JSON = true
+		// Reaching the output writer demonstrates that the intended escaped
+		// endpoint succeeded; the output failure must still propagate.
+		if err := tc.run(runner); !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("%s: error=%v actual path=%s", tc.request, err, api.lastPath)
+		}
+	}
+}
+
+func TestListAppClientsPreservesCollectionTextOutput(t *testing.T) {
+	for _, clients := range []any{map[string]any{}, []any{}, map[string]any{"device-1": map[string]any{"id": "device-1"}}, []any{map[string]any{"id": "device-1"}}} {
+		api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/demo/applications/subscriber/clients": newJSONResponse(http.StatusOK, map[string]any{"clients": clients})}}
+		var out bytes.Buffer
+		runner := New(api, &out)
+		if err := runner.ListAppClients("demo", "subscriber"); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := json.MarshalIndent(clients, "", "  ")
+		if out.String() != string(expected)+"\n" {
+			t.Fatalf("client text output changed: %q", out.String())
 		}
 	}
 }

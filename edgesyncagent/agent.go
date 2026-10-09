@@ -370,7 +370,8 @@ type Agent struct {
 	// auto-detected serial number and MAC addresses during first-run enrollment.
 	// When false (the default) the detected values are used directly without
 	// any interactive selection step.
-	ManualMode bool
+	ManualMode     bool
+	NonInteractive bool
 
 	// DeploymentName, when non-empty, is used as the serial/device identifier
 	// without prompting or auto-detecting.

@@ -32,6 +32,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
@@ -49,19 +50,20 @@ const (
 )
 
 type Runtime struct {
-	Out           io.Writer
-	Config        *config.Manager
-	Auth          *auth.Manager
-	WorkAuth      *auth.Manager
-	CloudAPI      *cloudapi.Client
-	Commands      *commands.Runner
-	License       *commands.Runner
-	Gateway       *gateway.GatewayApp
-	Spy           *spy.App
-	EdgeProvision *edgeprovision.Runner
-	EdgeStore     *edgestore.Store
-	EdgeSyncAgent *edgesyncagent.Agent
-	Updater       *update.Manager
+	NonInteractive bool
+	Out            io.Writer
+	Config         *config.Manager
+	Auth           *auth.Manager
+	WorkAuth       *auth.Manager
+	CloudAPI       *cloudapi.Client
+	Commands       *commands.Runner
+	License        *commands.Runner
+	Gateway        *gateway.GatewayApp
+	Spy            *spy.App
+	EdgeProvision  *edgeprovision.Runner
+	EdgeStore      *edgestore.Store
+	EdgeSyncAgent  *edgesyncagent.Agent
+	Updater        *update.Manager
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
@@ -250,19 +252,23 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 
 func decodeCommandJSON(response *http.Response, err error, method string, path string, apiHost string, command string) (map[string]any, error) {
 	if err != nil {
-		if errors.Is(err, config.ErrNotConfigured) {
-			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error()})
+		var typed *clierror.Error
+		if errors.Is(err, config.ErrNotConfigured) || errors.As(err, &typed) {
+			return nil, suppressResetHint(gateway.GatewayError{Message: err.Error(), Cause: err})
 		}
 		message := gateway.FormatAPIConnectionError(method, apiHost, path, err)
 		if command != "gateway" {
 			message = strings.ReplaceAll(message, "rticloud gateway", "rticloud "+command)
 		}
-		return nil, suppressResetHint(gateway.GatewayError{Message: message})
+		return nil, suppressResetHint(gateway.GatewayError{Message: message, Cause: err})
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
+	body, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		return nil, suppressResetHint(readErr)
+	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body)}
+		apiErr := gateway.GatewayError{Message: "Error: " + httputil.FormatError(response.StatusCode, body), Cause: httputil.NewStatusError(response.StatusCode, body)}
 		if response.StatusCode == http.StatusNotFound {
 			return nil, apiErr
 		}
@@ -329,6 +335,9 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	}
 	existingConfig := configValues != nil
 	if configValues == nil {
+		if runtime.NonInteractive {
+			return clierror.InputRequired("No Spy project configuration is available. Run 'rticloud spy' interactively to configure this project first.", "configure_spy_project")
+		}
 		if skipPreflight {
 			return common.UserError{Message: "No spy configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud spy"}
 		}
@@ -377,7 +386,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 func spyPreflightError(config map[string]any, existingConfig bool, err error) error {
 	err, showResetHint := resetHintError(err)
 	if existingConfig && spy.HasDatabus(config) && showResetHint {
-		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint()}
+		return common.UserError{Message: err.Error() + "\n\n" + spy.DatabusResetHint(), Cause: err}
 	}
 	return err
 }
@@ -389,6 +398,9 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 	}
 	existingConfig := configValues != nil
 	if configValues == nil {
+		if runtime.NonInteractive {
+			return clierror.InputRequired("No Gateway project configuration is available. Run 'rticloud gateway' interactively to configure this project first.", "configure_gateway_project")
+		}
 		if skipPreflight {
 			return gateway.GatewayError{Message: "No gateway configuration found in this project.\n\nRun without --skip-preflight to configure this project:\n  rticloud gateway"}
 		}
@@ -474,7 +486,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 func gatewayPreflightError(config map[string]any, existingConfig bool, err error) error {
 	err, showResetHint := resetHintError(err)
 	if existingConfig && (gateway.HasDatabus(config) || gateway.HasObservability(config)) && showResetHint {
-		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint()}
+		return gateway.GatewayError{Message: err.Error() + "\n\n" + gateway.DatabusResetHint(), Cause: err}
 	}
 	return err
 }
@@ -535,7 +547,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	}
 	licenseContent, err := runtime.License.DownloadLicense(nil)
 	if err != nil {
-		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err)}
+		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
 	}
 	if err := internalconnext.WriteLicenseFile(install, licenseContent); err != nil {
 		return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)

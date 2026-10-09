@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 )
 
@@ -177,7 +178,8 @@ func TestGetAccessTokenForCLIReturnsAPIKeyExchangeError(t *testing.T) {
 	if token != "" {
 		t.Fatalf("GetAccessTokenForCLI() token = %q, want empty", token)
 	}
-	if !strings.Contains(err.Error(), "Error authenticating with API key: 401 - bad api key") {
+	var statusErr *httputil.StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 401 || statusErr.Message != "bad api key" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

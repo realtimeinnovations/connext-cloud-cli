@@ -19,11 +19,14 @@ import (
 
 type UserError struct {
 	Message string
+	Cause   error
 }
 
 func (err UserError) Error() string {
 	return err.Message
 }
+
+func (err UserError) Unwrap() error { return err.Cause }
 
 // StaleConfigError is retained for compatibility with the existing Gateway
 // validation path. Reset-hint policy is determined at the API boundary.

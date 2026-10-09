@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 	"golang.org/x/term"
 )
@@ -145,6 +146,10 @@ func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 	}
 	if a.Service != "" && a.DomainTemplateID != "" {
 		return a.enrollHeadlessDirect()
+	}
+
+	if a.NonInteractive {
+		return clierror.InputRequired("Unattended enrollment requires --campaign-token or --service, --domain-tpl-id and --participant-tpl-id.", "provide_enrollment_flags")
 	}
 
 	// Offer to reuse an enrollment already present on disk (performed

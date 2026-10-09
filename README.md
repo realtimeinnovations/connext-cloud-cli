@@ -104,4 +104,3 @@ dashboard:
   Artifact renewal still happens automatically; add participants with
   `rticloud agent enroll`.
 - **Stopping the agent.** Use Ctrl+C to stop the agent.
-

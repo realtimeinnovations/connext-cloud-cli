@@ -8,7 +8,6 @@ package commands
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -18,10 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
@@ -44,9 +43,11 @@ type CSRGenerator func(databus string, app string, clientID string) ([]byte, str
 type Runner struct {
 	API          API
 	Out          io.Writer
+	JSON         bool
 	Sleep        func(time.Duration)
 	ReadFile     func(string) ([]byte, error)
 	WriteFile    func(string, []byte, os.FileMode) error
+	Chmod        func(string, os.FileMode) error
 	MkdirAll     func(string, os.FileMode) error
 	Stat         func(string) (os.FileInfo, error)
 	CSRGenerator CSRGenerator
@@ -60,6 +61,7 @@ func New(api API, out io.Writer) *Runner {
 		Sleep:     time.Sleep,
 		ReadFile:  os.ReadFile,
 		WriteFile: os.WriteFile,
+		Chmod:     os.Chmod,
 		MkdirAll:  os.MkdirAll,
 		Stat:      os.Stat,
 	}
@@ -69,12 +71,13 @@ func (runner *Runner) printResponseError(prefix string, statusCode int, body []b
 	_, _ = fmt.Fprintf(runner.Out, "%s%s\n", prefix, httputil.FormatError(statusCode, body))
 }
 
-func (runner *Runner) printResponseBody(body []byte) {
+func (runner *Runner) printResponseBody(body []byte) error {
 	var payload any
 	if json.Unmarshal(body, &payload) == nil {
 		body, _ = json.MarshalIndent(payload, "", "  ")
 	}
-	_, _ = fmt.Fprintln(runner.Out, string(body))
+	_, err := fmt.Fprintln(runner.Out, string(body))
+	return err
 }
 
 func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
@@ -89,48 +92,39 @@ func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bo
 			return err
 		}
 	}
-	return runner.WriteFile(filePath, data, fileMode)
+	if sensitive {
+		if err := runner.Chmod(filePath, fileMode); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := runner.WriteFile(filePath, data, fileMode); err != nil {
+		return err
+	}
+	if sensitive {
+		return runner.Chmod(filePath, fileMode)
+	}
+	return nil
 }
 
-func (runner *Runner) queryDatabusStatus(name string) (string, bool, error) {
-	response, err := runner.API.Get("/databuses/" + name)
+func (runner *Runner) ListTopics(name string) error {
+	response, err := runner.API.Get("/databuses/" + name + "/topics")
 	if err != nil {
-		return "", false, err
+		return err
 	}
 	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK {
-		return "", false, nil
+		runner.printResponseError("Error: ", response.StatusCode, body)
+		return nil
 	}
-	var payload map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return "", true, err
-	}
-	status, _ := payload["status"].(string)
-	return status, true, nil
+	runner.printResponseBody(body)
+	return nil
 }
 
-func (runner *Runner) waitForDatabusStatusChange(name string, previousStatus string) (string, bool, error) {
-	waited := time.Duration(0)
-	for {
-		runner.Sleep(databusStatusPollInterval)
-		waited += databusStatusPollInterval
-		status, exists, err := runner.queryDatabusStatus(name)
-		if err != nil || !exists {
-			return status, exists, err
-		}
-		if status != previousStatus {
-			return status, exists, nil
-		}
-		if waited >= databusStatusWaitTimeout {
-			return status, exists, fmt.Errorf("timed out waiting for databus %q to leave %q after %s", name, previousStatus, databusStatusWaitTimeout)
-		}
-	}
-}
-
-func (runner *Runner) ListDatabuses(short bool) error {
-	path := "/databuses"
-	if !short {
-		path += "?extra_fields=true"
+func (runner *Runner) GetTopic(name string, topicName string, typeXML bool) error {
+	path := "/databuses/" + name + "/topics/" + url.PathEscape(topicName)
+	if typeXML {
+		path += "?representation=typeXml"
 	}
 	response, err := runner.API.Get(path)
 	if err != nil {
@@ -142,74 +136,11 @@ func (runner *Runner) ListDatabuses(short bool) error {
 		runner.printResponseError("Error: ", response.StatusCode, body)
 		return nil
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if typeXML {
+		_, err = runner.Out.Write(body)
 		return err
 	}
-	if short {
-		resources, _ := payload["databuses"].(map[string]any)
-		for name, rawInfo := range resources {
-			kind := "databus"
-			if info, ok := rawInfo.(map[string]any); ok {
-				if value, ok := info["kind"].(string); ok && value != "" {
-					kind = value
-				}
-			}
-			_, _ = fmt.Fprintf(runner.Out, "- %s (%s)\n", name, kind)
-		}
-		return nil
-	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
-}
-
-func (runner *Runner) QueryDatabus(name string) error {
-	response, err := runner.API.Get("/databuses/" + name)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) CreateDatabus(name string, replicas int, observabilityServiceName string, networkName string, secure bool) error {
-	payload := map[string]any{"name": name, "replicas": replicas, "network_name": networkName, "secure": secure}
-	if observabilityServiceName != "" {
-		payload["observability_service_name"] = observabilityServiceName
-	}
-	response, err := runner.API.Post("/databuses", payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	_, _ = fmt.Fprintln(runner.Out, "Databus creation started successfully.")
-	_, _ = fmt.Fprintln(runner.Out, "Waiting for creation to complete... (safe to Ctrl+C)")
-	status, exists, err := runner.waitForDatabusStatusChange(name, "creating")
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, _ = fmt.Fprintln(runner.Out, "Failed to get databus status")
-	} else {
-		_, _ = fmt.Fprintf(runner.Out, "Databus status:  %s\n", status)
-	}
+	runner.printResponseBody(body)
 	return nil
 }
 
@@ -222,27 +153,23 @@ func (runner *Runner) CreateObsService(name string, networkName string, secure b
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusCreated); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintln(runner.Out, "Observability Service creation started successfully.")
-	_, _ = fmt.Fprintln(runner.Out, "Waiting for creation to complete... (safe to Ctrl+C)")
-	status, exists, err := runner.waitForDatabusStatusChange(name, "creating")
+	if err := runner.progress("Observability Service creation started successfully.\nWaiting for creation to complete... (safe to Ctrl+C)"); err != nil {
+		return err
+	}
+	resource, err := runner.waitForResourceTerminal(name, "Observability Service", false)
 	if err != nil {
 		return err
 	}
-	if !exists {
-		_, _ = fmt.Fprintln(runner.Out, "Failed to get Observability Service status")
-	} else {
-		_, _ = fmt.Fprintf(runner.Out, "Observability Service status:  %s\n", status)
-	}
-	return nil
+	return runner.mutationResult(resource, "Observability Service status:  active")
 }
 
 func (runner *Runner) ListObservabilityServices(short bool) error {
+	if runner.JSON && short {
+		return invalidInput("--short cannot be combined with --format json", nil)
+	}
 	path := "/databuses"
 	if !short {
 		path += "?extra_fields=true"
@@ -251,17 +178,14 @@ func (runner *Runner) ListObservabilityServices(short bool) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeDatabus(response)
+	if err != nil {
 		return err
 	}
-	resources, _ := payload["databuses"].(map[string]any)
+	resources, ok := payload["databuses"].(map[string]any)
+	if !ok {
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API response is missing the databuses object"}
+	}
 	observability := map[string]any{}
 	for name, rawInfo := range resources {
 		info, _ := rawInfo.(map[string]any)
@@ -269,14 +193,19 @@ func (runner *Runner) ListObservabilityServices(short bool) error {
 			observability[name] = info
 		}
 	}
-	if short {
-		for name := range observability {
-			_, _ = fmt.Fprintf(runner.Out, "- %s\n", name)
-		}
-		return nil
+	if !short {
+		return runner.writeResult(map[string]any{"observability_services": observability})
 	}
-	formatted, _ := json.MarshalIndent(map[string]any{"observability_services": observability}, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
+	names := make([]string, 0, len(observability))
+	for name := range observability {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, err := fmt.Fprintf(runner.Out, "- %s\n", name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -285,450 +214,75 @@ func (runner *Runner) QueryObservabilityService(name string) error {
 }
 
 func (runner *Runner) DeleteObservabilityService(name string) error {
-	response, err := runner.API.Delete("/databuses/" + name)
+	response, err := runner.API.Delete("/databuses/" + url.PathEscape(name))
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusNoContent {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintln(runner.Out, "Observability Service deletion started successfully.")
-	_, _ = fmt.Fprintln(runner.Out, "Waiting for deletion to complete... (safe to Ctrl+C)")
-	status, exists, err := runner.waitForDatabusStatusChange(name, "deleting")
+	if err := runner.progress("Observability Service deletion started successfully.\nWaiting for deletion to complete... (safe to Ctrl+C)"); err != nil {
+		return err
+	}
+	resource, err := runner.waitForResourceTerminal(name, "Observability Service", true)
 	if err != nil {
 		return err
 	}
-	if !exists {
-		_, _ = fmt.Fprintln(runner.Out, "Observability Service has been deleted")
-	} else {
-		_, _ = fmt.Fprintf(runner.Out, "Unexpected Observability Service status:  %s\n", status)
-	}
-	return nil
+	return runner.mutationResult(resource, "Observability Service has been deleted")
 }
 
 func (runner *Runner) UpdateObservabilityLink(name string, observabilityServiceName any) error {
-	response, err := runner.API.Patch("/databuses/"+name, map[string]any{"observability_service_name": observabilityServiceName})
+	response, err := runner.API.Patch("/databuses/"+url.PathEscape(name), map[string]any{"observability_service_name": observabilityServiceName})
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		action := "linked"
-		if observabilityServiceName == nil || observabilityServiceName == "" {
-			action = "unlinked"
-		}
-		_, _ = fmt.Fprintf(runner.Out, "Observability Service %s for Databus '%s'\n", action, name)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) DeleteDatabus(name string) error {
-	response, err := runner.API.Delete("/databuses/" + name)
-	if err != nil {
+	if err := checkDatabusMutation(response, http.StatusOK); err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusNoContent {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	action := "linked"
+	if observabilityServiceName == nil || observabilityServiceName == "" {
+		action = "unlinked"
 	}
-	_, _ = fmt.Fprintln(runner.Out, "Databus deletion started successfully.")
-	_, _ = fmt.Fprintln(runner.Out, "Waiting for databus deletion to complete... (safe to Ctrl+C)")
-	status, exists, err := runner.waitForDatabusStatusChange(name, "deleting")
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, _ = fmt.Fprintln(runner.Out, "Databus has been deleted")
-	} else {
-		_, _ = fmt.Fprintf(runner.Out, "Unexpected Databus status:  %s\n", status)
-	}
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "observability_service_name": observabilityServiceName, "status": action}, fmt.Sprintf("Observability Service %s for Databus '%s'", action, name))
 }
 
 func (runner *Runner) UpdateDatabusStatus(name string, status string) error {
-	response, err := runner.API.Patch("/databuses/"+name, map[string]any{"running_status": status})
+	response, err := runner.API.Patch("/databuses/"+url.PathEscape(name), map[string]any{"running_status": status})
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Databus '%s' %sd successfully.\n", name, status)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK); err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "running_status": status, "status": "updated"}, fmt.Sprintf("Databus '%s' %sd successfully.", name, status))
 }
 
-type applicationManifest struct {
-	Port      json.RawMessage `json:"port"`
-	Kind      string          `json:"kind"`
-	TopicData json.RawMessage `json:"topic_data"`
-}
-
-func parseApplicationPort(rawPort json.RawMessage) (int, bool, error) {
-	if len(rawPort) == 0 || string(rawPort) == "null" {
-		return 0, false, nil
-	}
-	var port int
-	if err := json.Unmarshal(rawPort, &port); err == nil {
-		return port, true, nil
-	}
-	var portText string
-	if err := json.Unmarshal(rawPort, &portText); err != nil {
-		return 0, false, fmt.Errorf("port must be a number or numeric string")
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return 0, false, fmt.Errorf("port must be a number or numeric string")
-	}
-	return port, true, nil
-}
-
-func (runner *Runner) CreateApplication(name string, appName string, port int, kind string, configFile string, portOverridden bool) error {
-	var topicData map[string]any
-	if configFile != "" {
-		data, err := runner.ReadFile(configFile)
-		if err != nil {
-			return fmt.Errorf("read application configuration: %w", err)
-		}
-		var manifest applicationManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
-		}
-		kind = manifest.Kind
-		manifestPort, hasManifestPort, err := parseApplicationPort(manifest.Port)
-		if err != nil {
-			return fmt.Errorf("parse application configuration: %w", err)
-		}
-		if hasManifestPort && !portOverridden {
-			port = manifestPort
-		}
-		topicData = map[string]any{}
-		if len(manifest.TopicData) > 0 {
-			if err := json.Unmarshal(manifest.TopicData, &topicData); err != nil || topicData == nil {
-				return fmt.Errorf("application configuration topic_data must be a JSON object")
-			}
-		}
-	}
-	if kind == "" {
-		kind = "app"
-	}
-	if kind == "observability-collector" {
-		kind = "telemetry-service-collector"
-	}
-	if kind != "app" && kind != "gateway" && kind != "telemetry-service-collector" {
-		return fmt.Errorf("invalid application kind %q; expected app, gateway, or observability-collector", kind)
-	}
-	payload := map[string]any{"port": port, "kind": kind}
-	if appName != "" {
-		payload["client_name"] = appName
-	}
-	if configFile != "" {
-		payload["topic_data"] = topicData
-	}
-	response, err := runner.API.Post("/databuses/"+name+"/applications", payload)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusCreated {
-		runner.printResponseBody(body)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) GetApplication(name string, appName string, generateExample bool, forceOverwrite bool, targetDir string, manifestOutput string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	if manifestOutput != "" {
-		clientData, ok := payload["client_data"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("unexpected application configuration for %q", appName)
-		}
-		topicData := map[string]any{}
-		if rawTopics, exists := clientData["topics"]; exists {
-			var topicsOK bool
-			topicData, topicsOK = rawTopics.(map[string]any)
-			if !topicsOK || topicData == nil {
-				return fmt.Errorf("unexpected topic data for application %q", appName)
-			}
-		}
-		manifest := map[string]any{"topic_data": topicData}
-		if kind, ok := clientData["kind"].(string); ok && kind != "" {
-			manifest["kind"] = kind
-		}
-		if rawPort, exists := clientData["port"]; exists {
-			encodedPort, err := json.Marshal(rawPort)
-			if err != nil {
-				return err
-			}
-			port, hasPort, err := parseApplicationPort(encodedPort)
-			if err != nil {
-				return fmt.Errorf("unexpected port for application %q", appName)
-			}
-			if hasPort {
-				manifest["port"] = port
-			}
-		}
-		data, err := json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = runner.SaveClientFile("", manifestOutput, append(data, '\n'), forceOverwrite)
-		return err
-	}
-	clientConfig, _ := payload["client_config"].(string)
-	if clientConfig == "" {
-		_, _ = fmt.Fprintf(runner.Out, "Error: Unexpected application configuration for '%s'\n", appName)
-		return nil
-	}
-	if _, err := runner.SaveClientFile(targetDir, appName+".xml", []byte(clientConfig), forceOverwrite); err != nil {
-		return err
-	}
-	if generateExample {
-		if example, ok := payload["client_example"].(string); ok && example != "" {
-			_, err := runner.SaveClientFile(targetDir, appName+".py", []byte(example), forceOverwrite)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (runner *Runner) DeleteApplication(name string, appName string) error {
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Application '%s' successfully deleted from databus '%s'\n", appName, name)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) ListAppClients(name string, appName string) error {
-	response, err := runner.API.Get("/databuses/" + name + "/applications/" + appName + "/clients")
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload["clients"], "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func CreateClientBundleDirectory(databusName string, appName string, clientName string) (string, error) {
-	if databusName == "" || appName == "" || clientName == "" {
-		return "", fmt.Errorf("databus_name, app_name, and client_name must be provided")
-	}
-	targetDir := fmt.Sprintf("%s-%s-%s", databusName, appName, clientName)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
-	}
-	return targetDir, nil
-}
-
-func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
-	filePath := fileName
-	if targetDir != "" {
-		filePath = filepath.Join(targetDir, fileName)
-	}
-	if _, err := runner.Stat(filePath); err == nil && !forceOverwrite {
-		_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
-		return false, nil
-	}
-	sensitive := strings.HasSuffix(fileName, ".key")
-	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
-		return false, err
-	}
-	_, _ = fmt.Fprintf(runner.Out, "Saved %s\n", filePath)
-	return true, nil
-}
-
-func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
-	for filename, encoded := range secureFiles {
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return err
-		}
-		if _, err := runner.SaveClientFile(targetDir, filename, decoded, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	if len(privateKey) > 0 {
-		if _, err := runner.SaveClientFile(targetDir, "client.key", privateKey, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (runner *Runner) RegisterAppClient(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool) error {
-	if clientID == "" {
-		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
-		return nil
-	}
-	var privateKey []byte
-	var csrPEM string
-	if genPrivateKey {
-		if runner.CSRGenerator == nil {
-			return fmt.Errorf("CSR generator is not configured")
-		}
-		var err error
-		privateKey, csrPEM, err = runner.CSRGenerator(name, appName, clientID)
-		if err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
-	} else {
-		if csrFile == "" {
-			_, _ = fmt.Fprintln(runner.Out, "Error: either --csr-file or --gen-private-key is required")
-			return nil
-		}
-		data, err := runner.ReadFile(csrFile)
-		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
-			return nil
-		}
-		csrPEM = string(data)
-	}
-	response, err := runner.API.Post("/databuses/"+name+"/applications/"+appName+"/clients", map[string]any{"client_id": clientID, "csr": csrPEM})
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
-	}
-	secureFiles := map[string]string{}
-	if rawSecureFiles, ok := payload["secure_files"].(map[string]any); ok {
-		for key, value := range rawSecureFiles {
-			if text, ok := value.(string); ok {
-				secureFiles[key] = text
-			}
-		}
-	}
-	delete(payload, "secure_files")
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
-	if err != nil {
-		return err
-	}
-	if err := runner.GetApplication(name, appName, true, forceOverwrite, targetDir, ""); err != nil {
-		return err
-	}
-	return runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, targetDir)
-}
-
-func (runner *Runner) RevokeAppClient(name string, appName string, clientID string) error {
-	if clientID == "" {
-		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required for revoke")
-		return nil
-	}
-	response, err := runner.API.Delete("/databuses/" + name + "/applications/" + appName + "/clients/" + clientID)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent {
-		_, _ = fmt.Fprintf(runner.Out, "Client '%s' revoked successfully.\n", clientID)
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
-
-func (runner *Runner) ListNetworks() error {
-	response, err := runner.API.Get("/networks")
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return err
-		}
-		formatted, _ := json.MarshalIndent(payload, "", "  ")
-		_, _ = fmt.Fprintln(runner.Out, string(formatted))
-		return nil
-	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
-}
+func (runner *Runner) ListNetworks() error { return runner.getJSON("/networks") }
 
 func (runner *Runner) DeleteNetwork(name string) error {
-	response, err := runner.API.Delete("/networks/" + name)
+	response, err := runner.API.Delete("/networks/" + url.PathEscape(name))
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Network '%s' deleted successfully.\n", name)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	runner.printResponseError("Error: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "status": "deleted"}, fmt.Sprintf("Network '%s' deleted successfully.", name))
 }
 
 func (runner *Runner) UpdateFilters(name string, filterFile string) error {
 	data, err := runner.ReadFile(filterFile)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading filter file: %v\n", err)
-		return nil
+		return invalidInput(fmt.Sprintf("Error reading filter file: %v", err), err)
 	}
 	var filtersData any
 	if err := json.Unmarshal(data, &filtersData); err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error: Invalid JSON in file '%s': %v\n", filterFile, err)
-		return nil
+		return invalidInput(fmt.Sprintf("Invalid JSON in file %q: %v", filterFile, err), err)
+	}
+	switch filtersData.(type) {
+	case map[string]any, []any:
+	default:
+		return invalidInput("Filter file must contain a JSON object or array", nil)
 	}
 	if list, ok := filtersData.([]any); ok {
 		contentFilters := make([]map[string]any, 0)
@@ -751,77 +305,63 @@ func (runner *Runner) UpdateFilters(name string, filterFile string) error {
 		}
 		if allMatch {
 			filtersData = map[string]any{"contentFilters": contentFilters}
-			_, _ = fmt.Fprintln(runner.Out, "Converting JSON file.")
+			if err := runner.progress("Converting JSON file."); err != nil {
+				return err
+			}
 		}
 	}
-	response, err := runner.API.Patch("/databuses/"+name, map[string]any{"persistence_filters": filtersData})
+	response, err := runner.API.Patch("/databuses/"+url.PathEscape(name), map[string]any{"persistence_filters": filtersData})
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "Filters for databus '%s' updated successfully.\n", name)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK); err != nil {
+		return err
 	}
-	runner.printResponseError("Error updating filters: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "persistence_filters": filtersData, "status": "updated"}, fmt.Sprintf("Filters for databus '%s' updated successfully.", name))
 }
 
 func (runner *Runner) AddUserToDatabus(name string, email string) error {
-	response, err := runner.API.Post("/databuses/"+name+"/users/"+email+"/", nil)
+	response, err := runner.API.Post("/databuses/"+url.PathEscape(name)+"/users/"+url.PathEscape(email)+"/", nil)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusCreated {
-		_, _ = fmt.Fprintf(runner.Out, "User '%s' successfully added to databus '%s'\n", email, name)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusCreated); err != nil {
+		return err
 	}
-	runner.printResponseError("Error adding user: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "email": email, "status": "added"}, fmt.Sprintf("User '%s' successfully added to databus '%s'", email, name))
 }
 
 func (runner *Runner) RemoveUserFromDatabus(name string, email string) error {
-	response, err := runner.API.Delete("/databuses/" + name + "/users/" + email + "/")
+	response, err := runner.API.Delete("/databuses/" + url.PathEscape(name) + "/users/" + url.PathEscape(email) + "/")
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode == http.StatusOK {
-		_, _ = fmt.Fprintf(runner.Out, "User '%s' successfully removed from databus '%s'\n", email, name)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	runner.printResponseError("Error removing user: ", response.StatusCode, body)
-	return nil
+	return runner.mutationResult(map[string]any{"name": name, "email": email, "status": "removed"}, fmt.Sprintf("User '%s' successfully removed from databus '%s'", email, name))
 }
 
 func (runner *Runner) GetLicense(expirationDays *int, output string) error {
-	if expirationDays != nil {
-		if *expirationDays < 0 {
-			_, _ = fmt.Fprintln(runner.Out, "Error: expiration-days must be greater than or equal to 0")
-			return nil
-		}
-	}
-	body, statusCode, err := runner.requestLicense(expirationDays)
+	body, err := runner.DownloadLicense(expirationDays)
 	if err != nil {
 		return err
 	}
-	if statusCode != http.StatusOK {
-		runner.printResponseError("Error: ", statusCode, body)
-		return nil
-	}
 	if output == "" {
-		runner.printResponseBody(body)
-		return nil
+		var license any
+		if json.Unmarshal(body, &license) == nil && license != nil {
+			return runner.writeResult(license)
+		}
+		return runner.mutationResult(map[string]any{"license": string(body), "status": "downloaded"}, string(body))
 	}
 	if err := runner.writeOutputFile(output, body, false); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(runner.Out, "License saved to %s\n", output)
-	return nil
+	absolutePath, err := filepath.Abs(output)
+	if err != nil {
+		return err
+	}
+	return runner.mutationResult(map[string]any{"artifact_path": absolutePath, "status": "saved"}, "License saved to "+output)
 }
 
 func (runner *Runner) DownloadLicense(expirationDays *int) ([]byte, error) {
@@ -830,7 +370,7 @@ func (runner *Runner) DownloadLicense(expirationDays *int) ([]byte, error) {
 		return nil, err
 	}
 	if statusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s", httputil.FormatError(statusCode, body))
+		return nil, httputil.NewStatusError(statusCode, body)
 	}
 	return body, nil
 }
@@ -839,7 +379,7 @@ func (runner *Runner) requestLicense(expirationDays *int) ([]byte, int, error) {
 	payload := map[string]any{}
 	if expirationDays != nil {
 		if *expirationDays < 0 {
-			return nil, 0, fmt.Errorf("expiration-days must be greater than or equal to 0")
+			return nil, 0, invalidInput("expiration-days must be greater than or equal to 0", nil)
 		}
 		payload["expiration_days"] = *expirationDays
 	}
@@ -848,8 +388,8 @@ func (runner *Runner) requestLicense(expirationDays *int) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	return body, response.StatusCode, nil
+	body, err := io.ReadAll(response.Body)
+	return body, response.StatusCode, err
 }
 
 // ── Provisioning Service Management ───────────────────────────────────────────────────
@@ -871,61 +411,80 @@ func edgePath(segments ...string) string {
 func (runner *Runner) printJSON(body []byte) error {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid JSON: " + err.Error(), Cause: err}
 	}
-	formatted, _ := json.MarshalIndent(payload, "", "  ")
-	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	return nil
+	if payload == nil {
+		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of a result"}
+	}
+	return runner.writeResult(payload)
 }
 
 // getJSON performs a GET and pretty-prints the response body on HTTP 200.
-// Any other status is reported via printResponseError.
+// Any other status is returned as an HTTP error.
 func (runner *Runner) getJSON(path string) error {
 	response, err := runner.API.Get(path)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	body, err := readResponse(response, http.StatusOK)
+	if err != nil {
+		return err
 	}
 	return runner.printJSON(body)
 }
 
 // postJSON performs a POST and pretty-prints the response body when the
-// response status equals successStatus. Any other status is reported via
-// printResponseError.
+// response status equals successStatus. Any other status is returned as an HTTP error.
 func (runner *Runner) postJSON(path string, payload any, successStatus int) error {
 	response, err := runner.API.Post(path, payload)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != successStatus {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	body, err := readResponse(response, successStatus)
+	if err != nil {
+		return err
+	}
+	// Preserve the backend's IDs and response. An accepted operation is not
+	// claimed to be completed; callers can query it using the returned IDs.
+	if runner.JSON {
+		var result any
+		if len(bytes.TrimSpace(body)) != 0 {
+			if err := json.Unmarshal(body, &result); err != nil {
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned invalid JSON: " + err.Error(), Cause: err}
+			}
+			if result == nil {
+				return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API returned null instead of a result"}
+			}
+		}
+		status := "created"
+		if successStatus == http.StatusAccepted {
+			status = "accepted"
+		}
+		data := map[string]any{"path": path, "status": status, "resource": result}
+		if request, ok := payload.(map[string]any); ok {
+			if name, ok := request["name"]; ok {
+				data["name"] = name
+			}
+			if domainID, ok := request["domainId"]; ok {
+				data["domain_id"] = domainID
+			}
+		}
+		return runner.writeResult(data)
 	}
 	return runner.printJSON(body)
 }
 
-// deleteWithMessage performs a DELETE and prints okMsg on HTTP 200.
-// Any other status is reported via printResponseError.
+// deleteWithMessage accepts HTTP 200 or 204 as confirmation of deletion.
+// Other statuses are returned as HTTP errors.
 func (runner *Runner) deleteWithMessage(path string, okMsg string) error {
 	response, err := runner.API.Delete(path)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		runner.printResponseError("Error: ", response.StatusCode, body)
-		return nil
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintln(runner.Out, okMsg)
-	return nil
+	return runner.mutationResult(map[string]any{"path": path, "status": "deleted"}, okMsg)
 }
 
 func (runner *Runner) ListEdgeSystems() error {
@@ -954,8 +513,7 @@ func (runner *Runner) DeleteEdgeSystem(name string) error {
 func (runner *Runner) CreateGovernanceTemplate(edgeSystem string, name string, xmlFile string) error {
 	data, err := runner.ReadFile(xmlFile)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading governance XML file: %v\n", err)
-		return nil
+		return invalidInput(fmt.Sprintf("Error reading governance XML: %v", err), err)
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
 	return runner.postJSON(edgePath("edge-systems", edgeSystem, "governance-templates"), payload, http.StatusCreated)
@@ -975,8 +533,7 @@ func (runner *Runner) DeleteGovernanceTemplate(edgeSystem string, templateName s
 func (runner *Runner) CreatePermissionsTemplate(edgeSystem string, name string, xmlFile string) error {
 	data, err := runner.ReadFile(xmlFile)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading permissions XML file: %v\n", err)
-		return nil
+		return invalidInput(fmt.Sprintf("Error reading permissions XML: %v", err), err)
 	}
 	payload := map[string]any{"name": name, "xmlContent": string(data)}
 	return runner.postJSON(edgePath("edge-systems", edgeSystem, "permissions-templates"), payload, http.StatusCreated)
@@ -1023,8 +580,7 @@ func (runner *Runner) CreateDomainTemplate(edgeSystem string, domainID int, gove
 	if customGovernanceFile != "" {
 		data, err := runner.ReadFile(customGovernanceFile)
 		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error reading custom governance XML file: %v\n", err)
-			return nil
+			return invalidInput(fmt.Sprintf("Error reading custom governance XML file: %v", err), err)
 		}
 		payload["customGovernanceXml"] = string(data)
 		if customGovernanceName != "" {
@@ -1239,21 +795,21 @@ func parseDevicesFromCSV(data []byte) ([]any, error) {
 func (runner *Runner) CreateCampaign(edgeSystem string, participantID string, enrollmentList string, domainTemplateID string) error {
 	data, err := runner.ReadFile(enrollmentList)
 	if err != nil {
-		_, _ = fmt.Fprintf(runner.Out, "Error reading enrollment list: %v\n", err)
-		return nil
+		return invalidInput(fmt.Sprintf("Error reading enrollment list: %v", err), err)
 	}
 	var devices []any
 	if strings.HasSuffix(strings.ToLower(enrollmentList), ".csv") {
 		devices, err = parseDevicesFromCSV(data)
 		if err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid CSV in file '%s': %v\n", enrollmentList, err)
-			return nil
+			return invalidInput(fmt.Sprintf("Invalid CSV in file %q: %v", enrollmentList, err), err)
 		}
 	} else {
 		if err := json.Unmarshal(data, &devices); err != nil {
-			_, _ = fmt.Fprintf(runner.Out, "Error: Invalid JSON in file '%s': %v\n", enrollmentList, err)
-			return nil
+			return invalidInput(fmt.Sprintf("Invalid JSON in file %q: %v", enrollmentList, err), err)
 		}
+	}
+	if devices == nil {
+		return invalidInput("Enrollment list must contain a JSON array or CSV records, not null", nil)
 	}
 	payload := map[string]any{"devices": devices, "domainTemplateId": domainTemplateID}
 	if participantID != "" {
@@ -1282,9 +838,15 @@ func (runner *Runner) ListEdgeDevices(edgeSystem string) error {
 }
 
 func (runner *Runner) RevokeDevice(edgeSystem string, participantID string, campaignID string, serial string) error {
-	return runner.deleteWithMessage(
-		edgePath("edge-systems", edgeSystem, "participants", participantID, "campaigns", campaignID, "devices", serial),
-		fmt.Sprintf("Device '%s' revoked successfully.", serial))
+	path := edgePath("edge-systems", edgeSystem, "participants", participantID, "campaigns", campaignID, "devices", serial)
+	response, err := runner.API.Delete(path)
+	if err != nil {
+		return err
+	}
+	if err := checkDatabusMutation(response, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
+	}
+	return runner.mutationResult(map[string]any{"path": path, "serial": serial, "status": "revoked"}, fmt.Sprintf("Device '%s' revoked successfully.", serial))
 }
 
 // EnrollDevice enrolls a device with the Provisioning Service and persists
