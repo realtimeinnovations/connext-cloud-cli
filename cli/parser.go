@@ -925,8 +925,8 @@ Formatting:
 	}
 
 	{ // get
-		var name, appName, output string
-		var example, force, manifest, zipOutput bool
+		var name, appName, output, targetDir string
+		var example, force, manifest, zipOutput, qos, types, generated bool
 		c := &cobra.Command{
 			Use:   "get",
 			Short: "Get a Databus application",
@@ -941,14 +941,18 @@ Formatting:
 				if output != "" && example {
 					return argumentError("--example cannot be used with --output")
 				}
-				if output != "" && (manifest || zipOutput) {
+				if output != "" && (manifest || zipOutput || qos || types || generated || targetDir != "") {
 					return argumentError("--output cannot be combined with artifact flags")
 				}
-				if zipOutput && (example || manifest) {
-					return argumentError("--zip cannot be combined with --example or --manifest")
+				if zipOutput && (example || manifest || qos || types || generated) {
+					return argumentError("--zip cannot be combined with other artifact flags")
 				}
 				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
 					GenerateExample: example,
+					QoS:             qos,
+					Types:           types,
+					Generated:       generated,
+					TargetDir:       targetDir,
 					IncludeManifest: manifest,
 					ZIP:             zipOutput,
 					ForceOverwrite:  force,
@@ -958,11 +962,15 @@ Formatting:
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application name")
-		c.Flags().BoolVar(&example, "example", false, "Include example configuration")
+		c.Flags().BoolVar(&example, "example", false, "Download the full example; preserve existing example files unless --force is set")
 		c.Flags().StringVarP(&output, "output", "o", "", "Export application configuration JSON to this file")
 		c.Flags().BoolVar(&manifest, "manifest", false, "Also write the manager-provided manifest")
-		c.Flags().BoolVar(&zipOutput, "zip", false, "Package XML, example, and manifest as a ZIP instead of individual files")
+		c.Flags().BoolVar(&zipOutput, "zip", false, "Package the full example and generated artifacts as a ZIP")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
+		c.Flags().BoolVar(&qos, "qos", false, "Refresh only generated QoS")
+		c.Flags().BoolVar(&types, "types", false, "Refresh only generated types from the saved snapshot")
+		c.Flags().BoolVar(&generated, "generated", false, "Refresh generated QoS and types, preserving examples and credentials (default)")
+		c.Flags().StringVar(&targetDir, "target-dir", "", "Bundle directory to download into or refresh")
 		cmd.AddCommand(c)
 	}
 

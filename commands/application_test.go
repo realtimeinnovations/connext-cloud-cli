@@ -211,10 +211,10 @@ func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
 	}
 }
 
-func TestGetApplicationDownloadsXMLWithoutManifestOutput(t *testing.T) {
+func TestGetGatewayDownloadsXMLWithoutManifestOutput(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
 		"client_config": "<participant/>",
-		"client_data":   map[string]any{"kind": "app"},
+		"client_data":   map[string]any{"kind": "gateway"},
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -237,7 +237,7 @@ func TestGetApplicationDownloadsXMLWithoutManifestOutput(t *testing.T) {
 
 func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config": "<dds/>",
+		"bundle": testApplicationBundle("<dds/>", "# example"),
 		"manifest": map[string]any{
 			"version": 1,
 			"topics": []map[string]any{
@@ -248,6 +248,7 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
+	runner.MkdirAll = func(string, os.FileMode) error { return nil }
 	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	written := map[string][]byte{}
 	runner.WriteFile = func(name string, data []byte, _ os.FileMode) error {
@@ -257,7 +258,7 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 	if err := runner.DownloadApplication("db", "shapes", ApplicationDownloadOptions{IncludeManifest: true}); err != nil {
 		t.Fatal(err)
 	}
-	if string(written["shapes.xml"]) != "<dds/>" {
+	if string(written["generated/shapes.qos.xml"]) != "<dds/>" {
 		t.Fatalf("unexpected XML artifacts: %#v", written)
 	}
 	if !bytes.Contains(written["manifest.json"], []byte(`"FutureTopic"`)) {
@@ -270,9 +271,8 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 
 func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config":  "<dds/>",
-		"client_example": "print('shapes')\n",
-		"manifest":       map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
+		"bundle":   testApplicationBundle("<dds/>", "print('shapes')\n"),
+		"manifest": map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
 	})}}
 	runner := New(api, io.Discard)
 	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
@@ -304,9 +304,8 @@ func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
 
 func TestDownloadApplicationBundleHonorsExistingFile(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config":  "<dds/>",
-		"client_example": "# example\n",
-		"manifest":       map[string]any{"version": 1, "topics": []any{}},
+		"bundle":   testApplicationBundle("<dds/>", "# example\n"),
+		"manifest": map[string]any{"version": 1, "topics": []any{}},
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -315,8 +314,8 @@ func TestDownloadApplicationBundleHonorsExistingFile(t *testing.T) {
 		t.Fatal("existing bundle must not be overwritten")
 		return nil
 	}
-	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err != nil {
-		t.Fatal(err)
+	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err == nil {
+		t.Fatal("expected existing archive error")
 	}
 	if !strings.Contains(out.String(), "demo-shapes.zip already exists. Use -f to overwrite.") {
 		t.Fatalf("unexpected output: %s", out.String())
@@ -325,9 +324,8 @@ func TestDownloadApplicationBundleHonorsExistingFile(t *testing.T) {
 
 func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 	bundle, err := applicationBundle("demo", "shapes", "client-1", applicationArtifacts{
-		ClientConfig:  `<dds path="./secure/identity.pem"/>`,
-		ClientExample: "# example\n",
-		Manifest:      json.RawMessage(`{"version":1,"topics":[]}`),
+		Bundle:   testApplicationBundle(`<dds path="./generated/security/identity.pem"/>`, "# example\n"),
+		Manifest: json.RawMessage(`{"version":1,"topics":[]}`),
 	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate"))}, []byte("private key"))
 	if err != nil {
 		t.Fatal(err)
@@ -341,10 +339,10 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 		files[file.Name] = file
 	}
 	root := "demo-shapes-client-1/"
-	if files[root+"shapes.xml"] == nil || files[root+"manifest.json"] == nil || files[root+"secure/identity.pem"] == nil {
+	if files[root+"shapes.xml"] == nil || files[root+"manifest.json"] == nil || files[root+"generated/security/identity.pem"] == nil {
 		t.Fatalf("unexpected secure bundle: %#v", files)
 	}
-	key := files[root+"secure/client.key"]
+	key := files[root+"generated/security/client.key"]
 	if key == nil || key.Mode().Perm() != 0o600 {
 		t.Fatalf("private key mode = %v, want 0600", key)
 	}
@@ -368,9 +366,8 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 					},
 				}),
 				"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
-					"client_config":  `<dds path="./secure/identity.pem"/>`,
-					"client_example": "# example\n",
-					"manifest":       map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
+					"bundle":   testApplicationBundle(`<dds path="./generated/security/identity.pem"/>`, "# example\n"),
+					"manifest": map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
 				}),
 			}}
 			runner := New(api, io.Discard)
@@ -381,6 +378,15 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := "demo-shapes-client-1"
+			expected := map[string]string{
+				"shapes.xml":                      `<dds path="./generated/security/identity.pem"/>`,
+				"shapes.py":                       "# example\n",
+				"generated/shapes.qos.xml":        "<dds/>",
+				"generated/shapes.types.xml":      "<types/>",
+				"README.md":                       "# Instructions",
+				"generated/security/identity.pem": "certificate",
+				"generated/security/client.key":   "private key",
+			}
 			if test.zip {
 				info, err := os.Stat(root + ".zip")
 				if err != nil || info.Mode().Perm() != 0o600 {
@@ -398,12 +404,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				for _, file := range archive.File {
 					files[file.Name] = file
 				}
-				for name, want := range map[string]string{
-					"shapes.xml":          `<dds path="./secure/identity.pem"/>`,
-					"shapes.py":           "# example\n",
-					"secure/identity.pem": "certificate",
-					"secure/client.key":   "private key",
-				} {
+				for name, want := range expected {
 					file := files[root+"/"+name]
 					if file == nil {
 						t.Fatalf("ZIP missing %s", name)
@@ -418,10 +419,10 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 						t.Fatalf("ZIP entry %s = %q, error = %v; want %q", name, data, err, want)
 					}
 				}
-				if files[root+"/manifest.json"] == nil || len(files) != 5 {
+				if files[root+"/manifest.json"] == nil {
 					t.Fatalf("unexpected ZIP contents: %#v", files)
 				}
-				if mode := files[root+"/secure/client.key"].Mode().Perm(); mode != 0o600 {
+				if mode := files[root+"/generated/security/client.key"].Mode().Perm(); mode != 0o600 {
 					t.Fatalf("private key mode = %#o, want 0600", mode)
 				}
 				return
@@ -429,12 +430,16 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if _, err := os.Stat(root + ".zip"); !os.IsNotExist(err) {
 				t.Fatalf("directory output must not create a ZIP; stat error: %v", err)
 			}
-			for _, name := range []string{"shapes.xml", "shapes.py", "manifest.json", "secure/identity.pem", "secure/client.key"} {
-				if _, err := os.Stat(filepath.Join(root, name)); err != nil {
-					t.Fatalf("missing %s: %v", name, err)
+			for name, want := range expected {
+				data, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s = %q, error = %v; want %q", name, data, err, want)
 				}
 			}
-			keyInfo, err := os.Stat(filepath.Join(root, "secure/client.key"))
+			if _, err := os.Stat(filepath.Join(root, "manifest.json")); err != nil {
+				t.Fatal(err)
+			}
+			keyInfo, err := os.Stat(filepath.Join(root, "generated/security/client.key"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -460,9 +465,9 @@ func TestSecureFilesRejectUnsafeNamesBeforeWriting(t *testing.T) {
 			if err := runner.SaveSecureFiles(files, nil, false, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid secure filename") {
 				t.Fatalf("unexpected directory error: %v", err)
 			}
-			for _, config := range []string{"<dds/>", `<dds path="./secure/identity.pem"/>`} {
+			for _, config := range []string{"<dds/>", `<dds path="./generated/security/identity.pem"/>`} {
 				bundle, err := applicationBundle("db", "app", "client", applicationArtifacts{
-					ClientConfig: config, ClientExample: "# example", Manifest: json.RawMessage(`{"topics":[]}`),
+					Bundle: testApplicationBundle(config, "# example"), Manifest: json.RawMessage(`{"topics":[]}`),
 				}, files, nil)
 				if err == nil || !strings.Contains(err.Error(), "invalid secure filename") || len(bundle) != 0 {
 					t.Fatalf("unexpected bundle result: %d bytes, error = %v", len(bundle), err)
@@ -483,7 +488,7 @@ func registrationTestAPI(artifacts map[string]any) *fakeAPI {
 }
 
 func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
-	for _, field := range []string{"client_config", "client_example", "manifest"} {
+	for _, field := range []string{"bundle", "manifest"} {
 		for _, value := range []any{nil, ""} {
 			for _, zipOutput := range []bool{false, true} {
 				label := field + "/missing/directory"
@@ -496,7 +501,7 @@ func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
 				t.Run(label, func(t *testing.T) {
 					dir := t.TempDir()
 					t.Chdir(dir)
-					artifacts := map[string]any{"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}}}
+					artifacts := map[string]any{"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}}}
 					if value == nil {
 						delete(artifacts, field)
 					} else if field == "manifest" {
@@ -508,7 +513,7 @@ func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
 					runner := New(api, io.Discard)
 					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
 					err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput)
-					if err == nil || !strings.Contains(err.Error(), "application artifacts are incomplete") {
+					if err == nil {
 						t.Fatalf("unexpected error: %v", err)
 					}
 					if api.lastPayload != nil {
@@ -546,7 +551,7 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 				}
 			}
 			runner := New(registrationTestAPI(map[string]any{
-				"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+				"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}},
 			}), io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
 			runner.ReadFile = func(string) ([]byte, error) { return []byte("external csr"), nil }

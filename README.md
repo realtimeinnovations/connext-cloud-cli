@@ -104,3 +104,59 @@ dashboard:
   Artifact renewal still happens automatically; add participants with
   `rticloud agent enroll`.
 - **Stopping the agent.** Use Ctrl+C to stop the agent.
+
+## Cloud application downloads
+
+Download a full editable example (XML, Python, README, manifest, generated QoS and types):
+
+```sh
+rticloud databus app get --name demo --app-name shapes --example --target-dir ./shapes
+```
+
+The root XML and Python files belong to you. The XML wraps the generated base QoS
+profiles so you can add overrides while retaining the platform's connection settings.
+The Python example loads generated QoS first and resolves paths from its own location.
+
+```text
+shapes/
+  README.md
+  shapes.xml
+  shapes.py
+  manifest.json
+  generated/
+    shapes.qos.xml
+    shapes.types.xml
+    security/          # Added only by client registration
+```
+
+Refresh only generated artifacts in an existing bundle, preserving all example edits
+and client credentials:
+
+```sh
+rticloud databus app get --name demo --app-name shapes --generated --target-dir ./shapes
+rticloud databus app get --name demo --app-name shapes --qos --target-dir ./shapes
+rticloud databus app get --name demo --app-name shapes --types --target-dir ./shapes
+```
+
+Without artifact flags, `app get` refreshes generated QoS and types. `--types` uses
+the application's saved type snapshot; it does not trigger live discovery.
+`--example` also creates missing example files and preserves existing examples.
+Use `--example --force` to explicitly replace edited examples. `--manifest` also
+refreshes the manager-provided topic manifest.
+
+Use `--zip` instead of other artifact flags to download the full example as an
+archive. Secured applications need registration to receive credentials:
+
+```sh
+rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key
+```
+
+Registration creates `demo-shapes-shapes-1/` with the same layout and credentials
+under `generated/security/`. Add `--zip` for an archive. Private keys and PSKs keep
+mode 0600, including inside ZIPs. Ordinary QoS/types refreshes never rotate or
+replace credentials. Existing registration destinations or ZIPs require `--force`.
+
+Cloud application downloads require the structured bundle response. Missing or
+unsupported bundles fail before files are written or credentials are issued.
+There is no fallback to the old flat layout. Update both manager and CLI to use
+this feature; older CLIs fail their existing artifact checks against the new API.

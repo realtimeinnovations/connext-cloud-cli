@@ -21,6 +21,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
 
@@ -300,7 +301,7 @@ func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{[]string{"databus", "app", "get", "--help"}, []string{"--manifest", "--zip", "Export application configuration JSON"}},
+		{[]string{"databus", "app", "get", "--help"}, []string{"--qos", "--types", "--generated", "--target-dir", "--manifest", "--zip"}},
 		{[]string{"databus", "app", "client", "register", "--help"}, []string{"--zip"}},
 		{[]string{"databus", "topic", "get", "--help"}, []string{"--topic", "--type-xml"}},
 	} {
@@ -316,21 +317,21 @@ func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
 	}
 }
 
-func TestParserRejectsConflictingApplicationZIPFlags(t *testing.T) {
-	for _, test := range []struct {
-		flags []string
-		want  string
-	}{
-		{[]string{"--zip", "--example"}, "--zip cannot be combined with --example or --manifest"},
-		{[]string{"--zip", "--manifest"}, "--zip cannot be combined with --example or --manifest"},
-		{[]string{"--zip", "--output", "application.json"}, "--output cannot be combined with artifact flags"},
-		{[]string{"--bundle"}, "unknown flag: --bundle"},
+func TestParserRejectsConflictingApplicationArtifactFlags(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--zip", "--example"},
+		{"--zip", "--manifest"},
+		{"--zip", "--qos"},
+		{"--zip", "--types"},
+		{"--zip", "--generated"},
+		{"--types", "--output", "application.json"},
+		{"--zip", "--output", "application.json"},
 	} {
-		t.Run(strings.Join(test.flags, " "), func(t *testing.T) {
-			args := append([]string{"databus", "app", "get", "--name", "db", "--app-name", "shapes"}, test.flags...)
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			args := append([]string{"databus", "app", "get", "--name", "db", "--app-name", "shapes"}, flags...)
 			err := Execute(args, io.Discard, io.Discard, nil)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("unexpected error: %v; want %q", err, test.want)
+			if err == nil || clierror.From(err).Code != clierror.CodeInvalidArgument {
+				t.Fatalf("expected invalid-argument error, got %v", err)
 			}
 		})
 	}

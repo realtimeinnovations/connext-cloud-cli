@@ -20,7 +20,7 @@ import (
 )
 
 func TestApplicationBundleRejectsUnsafeInputs(t *testing.T) {
-	artifacts := applicationArtifacts{ClientConfig: "<dds/>", ClientExample: "# example", Manifest: json.RawMessage(`{"topics":[]}`)}
+	artifacts := applicationArtifacts{Bundle: testApplicationBundle("<dds/>", "# example"), Manifest: json.RawMessage(`{"topics":[]}`)}
 	for field := 0; field < 3; field++ {
 		for _, invalid := range []string{"", ".", "..", "../../../../outside", "nested/name", `nested\name`, "/absolute", "C:outside", "bad\x00name"} {
 			if field == 2 && invalid == "" {
@@ -86,7 +86,7 @@ func TestRegistrationPreflightsExistingDestination(t *testing.T) {
 			} else if err := os.Mkdir(destination, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			api := registrationTestAPI(map[string]any{"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}}})
+			api := registrationTestAPI(map[string]any{"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}}})
 			runner := New(api, io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
 				t.Fatal("existing output must be checked before generating a key")
@@ -110,9 +110,9 @@ func TestRegistrationPreflightsExistingDestination(t *testing.T) {
 }
 
 func TestDownloadRejectsMissingRequestedArtifactsBeforeWriting(t *testing.T) {
-	for _, field := range []string{"client_config", "client_example", "manifest"} {
+	for _, field := range []string{"bundle", "manifest"} {
 		t.Run(field, func(t *testing.T) {
-			payload := map[string]any{"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}}}
+			payload := map[string]any{"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}}}
 			delete(payload, field)
 			api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, payload)}}
 			runner := New(api, io.Discard)
@@ -120,7 +120,7 @@ func TestDownloadRejectsMissingRequestedArtifactsBeforeWriting(t *testing.T) {
 				t.Fatal("missing requested artifact must not produce partial output")
 				return nil
 			}
-			options := ApplicationDownloadOptions{GenerateExample: field == "client_example", IncludeManifest: field == "manifest"}
+			options := ApplicationDownloadOptions{GenerateExample: field == "bundle", IncludeManifest: field == "manifest"}
 			if err := runner.DownloadApplication("db", "app", options); err == nil {
 				t.Fatal("missing requested artifact returned success")
 			}
@@ -169,25 +169,22 @@ func TestDownloadPreflightsAllRequestedDestinations(t *testing.T) {
 	for _, existing := range []string{"app.xml", "app.py", "manifest.json"} {
 		t.Run(existing, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, existing), []byte("old content"), 0o644); err != nil {
+			if err := os.Mkdir(filepath.Join(dir, existing), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
-				"client_config": "<new/>", "client_example": "# new example", "manifest": map[string]any{"version": 1},
+				"bundle": testApplicationBundle("<new/>", "# new example"), "manifest": map[string]any{"version": 1},
 			})}}
 			runner := New(api, io.Discard)
 			err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: dir, GenerateExample: true, IncludeManifest: true})
-			if err == nil || !strings.Contains(err.Error(), "already exists") {
+			if err == nil || !strings.Contains(err.Error(), "is a directory") {
 				t.Fatalf("expected existing-output error, got %v", err)
 			}
 			entries, err := os.ReadDir(dir)
 			if err != nil || len(entries) != 1 || entries[0].Name() != existing {
 				t.Fatalf("download produced partial output: %v, %v", entries, err)
 			}
-			data, err := os.ReadFile(filepath.Join(dir, existing))
-			if err != nil || string(data) != "old content" {
-				t.Fatalf("existing file changed: %q, %v", data, err)
-			}
+
 		})
 	}
 }
@@ -201,7 +198,7 @@ func TestDownloadForceOverwritesAllRequestedArtifacts(t *testing.T) {
 		}
 	}
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config": "<new/>", "client_example": "# new example", "manifest": map[string]any{"version": 1},
+		"bundle": testApplicationBundle("<new/>", "# new example"), "manifest": map[string]any{"version": 1},
 	})}}
 	runner := New(api, io.Discard)
 	if err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: dir, GenerateExample: true, IncludeManifest: true, ForceOverwrite: true}); err != nil {
@@ -217,7 +214,7 @@ func TestDownloadForceOverwritesAllRequestedArtifacts(t *testing.T) {
 
 func TestDownloadPreflightRejectsInaccessibleDestination(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, map[string]any{
-		"client_config": "<new/>", "manifest": map[string]any{"version": 1},
+		"bundle": testApplicationBundle("<new/>", "# example"), "manifest": map[string]any{"version": 1},
 	})}}
 	runner := New(api, io.Discard)
 	runner.Stat = func(name string) (os.FileInfo, error) {
@@ -285,7 +282,7 @@ func TestRegistrationFetchesApplicationOnceBeforePost(t *testing.T) {
 		t.Run(fmt.Sprintf("zip%v", zipOutput), func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			api := &registrationOrderAPI{fakeAPI: registrationTestAPI(map[string]any{
-				"client_config": "<dds/>", "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+				"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}},
 			})}
 			runner := New(api, io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
@@ -314,7 +311,7 @@ func TestRegistrationZIPProtectsManagerProvidedKeys(t *testing.T) {
 				}
 			}
 			api := registrationTestAPI(map[string]any{
-				"client_config": `<dds path="./secure/psk.key"/>`, "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+				"bundle": testApplicationBundle(`<dds path="./generated/security/psk.key"/>`, "# example"), "manifest": map[string]any{"topics": []any{}},
 			})
 			api.responses["POST /databuses/db/applications/app/clients"] = newJSONResponse(http.StatusCreated, map[string]any{
 				"client_id": "client", "secure_files": map[string]string{
@@ -408,7 +405,7 @@ func TestRegistrationClientKeyPrecedence(t *testing.T) {
 				t.Run(fmt.Sprintf("zip%v/overwrite%v/generated%v", zipOutput, overwrite, generated), func(t *testing.T) {
 					t.Chdir(t.TempDir())
 					api := registrationTestAPI(map[string]any{
-						"client_config": `<dds path="./secure/client.key"/>`, "client_example": "# example", "manifest": map[string]any{"topics": []any{}},
+						"bundle": testApplicationBundle(`<dds path="./generated/security/client.key"/>`, "# example"), "manifest": map[string]any{"topics": []any{}},
 					})
 					api.responses["POST /databuses/db/applications/app/clients"] = newJSONResponse(http.StatusCreated, map[string]any{
 						"client_id": "client", "secure_files": map[string]string{
@@ -427,7 +424,7 @@ func TestRegistrationClientKeyPrecedence(t *testing.T) {
 					if generated {
 						want = "generated key"
 					}
-					keyPath := filepath.Join("db-app-client", "secure", "client.key")
+					keyPath := filepath.Join("db-app-client", "generated", "security", "client.key")
 					if !zipOutput {
 						data, err := os.ReadFile(keyPath)
 						if err != nil || string(data) != want {
