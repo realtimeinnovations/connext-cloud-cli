@@ -887,10 +887,29 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("app", "Manage Databus applications")
 	cmd.Long = `Manage Databus applications.
 
+Cloud application flow:
+  1. For a secured application, use app client register to download a runnable
+     bundle with generated QoS, types, and client credentials.
+  2. Extract ZIP downloads and customize the root application XML and Python.
+  3. Use app get --generated --target-dir <bundle-directory> to refresh QoS
+     and types while preserving your example edits and security files.
+
+  app get --example downloads the full example as a directory; --zip downloads
+  an example archive. These downloads contain no credentials. Unsecured
+  applications can run them directly; secured applications need registration.
+  Use app get --qos or --types to refresh one generated artifact.
+
 Formatting:
   create and delete support --format json for versioned results and errors.
   JSON mode disables interaction. get retains its existing file output.`
-	cmd.Example = "  rticloud databus app create --name demo --app-name subscriber --format json"
+	cmd.Example = `  # Secured application: register a client and download the full bundle
+  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --zip
+
+  # Refresh generated QoS and types in the extracted bundle
+  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1
+
+  # Download an example ZIP without client credentials
+  rticloud databus app get --name demo --app-name shapes --zip`
 
 	{ // create
 		var name, appName, kind, configFile string
@@ -929,8 +948,23 @@ Formatting:
 		var example, force, manifest, zipOutput, qos, types, generated bool
 		c := &cobra.Command{
 			Use:   "get",
-			Short: "Get a Databus application",
-			Args:  cobra.NoArgs,
+			Short: "Download application artifacts or refresh generated QoS and types",
+			Long: `Download application artifacts or refresh an existing cloud application bundle.
+
+For cloud applications, get downloads generated QoS and types by default.
+--qos and --types select one artifact; --example also downloads editable XML,
+Python, README, and a manifest; --zip packages the full example as an archive.
+
+Use --target-dir to refresh an existing bundle. Generated files are replaced;
+example edits and security files are preserved. --example --force explicitly
+replaces editable examples.
+
+get does not issue or download client credentials. For a runnable secured
+bundle, use app client register --gen-private-key, optionally with --zip.`,
+			Example: `  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1
+  rticloud databus app get --name demo --app-name shapes --example --target-dir ./shapes
+  rticloud databus app get --name demo --app-name shapes --types --target-dir ./shapes`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return argumentError("--name is required")
@@ -1036,8 +1070,22 @@ Formatting:
 		var genPrivateKey, force, zipOutput bool
 		c := &cobra.Command{
 			Use:   "register",
-			Short: "Register an application client",
-			Args:  cobra.NoArgs,
+			Short: "Register a client and download its bundle with credentials",
+			Long: `Register a client and download its application bundle with security credentials.
+
+For a cloud application, the bundle contains editable XML and Python examples,
+a README, a manifest, generated QoS and types, and credentials under
+generated/security/. The default output is a directory named
+<databus>-<application>-<client-id>; --zip creates an archive instead.
+
+Use --gen-private-key to generate the client's private key and CSR, or --csr-file
+to supply your own CSR. When supplying a CSR, keep its matching private key.
+
+After customizing the example, use app get --generated --target-dir <bundle-directory>
+to refresh QoS and types while preserving your edits and credentials.`,
+			Example: `  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --zip
+  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return argumentError("--name is required")
