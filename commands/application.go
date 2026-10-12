@@ -604,6 +604,34 @@ func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey 
 	return nil
 }
 
+// Validate all existing bundle destinations before creating client credentials.
+func validateClientBundlePaths(destination, appName string, bundle *applicationBundleV2) error {
+	paths := []string{"manifest.json", filepath.Join("generated", "security")}
+	for name := range bundle.files(appName) {
+		paths = append(paths, name)
+	}
+	for _, name := range paths {
+		if err := rtipaths.ValidateManagedPath(destination, filepath.Join(destination, name)); err != nil {
+			return err
+		}
+	}
+	securityDir := filepath.Join(destination, "generated", "security")
+	entries, err := os.ReadDir(securityDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Security filenames come from registration, so check existing entries too.
+	for _, entry := range entries {
+		if err := rtipaths.ValidateManagedPath(destination, filepath.Join(securityDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool, zipOutput bool) error {
 	if clientID == "" {
 		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
@@ -615,6 +643,9 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	destination := name + "-" + appName + "-" + clientID
 	if zipOutput {
 		destination += ".zip"
+	}
+	if err := rtipaths.ValidateManagedPath(".", destination); err != nil {
+		return err
 	}
 	if info, err := runner.Stat(destination); err == nil {
 		if zipOutput == info.IsDir() {
@@ -635,6 +666,11 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	}
 	if err := artifacts.validateComplete(); err != nil {
 		return err
+	}
+	if !zipOutput {
+		if err := validateClientBundlePaths(destination, appName, artifacts.Bundle); err != nil {
+			return err
+		}
 	}
 	manifest, err := formatJSON(artifacts.Manifest)
 	if err != nil {

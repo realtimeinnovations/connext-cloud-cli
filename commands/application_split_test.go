@@ -233,3 +233,62 @@ func TestSplitRefreshRejectsSymlinkedDestinations(t *testing.T) {
 		})
 	}
 }
+
+func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *testing.T) {
+	cases := []struct {
+		name, link, external string
+		directory, zip       bool
+	}{
+		{"bundle", "", "generated/security/client.key", true, false},
+		{"generated", "generated", "security/client.key", true, false},
+		{"security", "generated/security", "client.key", true, false},
+		{"private-key", "generated/security/client.key", "client.key", false, false},
+		{"application", "app.xml", "app.xml", false, false},
+		{"archive", "", "bundle.zip", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			outside := t.TempDir()
+			external := filepath.Join(outside, tc.external)
+			if err := os.MkdirAll(filepath.Dir(external), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(external, []byte("external content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			destination := "db-app-client"
+			if tc.zip {
+				destination += ".zip"
+			}
+			link := filepath.Join(destination, tc.link)
+			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := external
+			if tc.directory {
+				target = outside
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlink creation unavailable: %v", err)
+			}
+			api := splitAPI()
+			runner := New(api, io.Discard)
+			generatedKey := false
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
+				generatedKey = true
+				return []byte("new private key"), "CSR", nil
+			}
+
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, true, tc.zip); err == nil {
+				t.Error("registration accepted a symlinked output")
+			}
+			if generatedKey || api.lastPayload != nil {
+				t.Error("unsafe output caused key generation or client registration")
+			}
+			if data, err := os.ReadFile(external); err != nil || string(data) != "external content" {
+				t.Errorf("registration changed the external file: %q, %v", data, err)
+			}
+		})
+	}
+}
