@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 )
 
 type Kind uint8
@@ -95,7 +94,9 @@ func Inspect(path string, kind Kind) (os.FileInfo, error) {
 		}
 		if i > 0 || kind == Directory {
 			if !info.IsDir() {
-				return nil, &os.PathError{Op: "validate output", Path: current, Err: syscall.ENOTDIR}
+				// Windows treats ENOTDIR as not-exist. This is a policy
+				// rejection, never a missing path permitted by preflight.
+				return nil, &os.PathError{Op: "validate output", Path: current, Err: fmt.Errorf("not a directory: %w", os.ErrInvalid)}
 			}
 		} else if !info.Mode().IsRegular() && !(kind == FileOrDirectory && info.IsDir()) {
 			return nil, &os.PathError{Op: "validate output", Path: current, Err: fmt.Errorf("not a regular file: %w", os.ErrInvalid)}
@@ -147,7 +148,8 @@ func MkdirAll(path string, mode os.FileMode) error {
 
 // WriteFile replaces or creates a regular file. Callers own whether replacement
 // is appropriate (force, generated refresh, or editable-example preservation).
-// Private modes apply before publication, including when replacing public files.
+// POSIX permission modes apply before publication, including on replacement.
+// Windows access control follows inherited ACLs, not POSIX permission bits.
 func WriteFile(path string, data []byte, mode os.FileMode) error {
 	return Copy(path, bytes.NewReader(data), mode)
 }

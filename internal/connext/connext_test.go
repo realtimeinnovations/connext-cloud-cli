@@ -165,7 +165,7 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 		if !strings.HasSuffix(packagePath, "arm64Darwin-cloud-extras.rtipkg") {
 			t.Fatalf("unexpected package path: %s", packagePath)
 		}
-		if err := os.WriteFile(filepath.Join(install.Path, "bin", "rticollectorservicelite"), []byte(""), 0o755); err != nil {
+		if err := os.WriteFile(Executable(install.Path, "rticollectorservicelite"), []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return nil
@@ -249,6 +249,9 @@ func createConnextInstall(t *testing.T, root string, version string, executables
 		t.Fatal(err)
 	}
 	for _, executable := range executables {
+		if runtime.GOOS == "windows" {
+			executable += ".bat"
+		}
 		if err := os.WriteFile(filepath.Join(binDir, executable), []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}

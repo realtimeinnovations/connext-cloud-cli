@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -301,7 +302,7 @@ func TestRegistrationZIPProtectsManagerProvidedKeys(t *testing.T) {
 				t.Fatal(err)
 			}
 			info, err := os.Stat(output)
-			if err != nil || info.Mode().Perm() != 0o600 {
+			if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 				t.Errorf("key-containing archive must be 0600: info = %v, error = %v", info, err)
 			}
 			archive, err := zip.OpenReader(output)

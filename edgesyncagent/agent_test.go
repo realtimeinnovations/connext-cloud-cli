@@ -51,6 +51,7 @@ func newFakeFS() *fakeFS {
 }
 
 func (f *fakeFS) ReadFile(path string) ([]byte, error) {
+	path = filepath.Clean(path)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if data, ok := f.files[path]; ok {
@@ -60,6 +61,7 @@ func (f *fakeFS) ReadFile(path string) ([]byte, error) {
 }
 
 func (f *fakeFS) WriteFile(path string, data []byte, _ os.FileMode) error {
+	path = filepath.Clean(path)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.files[path] = append([]byte(nil), data...)
@@ -68,6 +70,7 @@ func (f *fakeFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 }
 
 func (f *fakeFS) MkdirAll(path string, _ os.FileMode) error {
+	path = filepath.Clean(path)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addDirsLocked(path)
@@ -83,6 +86,7 @@ func (f *fakeFS) addDirsLocked(dir string) {
 }
 
 func (f *fakeFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	path = filepath.Clean(path)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	seen := map[string]bool{}
@@ -161,6 +165,7 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 		WriteFile: ffs.WriteFile,
 		MkdirAll:  ffs.MkdirAll,
 		Stat: func(p string) (os.FileInfo, error) {
+			p = filepath.Clean(p)
 			ffs.mu.RLock()
 			defer ffs.mu.RUnlock()
 			if _, ok := ffs.files[p]; ok {
@@ -216,6 +221,7 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	a.MkdirAll = ffs.MkdirAll
 	a.ReadDir = ffs.ReadDir
 	a.RemoveFile = func(path string) error {
+		path = filepath.Clean(path)
 		ffs.mu.Lock()
 		defer ffs.mu.Unlock()
 		delete(ffs.files, path)
@@ -518,7 +524,7 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 // contains reports whether s is present in xs.
 func contains(xs []string, s string) bool {
 	for _, x := range xs {
-		if x == s {
+		if filepath.Clean(x) == filepath.Clean(s) {
 			return true
 		}
 	}

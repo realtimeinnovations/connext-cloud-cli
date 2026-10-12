@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -67,7 +68,7 @@ func TestSplitRefreshPreservesExamplesAndSecurity(t *testing.T) {
 				}
 			}
 			info, err := os.Stat(filepath.Join(dir, "generated/security/client.key"))
-			if err != nil || info.Mode().Perm() != 0o600 {
+			if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 				t.Fatalf("key permissions changed: %v", err)
 			}
 		})

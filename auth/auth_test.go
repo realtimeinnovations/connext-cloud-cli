@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -105,7 +106,7 @@ func TestSaveAccessTokenCreatesRticloudDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
 		t.Fatalf("credentials mode = %#o, want 0o600", mode)
 	}
 }
@@ -121,8 +122,9 @@ func TestGetAccessTokenFromHomeFileReturnsReadError(t *testing.T) {
 	if token != "" {
 		t.Fatalf("GetAccessTokenFromHomeFile() token = %q, want empty", token)
 	}
-	if !strings.Contains(err.Error(), "is a directory") {
-		t.Fatalf("expected directory read error, got %v", err)
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != tmpDir {
+		t.Fatalf("expected read failure for credential directory, got %v", err)
 	}
 }
 
@@ -147,8 +149,9 @@ func TestGetAccessTokenForCLIReturnsHomeFileErrorBeforeAPIKeyAuth(t *testing.T) 
 	if token != "" {
 		t.Fatalf("GetAccessTokenForCLI() token = %q, want empty", token)
 	}
-	if !strings.Contains(err.Error(), "is a directory") {
-		t.Fatalf("expected directory read error, got %v", err)
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != tmpDir {
+		t.Fatalf("expected read failure for credential directory, got %v", err)
 	}
 	if errors.Is(err, apiKeyErr) {
 		t.Fatalf("expected home file error before API key auth, got %v", err)

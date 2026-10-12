@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -435,7 +436,11 @@ func TestValidateConnextRequiresRTIDdsSpy77(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(install, "bin", "rtiddsspy"), []byte(""), 0o755); err != nil {
+	launcher := "rtiddsspy"
+	if runtime.GOOS == "windows" {
+		launcher += ".bat"
+	}
+	if err := os.WriteFile(filepath.Join(install, "bin", launcher), []byte(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, err := ValidateConnextInstall(install)
@@ -445,6 +450,9 @@ func TestValidateConnextRequiresRTIDdsSpy77(t *testing.T) {
 }
 
 func TestRunSpyWritesRuntimeLogAndStatistics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -515,6 +523,9 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 }
 
 func TestRunSpyWithTextOutputPrintsPlainEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {

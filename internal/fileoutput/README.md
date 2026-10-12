@@ -20,6 +20,13 @@ use `0700`; existing directory permissions are retained. Replacement requires
 a writable parent and replaces the inode, so other hard links retain their old
 contents. Append streams keep the existing inode.
 
+Permission-bit guarantees above apply to POSIX systems. On Windows, Go's mode
+bits only control the read-only attribute: `0600` does not establish an
+owner-only ACL. Staged files inherit the parent directory's ACL, and replacement
+does not preserve a destination's custom ACL. Native Windows CI exercises path
+validation and write behavior; passing it does not establish ACL protection.
+Windows replacement can also fail when an existing reader denies delete sharing.
+
 Callers retain their overwrite, force, and editable-example preservation rules.
 Validate an entire batch before writing when a known bad destination must block
 all output, and preflight credential destinations before registration.

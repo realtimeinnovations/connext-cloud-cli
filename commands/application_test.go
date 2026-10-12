@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -374,7 +375,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			if test.zip {
 				info, err := os.Stat(archivePath)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
 				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -428,7 +429,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyInfo.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && keyInfo.Mode().Perm() != 0o600 {
 				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
 			}
 		})
@@ -545,7 +546,7 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 			}
 			if test.generateKey {
 				info, err := os.Stat(output)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private archive info = %v, error = %v", info, err)
 				}
 			}
