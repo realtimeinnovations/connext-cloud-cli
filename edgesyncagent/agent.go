@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -502,8 +503,8 @@ func NewAgent(store *edgestore.Store, out io.Writer) *Agent {
 		Now:           time.Now,
 		AfterFunc:     time.AfterFunc,
 		ReadFile:      os.ReadFile,
-		WriteFile:     os.WriteFile,
-		MkdirAll:      os.MkdirAll,
+		WriteFile:     fileoutput.WriteFile,
+		MkdirAll:      fileoutput.MkdirAll,
 		ReadDir:       os.ReadDir,
 		RemoveFile:    os.Remove,
 		InboxDir:      store.InboxDir(),
@@ -580,7 +581,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err := a.MkdirAll(filepath.Dir(a.LogFile), 0o755); err != nil {
 			return fmt.Errorf("creating log directory: %w", err)
 		}
-		lf, err := os.OpenFile(a.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		lf, err := fileoutput.OpenAppend(a.LogFile, 0o644)
 		if err != nil {
 			return fmt.Errorf("opening log file %s: %w", a.LogFile, err)
 		}

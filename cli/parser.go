@@ -23,6 +23,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -1916,7 +1917,7 @@ func ensureConnextDir(path string) error {
 	if !os.IsNotExist(err) {
 		return fmt.Errorf("--connext-dir %q: %w", path, err)
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := fileoutput.MkdirAll(path, 0o755); err != nil {
 		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
 	}
 	return nil
@@ -2377,7 +2378,7 @@ agent's management login.`,
 						return argumentError("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
-					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+					if err := fileoutput.MkdirAll(inboxDir, 0o755); err != nil {
 						return err
 					}
 					if serial == "" {
@@ -2416,7 +2417,7 @@ agent's management login.`,
 					data, _ := json.MarshalIndent(req, "", "  ")
 					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
 					dest := filepath.Join(inboxDir, "enroll-"+fname)
-					if err := os.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
+					if err := fileoutput.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
 						return err
 					}
 					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Enrollment request written to %s\n", dest)

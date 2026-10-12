@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -605,8 +606,7 @@ func TestDrainInbox_EnrollmentFailureMovesToFailed(t *testing.T) {
 // ─── State persistence ────────────────────────────────────────────────────────
 
 func TestPersistState_WritesAgentStateJSON(t *testing.T) {
-	ffs := newFakeFS()
-	a := buildTestAgent(t, ffs)
+	a := NewAgent(edgestore.New(t.TempDir()), io.Discard)
 
 	now := time.Now().Truncate(time.Second)
 	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
@@ -622,7 +622,7 @@ func TestPersistState_WritesAgentStateJSON(t *testing.T) {
 		t.Fatalf("persistState: %v", err)
 	}
 
-	data, err := ffs.ReadFile(a.Store.NodeStatePath("svc", "dom", "part", "SN-001"))
+	data, err := os.ReadFile(a.Store.NodeStatePath("svc", "dom", "part", "SN-001"))
 	if err != nil {
 		t.Fatalf("state file not written: %v", err)
 	}
@@ -1529,19 +1529,26 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 // renewal timer — so the TUI never shows a false "needs renewal" for the freshly
 // rotated-in key.
 func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
-	ffs := newFakeFS()
-	a := buildTestAgent(t, ffs)
+	a := NewAgent(edgestore.New(t.TempDir()), io.Discard)
 
 	now := time.Unix(50000, 0)
 	a.Now = func() time.Time { return now }
 	a.AfterFunc = func(_ time.Duration, f func()) *time.Timer {
-		return time.AfterFunc(10*time.Hour, f)
+		timer := time.AfterFunc(10*time.Hour, f)
+		t.Cleanup(func() { timer.Stop() })
+		return timer
 	}
 
 	// PSK is domain-scoped.
 	outDir := a.Store.DomainDir("svc", "dom")
-	ffs.WriteFile(filepath.Join(outDir, "psk_secret.key"), []byte("sA"), 0o644)
-	ffs.WriteFile(filepath.Join(outDir, "psk_secret_temp.key"), []byte("sB"), 0o644)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"psk_secret.key": "sA", "psk_secret_temp.key": "sB"} {
+		if err := os.WriteFile(filepath.Join(outDir, name), []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	baseTTL := 100 * time.Second
 	pskBNotBefore := now // sB starts exactly as sA expires
@@ -1559,6 +1566,21 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 	p.mu.Unlock()
 
 	a.pskRotate(p)
+
+	for name, want := range map[string]string{"psk_secret.key": "sB", "psk_secret_extra.key": "sA"} {
+		path := filepath.Join(outDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q, want %q: %v", name, data, want, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+			t.Errorf("%s permissions = %o, want 600", name, info.Mode().Perm())
+		}
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

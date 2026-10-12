@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 const LicenseFileName = "rti_license.dat"
@@ -78,5 +80,5 @@ func WriteLicenseFile(install Install, content []byte) error {
 		}
 		return writeVerifiedLicense(LicenseFilePath(install), content)
 	}
-	return os.WriteFile(LicenseFilePath(install), content, 0o600)
+	return fileoutput.WriteFile(LicenseFilePath(install), content, 0o600)
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -188,7 +189,7 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	keyPath = filepath.Join(tmpDir, "identity.key")
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := fileoutput.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return "", "", err
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
@@ -199,7 +200,7 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	csrPath = filepath.Join(tmpDir, "identity.csr")
-	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+	if err := fileoutput.WriteFile(csrPath, csrPEM, 0o644); err != nil {
 		return "", "", err
 	}
 	return keyPath, csrPath, nil
@@ -243,7 +244,7 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	csrPath = filepath.Join(tmpDir, "identity.csr")
-	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+	if err := fileoutput.WriteFile(csrPath, csrPEM, 0o644); err != nil {
 		return "", err
 	}
 	return csrPath, nil

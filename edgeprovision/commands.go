@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
@@ -46,8 +47,8 @@ func NewRunner(out io.Writer) *Runner {
 	return &Runner{
 		Out:           out,
 		ReadFile:      os.ReadFile,
-		WriteFile:     os.WriteFile,
-		MkdirAll:      os.MkdirAll,
+		WriteFile:     fileoutput.WriteFile,
+		MkdirAll:      fileoutput.MkdirAll,
 		NewClient:     NewClient,
 		NewMTLSClient: NewMTLSClient,
 	}
@@ -324,7 +325,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 	// psk_secret.key — active passphrase (psk_a, or lowest-id fallback).
 	if len(slots) > 0 {
 		primaryDest := filepath.Join(outDir, "psk_secret.key")
-		if err := runner.saveToFile(primaryDest, []byte(primarySlot.passphrase)); err != nil {
+		if err := runner.WriteFile(primaryDest, []byte(primarySlot.passphrase), 0o600); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(runner.Out, "PSK primary passphrase saved to %s\n", primaryDest)
@@ -347,7 +348,7 @@ func (runner *Runner) RequestPSK(url, certFile, keyFile, caFile, serverAddr, out
 		}
 	}
 	extraDest := filepath.Join(outDir, "psk_secret_extra.key")
-	if err := runner.saveToFile(extraDest, []byte(strings.Join(passphrases, "\n"))); err != nil {
+	if err := runner.WriteFile(extraDest, []byte(strings.Join(passphrases, "\n")), 0o600); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(runner.Out, "PSK extra passphrases saved to %s\n", extraDest)

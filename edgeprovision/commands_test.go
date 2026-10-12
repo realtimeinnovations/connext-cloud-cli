@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -333,16 +334,25 @@ func TestRequestPSKToFile(t *testing.T) {
 	// Supply a non-directory path so pskOutputDir derives its parent as the dir.
 	target := filepath.Join(t.TempDir(), "subdir", "psk.json")
 	expectedDir := filepath.Dir(target)
-	written := map[string][]byte{}
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		written[filepath.Base(path)] = data
-		return nil
-	}
 	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", target); err != nil {
 		t.Fatal(err)
 	}
-	_ = expectedDir // dir is implied by filepath.Base checks below
+	written := map[string][]byte{}
+	for name, mode := range map[string]os.FileMode{"psk_secret.key": 0600, "psk_secret_extra.key": 0600, "psk_secret.lease.json": 0644} {
+		path := filepath.Join(expectedDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		written[name] = data
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != mode {
+			t.Errorf("%s permissions = %o, want %o", name, info.Mode().Perm(), mode)
+		}
+	}
 	if string(written["psk_secret.key"]) != "0:aaaa" {
 		t.Fatalf("unexpected psk_secret.key: %q", written["psk_secret.key"])
 	}

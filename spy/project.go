@@ -23,6 +23,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -135,14 +136,11 @@ func (app *App) ReadConfig() (map[string]any, error) {
 }
 
 func (app *App) WriteConfig(config map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.ConfigPath(), data, 0o644)
+	return fileoutput.WriteFile(app.ConfigPath(), data, 0o644)
 }
 
 func (app *App) RuntimeState() (map[string]any, error) {
@@ -161,14 +159,11 @@ func (app *App) RuntimeState() (map[string]any, error) {
 }
 
 func (app *App) WriteRuntimeState(state map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.RuntimePath(), data, 0o644)
+	return fileoutput.WriteFile(app.RuntimePath(), data, 0o644)
 }
 
 func HasDatabus(config map[string]any) bool {
@@ -301,10 +296,7 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 		encoded, _ := json.MarshalIndent(typed, "", "  ")
 		content = string(encoded)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(target, []byte(content), 0o644)
+	return fileoutput.WriteFile(target, []byte(content), 0o644)
 }
 
 func isMissingExternalEndpointError(err error) bool {
@@ -419,6 +411,9 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 	if app.GenerateCSRFunc == nil || app.APIPost == nil {
 		return fmt.Errorf("secure credential dependencies are not configured")
 	}
+	if err := common.PreflightSecureDirectory(targetDir); err != nil {
+		return err
+	}
 	privateKey, csr, err := app.GenerateCSRFunc(databusName, appName, clientID)
 	if err != nil {
 		return err
@@ -464,14 +459,14 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		"-qosFile", xmlPath,
 		"-qosProfile", qosProfile,
 	}
-	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
 	}
 	liveView := NewLiveView(config)
 	liveView.DatabusSecure = databusSecure
 	renderer := TerminalRenderer{Out: app.Out}
 	defer func() { _ = renderer.Finish() }()
-	logFile, err := os.OpenFile(app.SpyLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := fileoutput.OpenAppend(app.SpyLogPath(), 0o644)
 	if err != nil {
 		return 0, err
 	}

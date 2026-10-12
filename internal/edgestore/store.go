@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 // Store manages the local artifact cache under BaseDir.
@@ -44,8 +46,8 @@ type EnrollArtifacts struct {
 func New(baseDir string) *Store {
 	return &Store{
 		BaseDir:   baseDir,
-		WriteFile: os.WriteFile,
-		MkdirAll:  os.MkdirAll,
+		WriteFile: fileoutput.WriteFile,
+		MkdirAll:  fileoutput.MkdirAll,
 		Stat:      os.Stat,
 	}
 }

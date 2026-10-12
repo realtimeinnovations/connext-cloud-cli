@@ -82,22 +82,22 @@ func (a *Agent) initializePSKFiles(p *profile, outDir string, enrolledAt time.Ti
 	// "invalid format for the pre-shared secret passphrases".
 	primaryPath := pskSecretPath(outDir)
 	if data, err := a.ReadFile(primaryPath); err == nil {
-		_ = a.WriteFile(primaryPath, []byte(pskFirstLine(data)), 0o644)
+		_ = a.WriteFile(primaryPath, []byte(pskFirstLine(data)), 0o600)
 	}
 
 	// Extract sB (second line of psk_secret_extra.key) and store it as psk_secret_temp.key
 	// so pskRotate can apply it at the 100% phase without contacting the server.
 	if data, err := a.ReadFile(extraPath); err == nil {
 		sB := pskSecondLine(data)
-		_ = a.WriteFile(tempPath, []byte(sB), 0o644)
+		_ = a.WriteFile(tempPath, []byte(sB), 0o600)
 	}
 	// Set extra to sB (the staged next primary) so extra is non-empty and
 	// holds the upcoming key.  This satisfies the protocol invariant:
 	// primary=sA, extra=sB (the next key, never the same as primary).
 	if tempData, err := a.ReadFile(tempPath); err == nil {
-		_ = a.WriteFile(extraPath, []byte(pskFirstLine(tempData)), 0o644)
+		_ = a.WriteFile(extraPath, []byte(pskFirstLine(tempData)), 0o600)
 	} else {
-		_ = a.WriteFile(extraPath, []byte{}, 0o644)
+		_ = a.WriteFile(extraPath, []byte{}, 0o600)
 	}
 
 	// Read individual slot leases to set up phase timers.
@@ -195,12 +195,12 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 		if len(augmented) > 2 {
 			augmented = augmented[len(augmented)-2:]
 		}
-		_ = a.WriteFile(extraPath, []byte(strings.Join(augmented, "\n")), 0o644)
+		_ = a.WriteFile(extraPath, []byte(strings.Join(augmented, "\n")), 0o600)
 	}
 	// Normalize psk_secret.key to a single clean line regardless of rotation
 	// path — DDS rejects any trailing newline or multi-line content.
 	currentPrimary := pskFirstLine(receivedPrimary)
-	_ = a.WriteFile(primaryPath, []byte(currentPrimary), 0o644)
+	_ = a.WriteFile(primaryPath, []byte(currentPrimary), 0o600)
 
 	// 4. Extract sB (second line of psk_secret_extra.key) and stage it in psk_secret_temp.key
 	//    so pskRotate can apply it at 100% without a server call.
@@ -210,7 +210,7 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	}
 	// Stage sB as a single line — pskRotate must never receive multi-line content.
 	nextPrimary := pskFirstLine([]byte(pskSecondLine(extraData)))
-	if err := a.WriteFile(tempPath, []byte(nextPrimary), 0o644); err != nil {
+	if err := a.WriteFile(tempPath, []byte(nextPrimary), 0o600); err != nil {
 		a.emitf(catPSK, tui.LogWarn, "psk 80%%: writing psk_secret_temp.key: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func (a *Agent) renewPSKAt80(p *profile, url, cert, key, ca, output string) (psk
 	if len(filteredLines) > 2 {
 		filteredLines = filteredLines[len(filteredLines)-2:]
 	}
-	_ = a.WriteFile(extraPath, []byte(strings.Join(filteredLines, "\n")), 0o644)
+	_ = a.WriteFile(extraPath, []byte(strings.Join(filteredLines, "\n")), 0o600)
 
 	// Return psk_a's window for the 80%-threshold timer and psk_b's window
 	// so the caller can correctly advance the staged-key state for the next cycle.
@@ -255,7 +255,7 @@ func (a *Agent) pskRotate(p *profile) {
 	oldPrimaryData, _ := a.ReadFile(pskSecretPath(outDir))
 	oldPrimary := pskFirstLine(oldPrimaryData)
 
-	if err := a.WriteFile(pskSecretPath(outDir), []byte(nextPrimary), 0o644); err != nil {
+	if err := a.WriteFile(pskSecretPath(outDir), []byte(nextPrimary), 0o600); err != nil {
 		a.emitf(catPSK, tui.LogWarn, "psk_rotate: writing psk_secret.key service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
@@ -264,7 +264,7 @@ func (a *Agent) pskRotate(p *profile) {
 	// Set extra to sA so peers still using the old primary can decrypt during
 	// the 100%–120% overlap window.  extra ≠ primary by construction.
 	if oldPrimary != "" {
-		_ = a.WriteFile(pskSecretExtraPath(outDir), []byte(oldPrimary), 0o644)
+		_ = a.WriteFile(pskSecretExtraPath(outDir), []byte(oldPrimary), 0o600)
 	}
 
 	a.emitf(catPSK, tui.LogGood, "psk_rotate: seed rotated to sB service=%s participant=%s",
@@ -310,7 +310,7 @@ func (a *Agent) pskRotate(p *profile) {
 // using it, so the overlap entry (set by pskRotate) is no longer needed.
 func (a *Agent) pskCleanup(p *profile) {
 	outDir := a.pskOutDir(p)
-	if err := a.WriteFile(pskSecretExtraPath(outDir), []byte{}, 0o644); err != nil {
+	if err := a.WriteFile(pskSecretExtraPath(outDir), []byte{}, 0o600); err != nil {
 		a.emitf(catPSK, tui.LogWarn, "psk_cleanup: clearing psk_secret_extra.key service=%s participant=%s: %v",
 			p.serviceID, p.participantID, err)
 		return
