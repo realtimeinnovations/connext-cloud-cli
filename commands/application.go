@@ -408,11 +408,15 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 		return err
 	}
 	if options.ZIP {
+		fileName := name + "-" + appName + ".zip"
+		if err := validateApplicationOutputPath(filepath.Clean(options.TargetDir), filepath.Join(options.TargetDir, fileName), false); err != nil {
+			return err
+		}
 		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
 		if err != nil {
 			return err
 		}
-		saved, err := runner.SaveClientFile(options.TargetDir, name+"-"+appName+".zip", bundle, options.ForceOverwrite)
+		saved, err := runner.SaveClientFile(options.TargetDir, fileName, bundle, options.ForceOverwrite)
 		if err != nil {
 			return err
 		}

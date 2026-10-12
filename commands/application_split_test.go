@@ -235,6 +235,58 @@ func TestSplitRefreshRejectsSymlinkedDestinations(t *testing.T) {
 	}
 }
 
+func TestZIPDownloadRejectsInvalidDestinations(t *testing.T) {
+	for _, kind := range []string{"archive-symlink", "dangling-archive", "target-directory-symlink", "archive-directory"} {
+		for _, force := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/force=%v", kind, force), func(t *testing.T) {
+				dir, outside := t.TempDir(), t.TempDir()
+				external := filepath.Join(outside, "db-app.zip")
+				if kind != "dangling-archive" {
+					if err := os.WriteFile(external, []byte("external content"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				targetDir := dir
+				link, target := filepath.Join(dir, "db-app.zip"), external
+				if kind == "target-directory-symlink" {
+					targetDir = filepath.Join(dir, "bundle")
+					link, target = targetDir, outside
+				}
+				if kind == "archive-directory" {
+					if err := os.Mkdir(link, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlink creation unavailable: %v", err)
+				}
+				runner := New(splitAPI(), io.Discard)
+				if err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: targetDir, ZIP: true, ForceOverwrite: force}); err == nil {
+					t.Error("ZIP download accepted an invalid destination")
+				}
+				data, err := os.ReadFile(external)
+				if kind == "dangling-archive" {
+					if !os.IsNotExist(err) {
+						t.Errorf("ZIP download created an external target: %q, %v", data, err)
+					}
+				} else if err != nil || string(data) != "external content" {
+					t.Errorf("ZIP download changed external content: %q, %v", data, err)
+				}
+				info, err := os.Lstat(link)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == "archive-directory" {
+					if !info.IsDir() {
+						t.Error("ZIP download replaced the directory")
+					}
+				} else if info.Mode()&os.ModeSymlink == 0 {
+					t.Error("ZIP download replaced the symlink")
+				}
+			})
+		}
+	}
+}
+
 func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *testing.T) {
 	cases := []struct {
 		name, link, external, targetDir string
