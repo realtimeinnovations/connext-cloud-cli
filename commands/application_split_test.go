@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -298,6 +299,73 @@ func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *te
 			}
 			if data, err := os.ReadFile(external); err != nil || string(data) != "external content" {
 				t.Errorf("registration changed the external file: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestForcedRegistrationRejectsWrongOutputTypesBeforeIssuingCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, kind string
+		zip              bool
+	}{
+		{"application directory", "app.xml", "directory", false},
+		{"manifest directory", "manifest.json", "directory", false},
+		{"generated artifact directory", "generated/app.qos.xml", "directory", false},
+		{"private key directory", "generated/security/client.key", "directory", false},
+		{"certificate directory", "generated/security/identity.pem", "directory", false},
+		{"security file", "generated/security", "file", false},
+		{"application socket", "app.xml", "socket", false},
+		{"archive socket", "", "socket", true},
+		{"bundle socket", "", "socket", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			destination := "db-app-client"
+			if tc.zip {
+				destination += ".zip"
+			}
+			path := filepath.Join(destination, tc.path)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			switch tc.kind {
+			case "directory":
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "file":
+				if err := os.WriteFile(path, []byte("existing content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "socket":
+				listener, err := net.Listen("unix", path)
+				if err != nil {
+					t.Skipf("Unix sockets unavailable: %v", err)
+				}
+				defer listener.Close()
+			}
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			api := splitAPI()
+			runner := New(api, io.Discard)
+			generatedKey := false
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
+				generatedKey = true
+				return []byte("private key"), "csr", nil
+			}
+			err = runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true, ForceOverwrite: true, ZIP: tc.zip})
+			if err == nil {
+				t.Error("registration accepted an invalid destination type")
+			}
+			if generatedKey || api.lastPayload != nil {
+				t.Error("invalid destination caused key generation or client registration")
+			}
+			after, err := os.Lstat(path)
+			if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() {
+				t.Errorf("invalid output was modified: %v", err)
 			}
 		})
 	}

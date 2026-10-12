@@ -590,18 +590,43 @@ func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey 
 	return nil
 }
 
+// Validate the path and expected destination type without creating it.
+func validateClientOutputPath(root, path string, directory bool) error {
+	if err := rtipaths.ValidateManagedPath(root, path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if directory {
+		if !info.IsDir() {
+			return fmt.Errorf("client output must be a directory: %s", path)
+		}
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("client output must be a regular file: %s", path)
+	}
+	return nil
+}
+
 // Validate all existing bundle destinations before creating client credentials.
 func validateClientBundlePaths(destination, appName string, bundle *applicationBundleV2) error {
-	paths := []string{"manifest.json", filepath.Join("generated", "security")}
+	paths := []string{"manifest.json"}
 	for name := range bundle.files(appName) {
 		paths = append(paths, name)
 	}
 	for _, name := range paths {
-		if err := rtipaths.ValidateManagedPath(destination, filepath.Join(destination, name)); err != nil {
+		if err := validateClientOutputPath(destination, filepath.Join(destination, name), false); err != nil {
 			return err
 		}
 	}
 	securityDir := filepath.Join(destination, "generated", "security")
+	if err := validateClientOutputPath(destination, securityDir, true); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(securityDir)
 	if os.IsNotExist(err) {
 		return nil
@@ -611,7 +636,7 @@ func validateClientBundlePaths(destination, appName string, bundle *applicationB
 	}
 	// Security filenames come from registration, so check existing entries too.
 	for _, entry := range entries {
-		if err := rtipaths.ValidateManagedPath(destination, filepath.Join(securityDir, entry.Name())); err != nil {
+		if err := validateClientOutputPath(destination, filepath.Join(securityDir, entry.Name()), false); err != nil {
 			return err
 		}
 	}
@@ -644,13 +669,10 @@ func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID strin
 	} else if options.TargetDir != "" {
 		destination = root
 	}
-	if err := rtipaths.ValidateManagedPath(root, destination); err != nil {
+	if err := validateClientOutputPath(root, destination, !options.ZIP); err != nil {
 		return err
 	}
-	if info, err := runner.Stat(destination); err == nil {
-		if options.ZIP == info.IsDir() {
-			return fmt.Errorf("%s has the wrong output type", destination)
-		}
+	if _, err := runner.Stat(destination); err == nil {
 		if !options.ForceOverwrite {
 			return fmt.Errorf("%s already exists. Use --force to overwrite", destination)
 		}
