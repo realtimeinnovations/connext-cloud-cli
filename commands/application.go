@@ -17,6 +17,7 @@ import (
 	"net/url"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"os"
 	"path/filepath"
 	"sort"
@@ -458,6 +459,7 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 	}
 	sort.Strings(names)
 	// Check all destinations before writing any files.
+	root := filepath.Clean(options.TargetDir)
 	selected := make([]string, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(options.TargetDir, name)
@@ -473,9 +475,15 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("inspect application output %s: %w", path, err)
 		}
+		if err := rtipaths.ValidateManagedPath(root, path); err != nil {
+			return err
+		}
 		selected = append(selected, name)
 	}
 	for _, name := range selected {
+		if err := rtipaths.ValidateManagedPath(root, filepath.Join(root, name)); err != nil {
+			return err
+		}
 		saved, err := runner.SaveClientFile(options.TargetDir, name, files[name], true)
 		if err != nil {
 			return err

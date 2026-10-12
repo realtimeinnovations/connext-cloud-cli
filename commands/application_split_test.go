@@ -174,3 +174,62 @@ func TestCloudApplicationRejectsFlatResponseBeforeWritingOrRegistering(t *testin
 		}
 	}
 }
+
+func TestSplitRefreshRejectsSymlinkedDestinations(t *testing.T) {
+	for _, kind := range []string{"file", "dangling-file", "generated-directory", "bundle-directory"} {
+		t.Run(kind, func(t *testing.T) {
+			outside := t.TempDir()
+			external := filepath.Join(outside, "app.types.xml")
+			if kind != "dangling-file" {
+				if err := os.WriteFile(external, []byte("external content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bundle := filepath.Join(t.TempDir(), "bundle")
+			generated := filepath.Join(bundle, "generated")
+			link, target := filepath.Join(generated, "app.types.xml"), external
+			if kind == "bundle-directory" {
+				generated = filepath.Join(outside, "generated")
+				if err := os.Mkdir(generated, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(external, filepath.Join(generated, "app.types.xml")); err != nil {
+					t.Fatal(err)
+				}
+				external = filepath.Join(generated, "app.types.xml")
+				link, target = bundle, outside
+			} else if kind == "generated-directory" {
+				if err := os.Mkdir(bundle, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				link, target = generated, outside
+				generated = outside
+			} else if err := os.MkdirAll(generated, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			qos := filepath.Join(generated, "app.qos.xml")
+			if err := os.WriteFile(qos, []byte("existing qos"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlink creation unavailable: %v", err)
+			}
+
+			err := New(splitAPI(), io.Discard).DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: bundle})
+			if err == nil {
+				t.Error("refresh accepted a symlinked destination")
+			}
+			if data, err := os.ReadFile(qos); err != nil || string(data) != "existing qos" {
+				t.Errorf("refresh changed an earlier output before rejecting the symlink: %q, %v", data, err)
+			}
+			data, err := os.ReadFile(external)
+			if kind == "dangling-file" {
+				if !os.IsNotExist(err) {
+					t.Errorf("refresh created an external symlink target: %q, %v", data, err)
+				}
+			} else if err != nil || string(data) != "external content" {
+				t.Errorf("refresh changed the external file: %q, %v", data, err)
+			}
+		})
+	}
+}
