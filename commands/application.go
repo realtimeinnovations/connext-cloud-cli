@@ -463,11 +463,10 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 	selected := make([]string, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(options.TargetDir, name)
-		info, err := runner.Stat(path)
-		if err == nil {
-			if info != nil && info.IsDir() {
-				return fmt.Errorf("%s is a directory", path)
-			}
+		if err := validateApplicationOutputPath(root, path, false); err != nil {
+			return err
+		}
+		if _, err := runner.Stat(path); err == nil {
 			if !strings.HasPrefix(name, "generated/") && name != "manifest.json" && !options.ForceOverwrite {
 				_, _ = fmt.Fprintf(runner.Out, "Preserved %s (use --force to replace examples)\n", path)
 				continue
@@ -475,13 +474,10 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("inspect application output %s: %w", path, err)
 		}
-		if err := rtipaths.ValidateManagedPath(root, path); err != nil {
-			return err
-		}
 		selected = append(selected, name)
 	}
 	for _, name := range selected {
-		if err := rtipaths.ValidateManagedPath(root, filepath.Join(root, name)); err != nil {
+		if err := validateApplicationOutputPath(root, filepath.Join(root, name), false); err != nil {
 			return err
 		}
 		saved, err := runner.SaveClientFile(options.TargetDir, name, files[name], true)
@@ -591,7 +587,7 @@ func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey 
 }
 
 // Validate the path and expected destination type without creating it.
-func validateClientOutputPath(root, path string, directory bool) error {
+func validateApplicationOutputPath(root, path string, directory bool) error {
 	if err := rtipaths.ValidateManagedPath(root, path); err != nil {
 		return err
 	}
@@ -604,10 +600,10 @@ func validateClientOutputPath(root, path string, directory bool) error {
 	}
 	if directory {
 		if !info.IsDir() {
-			return fmt.Errorf("client output must be a directory: %s", path)
+			return fmt.Errorf("application output must be a directory: %s", path)
 		}
 	} else if !info.Mode().IsRegular() {
-		return fmt.Errorf("client output must be a regular file: %s", path)
+		return fmt.Errorf("application output must be a regular file: %s", path)
 	}
 	return nil
 }
@@ -619,12 +615,12 @@ func validateClientBundlePaths(destination, appName string, bundle *applicationB
 		paths = append(paths, name)
 	}
 	for _, name := range paths {
-		if err := validateClientOutputPath(destination, filepath.Join(destination, name), false); err != nil {
+		if err := validateApplicationOutputPath(destination, filepath.Join(destination, name), false); err != nil {
 			return err
 		}
 	}
 	securityDir := filepath.Join(destination, "generated", "security")
-	if err := validateClientOutputPath(destination, securityDir, true); err != nil {
+	if err := validateApplicationOutputPath(destination, securityDir, true); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(securityDir)
@@ -636,7 +632,7 @@ func validateClientBundlePaths(destination, appName string, bundle *applicationB
 	}
 	// Security filenames come from registration, so check existing entries too.
 	for _, entry := range entries {
-		if err := validateClientOutputPath(destination, filepath.Join(securityDir, entry.Name()), false); err != nil {
+		if err := validateApplicationOutputPath(destination, filepath.Join(securityDir, entry.Name()), false); err != nil {
 			return err
 		}
 	}
@@ -669,7 +665,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID strin
 	} else if options.TargetDir != "" {
 		destination = root
 	}
-	if err := validateClientOutputPath(root, destination, !options.ZIP); err != nil {
+	if err := validateApplicationOutputPath(root, destination, !options.ZIP); err != nil {
 		return err
 	}
 	if _, err := runner.Stat(destination); err == nil {

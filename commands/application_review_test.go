@@ -190,8 +190,8 @@ func TestDownloadPreflightsAllRequestedDestinations(t *testing.T) {
 			})}}
 			runner := New(api, io.Discard)
 			err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{TargetDir: dir, GenerateExample: true, IncludeManifest: true})
-			if err == nil || !strings.Contains(err.Error(), "is a directory") {
-				t.Fatalf("expected existing-output error, got %v", err)
+			if err == nil {
+				t.Fatal("download accepted a directory as an artifact destination")
 			}
 			entries, err := os.ReadDir(dir)
 			if err != nil || len(entries) != 1 || entries[0].Name() != existing {

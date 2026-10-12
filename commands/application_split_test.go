@@ -370,3 +370,34 @@ func TestForcedRegistrationRejectsWrongOutputTypesBeforeIssuingCredentials(t *te
 		})
 	}
 }
+
+func TestSplitRefreshRejectsSpecialFileBeforeChangingAnyArtifacts(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("generated", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	qos := filepath.Join("generated", "app.qos.xml")
+	if err := os.WriteFile(qos, []byte("existing qos"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	types := filepath.Join("generated", "app.types.xml")
+	listener, err := net.Listen("unix", types)
+	if err != nil {
+		t.Skipf("Unix sockets unavailable: %v", err)
+	}
+	defer listener.Close()
+	before, err := os.Lstat(types)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := New(splitAPI(), io.Discard).DownloadApplication("db", "app", ApplicationDownloadOptions{}); err == nil {
+		t.Error("refresh accepted a socket as a generated artifact")
+	}
+	if data, err := os.ReadFile(qos); err != nil || string(data) != "existing qos" {
+		t.Errorf("refresh changed QoS before rejecting the types destination: %q, %v", data, err)
+	}
+	if after, err := os.Lstat(types); err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() {
+		t.Errorf("refresh modified the types destination: %v", err)
+	}
+}
