@@ -152,8 +152,10 @@ rticloud databus app client register --name demo --app-name shapes --client-id s
 ```
 
 Registration creates `demo-shapes-shapes-1/` with the same layout and credentials
-under `generated/security/`. Add `--zip` for an archive. Private keys and PSKs keep
-mode 0600, including inside ZIPs. Ordinary QoS/types refreshes never rotate or
+under `generated/security/`. Use `--target-dir ./shapes` to write the bundle
+directly into `./shapes`, then use the same directory for generated-artifact
+refreshes. Add `--zip` for an archive; with `--target-dir`, the named ZIP is saved
+in that folder. Private keys and PSKs keep mode 0600, including inside ZIPs. Ordinary QoS/types refreshes never rotate or
 replace credentials. Existing registration destinations or ZIPs require `--force`.
 
 Cloud application downloads require the structured bundle response. Missing or

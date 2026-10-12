@@ -131,7 +131,7 @@ func TestInvalidSplitBundleFailsBeforeRegistration(t *testing.T) {
 				t.Fatal("invalid bundle must fail before key generation")
 				return nil, "", nil
 			}
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, false); err == nil {
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true}); err == nil {
 				t.Fatal("expected invalid bundle error")
 			}
 			if api.lastPayload != nil {
@@ -162,7 +162,7 @@ func TestCloudApplicationRejectsFlatResponseBeforeWritingOrRegistering(t *testin
 		}
 		var err error
 		if register {
-			err = runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, false)
+			err = runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true})
 		} else {
 			err = runner.DownloadApplication("db", "app", ApplicationDownloadOptions{GenerateExample: true})
 		}
@@ -236,15 +236,18 @@ func TestSplitRefreshRejectsSymlinkedDestinations(t *testing.T) {
 
 func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *testing.T) {
 	cases := []struct {
-		name, link, external string
-		directory, zip       bool
+		name, link, external, targetDir string
+		directory, zip                  bool
 	}{
-		{"bundle", "", "generated/security/client.key", true, false},
-		{"generated", "generated", "security/client.key", true, false},
-		{"security", "generated/security", "client.key", true, false},
-		{"private-key", "generated/security/client.key", "client.key", false, false},
-		{"application", "app.xml", "app.xml", false, false},
-		{"archive", "", "bundle.zip", false, true},
+		{"bundle", "", "generated/security/client.key", "", true, false},
+		{"generated", "generated", "security/client.key", "", true, false},
+		{"security", "generated/security", "client.key", "", true, false},
+		{"private-key", "generated/security/client.key", "client.key", "", false, false},
+		{"application", "app.xml", "app.xml", "", false, false},
+		{"archive", "", "bundle.zip", "", false, true},
+		{"custom bundle", "", "generated/security/client.key", "nested/custom", true, false},
+		{"custom security", "generated/security", "client.key", "absolute", true, false},
+		{"custom archive folder", "", "db-app-client.zip", "nested/custom", true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -257,8 +260,15 @@ func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *te
 			if err := os.WriteFile(external, []byte("external content"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			targetDir := tc.targetDir
+			if targetDir == "absolute" {
+				targetDir = filepath.Join(t.TempDir(), "custom")
+			}
 			destination := "db-app-client"
-			if tc.zip {
+			if targetDir != "" {
+				destination = targetDir
+			}
+			if tc.zip && targetDir == "" {
 				destination += ".zip"
 			}
 			link := filepath.Join(destination, tc.link)
@@ -280,7 +290,7 @@ func TestForcedRegistrationRejectsSymlinkedOutputsBeforeIssuingCredentials(t *te
 				return []byte("new private key"), "CSR", nil
 			}
 
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, true, tc.zip); err == nil {
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{TargetDir: targetDir, GeneratePrivateKey: true, ForceOverwrite: true, ZIP: tc.zip}); err == nil {
 				t.Error("registration accepted a symlinked output")
 			}
 			if generatedKey || api.lastPayload != nil {

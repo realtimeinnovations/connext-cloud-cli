@@ -544,20 +544,6 @@ func (runner *Runner) ListAppClients(name string, appName string) error {
 	return runner.writeResult(clients)
 }
 
-func CreateClientBundleDirectory(databusName string, appName string, clientName string) (string, error) {
-	if databusName == "" || appName == "" || clientName == "" {
-		return "", fmt.Errorf("databus_name, app_name, and client_name must be provided")
-	}
-	if err := validateApplicationNames(databusName, appName, clientName); err != nil {
-		return "", err
-	}
-	targetDir := fmt.Sprintf("%s-%s-%s", databusName, appName, clientName)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
-	}
-	return targetDir, nil
-}
-
 func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
 	return runner.saveClientFile(targetDir, fileName, data, forceOverwrite, strings.HasSuffix(fileName, ".key"))
 }
@@ -632,7 +618,15 @@ func validateClientBundlePaths(destination, appName string, bundle *applicationB
 	return nil
 }
 
-func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool, zipOutput bool) error {
+type ApplicationRegistrationOptions struct {
+	CSRFile            string
+	TargetDir          string
+	GeneratePrivateKey bool
+	ForceOverwrite     bool
+	ZIP                bool
+}
+
+func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID string, options ApplicationRegistrationOptions) error {
 	if clientID == "" {
 		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
 		return nil
@@ -641,17 +635,23 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		return err
 	}
 	destination := name + "-" + appName + "-" + clientID
-	if zipOutput {
-		destination += ".zip"
+	root := "."
+	if options.TargetDir != "" {
+		root = filepath.Clean(options.TargetDir)
 	}
-	if err := rtipaths.ValidateManagedPath(".", destination); err != nil {
+	if options.ZIP {
+		destination = filepath.Join(root, destination+".zip")
+	} else if options.TargetDir != "" {
+		destination = root
+	}
+	if err := rtipaths.ValidateManagedPath(root, destination); err != nil {
 		return err
 	}
 	if info, err := runner.Stat(destination); err == nil {
-		if zipOutput == info.IsDir() {
+		if options.ZIP == info.IsDir() {
 			return fmt.Errorf("%s has the wrong output type", destination)
 		}
-		if !forceOverwrite {
+		if !options.ForceOverwrite {
 			return fmt.Errorf("%s already exists. Use --force to overwrite", destination)
 		}
 	} else if !os.IsNotExist(err) {
@@ -667,7 +667,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if err := artifacts.validateComplete(); err != nil {
 		return err
 	}
-	if !zipOutput {
+	if !options.ZIP {
 		if err := validateClientBundlePaths(destination, appName, artifacts.Bundle); err != nil {
 			return err
 		}
@@ -678,7 +678,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	}
 	var privateKey []byte
 	var csrPEM string
-	if genPrivateKey {
+	if options.GeneratePrivateKey {
 		if runner.CSRGenerator == nil {
 			return fmt.Errorf("CSR generator is not configured")
 		}
@@ -689,11 +689,11 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		}
 		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
 	} else {
-		if csrFile == "" {
+		if options.CSRFile == "" {
 			_, _ = fmt.Fprintln(runner.Out, "Error: either --csr-file or --gen-private-key is required")
 			return nil
 		}
-		data, err := runner.ReadFile(csrFile)
+		data, err := runner.ReadFile(options.CSRFile)
 		if err != nil {
 			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
 			return nil
@@ -728,7 +728,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if err := validateSecureFileNames(secureFiles); err != nil {
 		return err
 	}
-	if zipOutput {
+	if options.ZIP {
 		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
 		if err != nil {
 			return err
@@ -737,7 +737,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		for name := range secureFiles {
 			sensitive = sensitive || strings.HasSuffix(name, ".key")
 		}
-		saved, err := runner.saveClientFile("", destination, bundle, forceOverwrite, sensitive)
+		saved, err := runner.saveClientFile("", destination, bundle, options.ForceOverwrite, sensitive)
 		if err != nil {
 			return err
 		}
@@ -747,19 +747,18 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil
 	}
-	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
-	if err != nil {
+	if err := runner.MkdirAll(destination, 0o755); err != nil {
 		return err
 	}
 	files := artifacts.Bundle.files(appName)
 	files["manifest.json"] = manifest
 	for fileName, data := range files {
-		if _, err := runner.SaveClientFile(targetDir, fileName, data, forceOverwrite); err != nil {
+		if _, err := runner.SaveClientFile(destination, fileName, data, options.ForceOverwrite); err != nil {
 			return err
 		}
 	}
-	secureDir := filepath.Join(targetDir, "generated", "security")
-	if err := runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, secureDir); err != nil {
+	secureDir := filepath.Join(destination, "generated", "security")
+	if err := runner.SaveSecureFiles(secureFiles, privateKey, options.ForceOverwrite, secureDir); err != nil {
 		return err
 	}
 	runner.warnUnknownTypes(artifacts.Manifest)
@@ -767,7 +766,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 }
 
 func (runner *Runner) RegisterAppClient(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool) error {
-	return runner.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, forceOverwrite, false)
+	return runner.RegisterAppClientWithOptions(name, appName, clientID, ApplicationRegistrationOptions{CSRFile: csrFile, GeneratePrivateKey: genPrivateKey, ForceOverwrite: forceOverwrite})
 }
 
 func (runner *Runner) RevokeAppClient(name string, appName string, clientID string) error {

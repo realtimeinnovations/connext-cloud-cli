@@ -1066,7 +1066,7 @@ Formatting:
 	}
 
 	{ // register
-		var name, appName, clientID, csrFile string
+		var name, appName, clientID, csrFile, targetDir string
 		var genPrivateKey, force, zipOutput bool
 		c := &cobra.Command{
 			Use:   "register",
@@ -1076,15 +1076,16 @@ Formatting:
 For a cloud application, the bundle contains editable XML and Python examples,
 a README, a manifest, generated QoS and types, and credentials under
 generated/security/. The default output is a directory named
-<databus>-<application>-<client-id>; --zip creates an archive instead.
+<databus>-<application>-<client-id>. --target-dir selects a different bundle
+directory. With --zip, it selects the folder containing the named archive.
 
 Use --gen-private-key to generate the client's private key and CSR, or --csr-file
 to supply your own CSR. When supplying a CSR, keep its matching private key.
 
 After customizing the example, use app get --generated --target-dir <bundle-directory>
 to refresh QoS and types while preserving your edits and credentials.`,
-			Example: `  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --zip
-  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1`,
+			Example: `  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --target-dir ./shapes
+  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./shapes`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
@@ -1099,12 +1100,13 @@ to refresh QoS and types while preserving your edits and credentials.`,
 				if (csrFile == "") == !genPrivateKey {
 					return argumentError("exactly one of --csr-file or --gen-private-key is required")
 				}
-				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, force, zipOutput)
+				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, commands.ApplicationRegistrationOptions{CSRFile: csrFile, TargetDir: targetDir, GeneratePrivateKey: genPrivateKey, ForceOverwrite: force, ZIP: zipOutput})
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application template name")
 		c.Flags().StringVar(&clientID, "client-id", "", "Client ID")
+		c.Flags().StringVar(&targetDir, "target-dir", "", "Bundle directory, or archive destination folder with --zip")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "CSR file")
 		c.Flags().BoolVar(&genPrivateKey, "gen-private-key", false, "Generate a private key")
 		c.Flags().BoolVar(&zipOutput, "zip", false, "Package application artifacts and security files as a ZIP instead of a directory")

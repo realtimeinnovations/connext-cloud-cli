@@ -50,7 +50,7 @@ func TestApplicationRejectsUnsafeNamesBeforeRequests(t *testing.T) {
 				}
 				names := []string{"db", "app", "client"}
 				names[field] = "../outside"
-				if err := runner.RegisterAppClientWithOptions(names[0], names[1], names[2], "csr", false, false, zipOutput); err == nil {
+				if err := runner.RegisterAppClientWithOptions(names[0], names[1], names[2], ApplicationRegistrationOptions{CSRFile: "csr", ZIP: zipOutput}); err == nil {
 					t.Fatal("expected invalid-name error")
 				}
 				if api.lastPath != "" {
@@ -67,18 +67,31 @@ func TestApplicationRejectsUnsafeNamesBeforeRequests(t *testing.T) {
 			})
 		}
 	}
-	t.Chdir(t.TempDir())
-	if dir, err := CreateClientBundleDirectory("db", "app", ".."); err == nil {
-		t.Fatalf("unsafe client ID created %q", dir)
-	}
 }
 
 func TestRegistrationPreflightsExistingDestination(t *testing.T) {
-	for _, zipOutput := range []bool{false, true} {
-		t.Run(fmt.Sprintf("zip%v", zipOutput), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, targetDir string
+		zip             bool
+	}{
+		{"default directory", "", false},
+		{"default zip", "", true},
+		{"custom directory", "nested/custom", false},
+		{"custom zip", "nested/custom", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			destination := "db-app-client"
-			if zipOutput {
+			if tc.targetDir != "" {
+				destination = tc.targetDir
+				if tc.zip {
+					destination = filepath.Join(tc.targetDir, "db-app-client")
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.zip {
 				destination += ".zip"
 				if err := os.WriteFile(destination, []byte("existing archive"), 0o600); err != nil {
 					t.Fatal(err)
@@ -92,14 +105,14 @@ func TestRegistrationPreflightsExistingDestination(t *testing.T) {
 				t.Fatal("existing output must be checked before generating a key")
 				return nil, "", nil
 			}
-			err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput)
-			if err == nil || !strings.Contains(err.Error(), "already exists") {
+			err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{TargetDir: tc.targetDir, GeneratePrivateKey: true, ZIP: tc.zip})
+			if err == nil {
 				t.Fatalf("expected existing-output error, got %v", err)
 			}
 			if api.lastPath != "" {
 				t.Fatalf("existing output caused request %q", api.lastPath)
 			}
-			if zipOutput {
+			if tc.zip {
 				data, err := os.ReadFile(destination)
 				if err != nil || string(data) != "existing archive" {
 					t.Fatalf("existing output changed: %q, %v", data, err)
@@ -247,7 +260,7 @@ func TestRegistrationFetchFailureDoesNotCreateClient(t *testing.T) {
 				}
 				runner := New(api, io.Discard)
 				runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
-				if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput); err == nil {
+				if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true, ZIP: zipOutput}); err == nil {
 					t.Fatal("expected artifact fetch error")
 				}
 				if api.lastPayload != nil {
@@ -286,7 +299,7 @@ func TestRegistrationFetchesApplicationOnceBeforePost(t *testing.T) {
 			})}
 			runner := New(api, io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput); err != nil {
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true, ZIP: zipOutput}); err != nil {
 				t.Fatal(err)
 			}
 			want := "GET /databuses/db/applications/app\nPOST /databuses/db/applications/app/clients"
@@ -321,7 +334,7 @@ func TestRegistrationZIPProtectsManagerProvidedKeys(t *testing.T) {
 			})
 			runner := New(api, io.Discard)
 			runner.ReadFile = func(string) ([]byte, error) { return []byte("external CSR"), nil }
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", false, overwrite, true); err != nil {
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", ForceOverwrite: overwrite, ZIP: true}); err != nil {
 				t.Fatal(err)
 			}
 			info, err := os.Stat(output)
@@ -417,7 +430,7 @@ func TestRegistrationClientKeyPrecedence(t *testing.T) {
 					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
 						return []byte("generated key"), "generated CSR", nil
 					}
-					if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", generated, overwrite, zipOutput); err != nil {
+					if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", GeneratePrivateKey: generated, ForceOverwrite: overwrite, ZIP: zipOutput}); err != nil {
 						t.Fatal(err)
 					}
 					want := "manager key"

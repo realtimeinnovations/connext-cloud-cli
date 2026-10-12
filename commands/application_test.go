@@ -350,14 +350,22 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 
 func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		zip  bool
+		name, targetDir string
+		zip             bool
 	}{
-		{"directory", false},
-		{"zip", true},
+		{"directory", "", false},
+		{"zip", "", true},
+		{"relative directory", "nested/custom bundle", false},
+		{"relative zip", "nested/custom bundle", true},
+		{"absolute directory", "absolute", false},
+		{"absolute zip", "absolute", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
+			targetDir := test.targetDir
+			if targetDir == "absolute" {
+				targetDir = filepath.Join(t.TempDir(), "custom bundle")
+			}
 			api := &fakeAPI{responses: map[string]*http.Response{
 				"POST /databuses/demo/applications/shapes/clients": newJSONResponse(http.StatusCreated, map[string]any{
 					"client_id": "client-1",
@@ -374,10 +382,21 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
 				return []byte("private key"), "csr", nil
 			}
-			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", "", true, false, test.zip); err != nil {
+			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", ApplicationRegistrationOptions{TargetDir: targetDir, GeneratePrivateKey: true, ZIP: test.zip}); err != nil {
 				t.Fatal(err)
 			}
 			root := "demo-shapes-client-1"
+			archivePath := root + ".zip"
+			if targetDir != "" {
+				if test.zip {
+					archivePath = filepath.Join(targetDir, archivePath)
+				} else {
+					root = targetDir
+				}
+				if _, err := os.Stat("demo-shapes-client-1"); !os.IsNotExist(err) {
+					t.Fatalf("custom output created the default directory: %v", err)
+				}
+			}
 			expected := map[string]string{
 				"shapes.xml":                      `<dds path="./generated/security/identity.pem"/>`,
 				"shapes.py":                       "# example\n",
@@ -388,14 +407,14 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				"generated/security/client.key":   "private key",
 			}
 			if test.zip {
-				info, err := os.Stat(root + ".zip")
+				info, err := os.Stat(archivePath)
 				if err != nil || info.Mode().Perm() != 0o600 {
 					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
 				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
 					t.Fatalf("ZIP output must not create a directory; stat error: %v", err)
 				}
-				archive, err := zip.OpenReader(root + ".zip")
+				archive, err := zip.OpenReader(archivePath)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -427,7 +446,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				}
 				return
 			}
-			if _, err := os.Stat(root + ".zip"); !os.IsNotExist(err) {
+			if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
 				t.Fatalf("directory output must not create a ZIP; stat error: %v", err)
 			}
 			for name, want := range expected {
@@ -512,7 +531,7 @@ func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
 					api := registrationTestAPI(artifacts)
 					runner := New(api, io.Discard)
 					runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("key"), "csr", nil }
-					err := runner.RegisterAppClientWithOptions("db", "app", "client", "", true, false, zipOutput)
+					err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{GeneratePrivateKey: true, ZIP: zipOutput})
 					if err == nil {
 						t.Fatalf("unexpected error: %v", err)
 					}
@@ -571,7 +590,7 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 				}
 				return os.WriteFile(name, data, mode)
 			}
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", "client.csr", test.generateKey, test.overwrite, true); err != nil {
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", GeneratePrivateKey: test.generateKey, ForceOverwrite: test.overwrite, ZIP: true}); err != nil {
 				t.Fatal(err)
 			}
 			if test.generateKey {

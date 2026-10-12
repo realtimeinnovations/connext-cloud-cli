@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -20,6 +21,8 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
+	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
+	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
@@ -506,3 +509,51 @@ func (provider parserAuthConfigProvider) GetConfig() (map[string]string, error) 
 
 func (parserAuthConfigProvider) GetClientID() string                 { return "client-id" }
 func (parserAuthConfigProvider) RequireConfiguration(io.Writer) bool { return true }
+
+func TestRegisterClientTargetDirectory(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		t.Run(map[bool]string{false: "directory", true: "zip"}[zipOutput], func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			target := filepath.Join("nested", "custom bundle")
+			api := cloudapi.New(func() (string, error) { return "https://manager.test", nil }, func() (map[string]string, error) { return nil, nil })
+			api.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+				switch request.Method + " " + request.URL.Path {
+				case "GET /databuses/db/applications/app":
+					return stringResponse(http.StatusOK, `{"bundle":{"version":2,"qos":"<qos/>","types":"<types/>","application":"<app/>","example":"# example","readme":"# readme"},"manifest":{"topics":[]}}`), nil
+				case "POST /databuses/db/applications/app/clients":
+					return stringResponse(http.StatusCreated, `{"client_id":"client","secure_files":{}}`), nil
+				default:
+					t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+					return stringResponse(http.StatusNotFound, `{}`), nil
+				}
+			})
+			runner := commands.New(api, io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
+			args := []string{"databus", "app", "client", "register", "--name", "db", "--app-name", "app", "--client-id", "client", "--gen-private-key", "--target-dir", target}
+			if zipOutput {
+				args = append(args, "--zip")
+			}
+			if err := Execute(args, io.Discard, io.Discard, &app.Runtime{Commands: runner}); err != nil {
+				t.Fatal(err)
+			}
+			if zipOutput {
+				archive, err := zip.OpenReader(filepath.Join(target, "db-app-client.zip"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer archive.Close()
+				key, err := archive.Open("db-app-client/generated/security/client.key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := io.ReadAll(key)
+				key.Close()
+				if err != nil || string(data) != "private key" {
+					t.Fatalf("custom archive key = %q, error = %v", data, err)
+				}
+			} else if data, err := os.ReadFile(filepath.Join(target, "generated", "security", "client.key")); err != nil || string(data) != "private key" {
+				t.Fatalf("custom bundle key = %q, error = %v", data, err)
+			}
+		})
+	}
+}
