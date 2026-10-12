@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -20,7 +21,10 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
+	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
+	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
 
@@ -300,7 +304,7 @@ func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{[]string{"databus", "app", "get", "--help"}, []string{"--manifest", "--zip", "Export application configuration JSON"}},
+		{[]string{"databus", "app", "get", "--help"}, []string{"--qos", "--types", "--generated", "--target-dir", "--manifest", "--zip"}},
 		{[]string{"databus", "app", "client", "register", "--help"}, []string{"--zip"}},
 		{[]string{"databus", "topic", "get", "--help"}, []string{"--topic", "--type-xml"}},
 	} {
@@ -316,21 +320,21 @@ func TestParserShowsCloudApplicationArtifactAndTopicFlags(t *testing.T) {
 	}
 }
 
-func TestParserRejectsConflictingApplicationZIPFlags(t *testing.T) {
-	for _, test := range []struct {
-		flags []string
-		want  string
-	}{
-		{[]string{"--zip", "--example"}, "--zip cannot be combined with --example or --manifest"},
-		{[]string{"--zip", "--manifest"}, "--zip cannot be combined with --example or --manifest"},
-		{[]string{"--zip", "--output", "application.json"}, "--output cannot be combined with artifact flags"},
-		{[]string{"--bundle"}, "unknown flag: --bundle"},
+func TestParserRejectsConflictingApplicationArtifactFlags(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--zip", "--example"},
+		{"--zip", "--manifest"},
+		{"--zip", "--qos"},
+		{"--zip", "--types"},
+		{"--zip", "--generated"},
+		{"--types", "--output", "application.json"},
+		{"--zip", "--output", "application.json"},
 	} {
-		t.Run(strings.Join(test.flags, " "), func(t *testing.T) {
-			args := append([]string{"databus", "app", "get", "--name", "db", "--app-name", "shapes"}, test.flags...)
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			args := append([]string{"databus", "app", "get", "--name", "db", "--app-name", "shapes"}, flags...)
 			err := Execute(args, io.Discard, io.Discard, nil)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("unexpected error: %v; want %q", err, test.want)
+			if err == nil || clierror.From(err).Code != clierror.CodeInvalidArgument {
+				t.Fatalf("expected invalid-argument error, got %v", err)
 			}
 		})
 	}
@@ -505,3 +509,51 @@ func (provider parserAuthConfigProvider) GetConfig() (map[string]string, error) 
 
 func (parserAuthConfigProvider) GetClientID() string                 { return "client-id" }
 func (parserAuthConfigProvider) RequireConfiguration(io.Writer) bool { return true }
+
+func TestRegisterClientTargetDirectory(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		t.Run(map[bool]string{false: "directory", true: "zip"}[zipOutput], func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			target := filepath.Join("nested", "custom bundle")
+			api := cloudapi.New(func() (string, error) { return "https://manager.test", nil }, func() (map[string]string, error) { return nil, nil })
+			api.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
+				switch request.Method + " " + request.URL.Path {
+				case "GET /databuses/db/applications/app":
+					return stringResponse(http.StatusOK, `{"bundle":{"version":2,"qos":"<qos/>","types":"<types/>","application":"<app/>","example":"# example","readme":"# readme"},"manifest":{"topics":[]}}`), nil
+				case "POST /databuses/db/applications/app/clients":
+					return stringResponse(http.StatusCreated, `{"client_id":"client","secure_files":{}}`), nil
+				default:
+					t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+					return stringResponse(http.StatusNotFound, `{}`), nil
+				}
+			})
+			runner := commands.New(api, io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
+			args := []string{"databus", "app", "client", "register", "--name", "db", "--app-name", "app", "--client-id", "client", "--gen-private-key", "--target-dir", target}
+			if zipOutput {
+				args = append(args, "--zip")
+			}
+			if err := Execute(args, io.Discard, io.Discard, &app.Runtime{Commands: runner}); err != nil {
+				t.Fatal(err)
+			}
+			if zipOutput {
+				archive, err := zip.OpenReader(filepath.Join(target, "db-app-client.zip"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer archive.Close()
+				key, err := archive.Open("db-app-client/generated/security/client.key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := io.ReadAll(key)
+				key.Close()
+				if err != nil || string(data) != "private key" {
+					t.Fatalf("custom archive key = %q, error = %v", data, err)
+				}
+			} else if data, err := os.ReadFile(filepath.Join(target, "generated", "security", "client.key")); err != nil || string(data) != "private key" {
+				t.Fatalf("custom bundle key = %q, error = %v", data, err)
+			}
+		})
+	}
+}

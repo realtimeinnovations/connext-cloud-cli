@@ -887,10 +887,29 @@ func newApplicationCommand(runtime *app.Runtime) *cobra.Command {
 	cmd := parentCommand("app", "Manage Databus applications")
 	cmd.Long = `Manage Databus applications.
 
+Cloud application flow:
+  1. For a secured application, use app client register to download a runnable
+     bundle with generated QoS, types, and client credentials.
+  2. Extract ZIP downloads and customize the root application XML and Python.
+  3. Use app get --generated --target-dir <bundle-directory> to refresh QoS
+     and types while preserving your example edits and security files.
+
+  app get --example downloads the full example as a directory; --zip downloads
+  an example archive. These downloads contain no credentials. Unsecured
+  applications can run them directly; secured applications need registration.
+  Use app get --qos or --types to refresh one generated artifact.
+
 Formatting:
   create and delete support --format json for versioned results and errors.
   JSON mode disables interaction. get retains its existing file output.`
-	cmd.Example = "  rticloud databus app create --name demo --app-name subscriber --format json"
+	cmd.Example = `  # Secured application: register a client and download the full bundle
+  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --zip
+
+  # Refresh generated QoS and types in the extracted bundle
+  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1
+
+  # Download an example ZIP without client credentials
+  rticloud databus app get --name demo --app-name shapes --zip`
 
 	{ // create
 		var name, appName, kind, configFile string
@@ -925,12 +944,27 @@ Formatting:
 	}
 
 	{ // get
-		var name, appName, output string
-		var example, force, manifest, zipOutput bool
+		var name, appName, output, targetDir string
+		var example, force, manifest, zipOutput, qos, types, generated bool
 		c := &cobra.Command{
 			Use:   "get",
-			Short: "Get a Databus application",
-			Args:  cobra.NoArgs,
+			Short: "Download application artifacts or refresh generated QoS and types",
+			Long: `Download application artifacts or refresh an existing cloud application bundle.
+
+For cloud applications, get downloads generated QoS and types by default.
+--qos and --types select one artifact; --example also downloads editable XML,
+Python, README, and a manifest; --zip packages the full example as an archive.
+
+Use --target-dir to refresh an existing bundle. Generated files are replaced;
+example edits and security files are preserved. --example --force explicitly
+replaces editable examples.
+
+get does not issue or download client credentials. For a runnable secured
+bundle, use app client register --gen-private-key, optionally with --zip.`,
+			Example: `  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./demo-shapes-shapes-1
+  rticloud databus app get --name demo --app-name shapes --example --target-dir ./shapes
+  rticloud databus app get --name demo --app-name shapes --types --target-dir ./shapes`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return argumentError("--name is required")
@@ -941,14 +975,18 @@ Formatting:
 				if output != "" && example {
 					return argumentError("--example cannot be used with --output")
 				}
-				if output != "" && (manifest || zipOutput) {
+				if output != "" && (manifest || zipOutput || qos || types || generated || targetDir != "") {
 					return argumentError("--output cannot be combined with artifact flags")
 				}
-				if zipOutput && (example || manifest) {
-					return argumentError("--zip cannot be combined with --example or --manifest")
+				if zipOutput && (example || manifest || qos || types || generated) {
+					return argumentError("--zip cannot be combined with other artifact flags")
 				}
 				return runtime.Commands.DownloadApplication(name, appName, commands.ApplicationDownloadOptions{
 					GenerateExample: example,
+					QoS:             qos,
+					Types:           types,
+					Generated:       generated,
+					TargetDir:       targetDir,
 					IncludeManifest: manifest,
 					ZIP:             zipOutput,
 					ForceOverwrite:  force,
@@ -958,11 +996,15 @@ Formatting:
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application name")
-		c.Flags().BoolVar(&example, "example", false, "Include example configuration")
+		c.Flags().BoolVar(&example, "example", false, "Download the full example; preserve existing example files unless --force is set")
 		c.Flags().StringVarP(&output, "output", "o", "", "Export application configuration JSON to this file")
 		c.Flags().BoolVar(&manifest, "manifest", false, "Also write the manager-provided manifest")
-		c.Flags().BoolVar(&zipOutput, "zip", false, "Package XML, example, and manifest as a ZIP instead of individual files")
+		c.Flags().BoolVar(&zipOutput, "zip", false, "Package the full example and generated artifacts as a ZIP")
 		c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing files")
+		c.Flags().BoolVar(&qos, "qos", false, "Refresh only generated QoS")
+		c.Flags().BoolVar(&types, "types", false, "Refresh only generated types from the saved snapshot")
+		c.Flags().BoolVar(&generated, "generated", false, "Refresh generated QoS and types, preserving examples and credentials (default)")
+		c.Flags().StringVar(&targetDir, "target-dir", "", "Bundle directory to download into or refresh")
 		cmd.AddCommand(c)
 	}
 
@@ -1024,12 +1066,27 @@ Formatting:
 	}
 
 	{ // register
-		var name, appName, clientID, csrFile string
+		var name, appName, clientID, csrFile, targetDir string
 		var genPrivateKey, force, zipOutput bool
 		c := &cobra.Command{
 			Use:   "register",
-			Short: "Register an application client",
-			Args:  cobra.NoArgs,
+			Short: "Register a client and download its bundle with credentials",
+			Long: `Register a client and download its application bundle with security credentials.
+
+For a cloud application, the bundle contains editable XML and Python examples,
+a README, a manifest, generated QoS and types, and credentials under
+generated/security/. The default output is a directory named
+<databus>-<application>-<client-id>. --target-dir selects a different bundle
+directory. With --zip, it selects the folder containing the named archive.
+
+Use --gen-private-key to generate the client's private key and CSR, or --csr-file
+to supply your own CSR. When supplying a CSR, keep its matching private key.
+
+After customizing the example, use app get --generated --target-dir <bundle-directory>
+to refresh QoS and types while preserving your edits and credentials.`,
+			Example: `  rticloud databus app client register --name demo --app-name shapes --client-id shapes-1 --gen-private-key --target-dir ./shapes
+  rticloud databus app get --name demo --app-name shapes --generated --target-dir ./shapes`,
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if name == "" {
 					return argumentError("--name is required")
@@ -1043,12 +1100,13 @@ Formatting:
 				if (csrFile == "") == !genPrivateKey {
 					return argumentError("exactly one of --csr-file or --gen-private-key is required")
 				}
-				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, force, zipOutput)
+				return runtime.Commands.RegisterAppClientWithOptions(name, appName, clientID, commands.ApplicationRegistrationOptions{CSRFile: csrFile, TargetDir: targetDir, GeneratePrivateKey: genPrivateKey, ForceOverwrite: force, ZIP: zipOutput})
 			},
 		}
 		c.Flags().StringVar(&name, "name", "", "Resource name")
 		c.Flags().StringVar(&appName, "app-name", "", "Application template name")
 		c.Flags().StringVar(&clientID, "client-id", "", "Client ID")
+		c.Flags().StringVar(&targetDir, "target-dir", "", "Bundle directory, or archive destination folder with --zip")
 		c.Flags().StringVar(&csrFile, "csr-file", "", "CSR file")
 		c.Flags().BoolVar(&genPrivateKey, "gen-private-key", false, "Generate a private key")
 		c.Flags().BoolVar(&zipOutput, "zip", false, "Package application artifacts and security files as a ZIP instead of a directory")

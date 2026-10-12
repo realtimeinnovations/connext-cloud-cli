@@ -17,6 +17,7 @@ import (
 	"net/url"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,16 +31,54 @@ type applicationManifest struct {
 	TopicData json.RawMessage `json:"topic_data"`
 }
 
+// applicationBundleV2 separates managed configuration from editable examples.
+type applicationBundleV2 struct {
+	Version     int    `json:"version"`
+	QoS         string `json:"qos"`
+	Types       string `json:"types"`
+	Application string `json:"application"`
+	Example     string `json:"example"`
+	Readme      string `json:"readme"`
+}
+
+func (bundle *applicationBundleV2) validate() error {
+	if bundle.Version != 2 {
+		return fmt.Errorf("unsupported application bundle version %d", bundle.Version)
+	}
+	for _, content := range []string{bundle.QoS, bundle.Types, bundle.Application, bundle.Example, bundle.Readme} {
+		if strings.TrimSpace(content) == "" {
+			return fmt.Errorf("application bundle artifacts are incomplete")
+		}
+	}
+	return nil
+}
+
+func (bundle *applicationBundleV2) files(appName string) map[string][]byte {
+	return map[string][]byte{
+		appName + ".xml":                      []byte(bundle.Application),
+		appName + ".py":                       []byte(bundle.Example),
+		"README.md":                           []byte(bundle.Readme),
+		"generated/" + appName + ".qos.xml":   []byte(bundle.QoS),
+		"generated/" + appName + ".types.xml": []byte(bundle.Types),
+	}
+}
+
 type applicationArtifacts struct {
-	ClientConfig  string          `json:"client_config"`
-	ClientData    json.RawMessage `json:"client_data"`
-	ClientExample string          `json:"client_example"`
-	Manifest      json.RawMessage `json:"manifest"`
+	Bundle       *applicationBundleV2 `json:"bundle"`
+	ClientConfig string               `json:"client_config"`
+	ClientData   json.RawMessage      `json:"client_data"`
+	Manifest     json.RawMessage      `json:"manifest"`
 }
 
 func (artifacts applicationArtifacts) validateComplete() error {
+	if artifacts.Bundle == nil {
+		return fmt.Errorf("manager did not return an application bundle")
+	}
+	if err := artifacts.Bundle.validate(); err != nil {
+		return err
+	}
 	manifest := bytes.TrimSpace(artifacts.Manifest)
-	if artifacts.ClientConfig == "" || artifacts.ClientExample == "" || len(manifest) == 0 || bytes.Equal(manifest, []byte("null")) {
+	if len(manifest) == 0 || bytes.Equal(manifest, []byte("null")) {
 		return fmt.Errorf("application artifacts are incomplete")
 	}
 	return nil
@@ -98,11 +137,16 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 		_, err = entry.Write(data)
 		return err
 	}
-	if err := addFile(appName+".xml", []byte(artifacts.ClientConfig), 0o644); err != nil {
-		return nil, err
+	files := artifacts.Bundle.files(appName)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
 	}
-	if err := addFile(appName+".py", []byte(artifacts.ClientExample), 0o644); err != nil {
-		return nil, err
+	sort.Strings(names)
+	for _, name := range names {
+		if err := addFile(name, files[name], 0o644); err != nil {
+			return nil, err
+		}
 	}
 	manifest, err := json.MarshalIndent(json.RawMessage(artifacts.Manifest), "", "  ")
 	if err != nil {
@@ -111,10 +155,7 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 	if err := addFile("manifest.json", append(manifest, '\n'), 0o644); err != nil {
 		return nil, err
 	}
-	secureDir := ""
-	if strings.Contains(artifacts.ClientConfig, "./secure/") {
-		secureDir = "secure"
-	}
+	secureDir := "generated/security"
 	secureFileNames := make([]string, 0, len(secureFiles))
 	for name := range secureFiles {
 		secureFileNames = append(secureFileNames, name)
@@ -149,6 +190,9 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 }
 
 type ApplicationDownloadOptions struct {
+	QoS             bool
+	Types           bool
+	Generated       bool
 	GenerateExample bool
 	IncludeManifest bool
 	ZIP             bool
@@ -340,65 +384,112 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 		_, err = runner.SaveClientFile("", options.ConfigOutput, append(data, '\n'), options.ForceOverwrite)
 		return err
 	}
-	if artifacts.ClientConfig == "" {
-		return fmt.Errorf("manager did not return XML configuration for %q", appName)
+	var clientData struct {
+		Kind string `json:"kind"`
 	}
-	if options.ZIP {
-		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
-		if err != nil {
-			return err
+	_ = json.Unmarshal(artifacts.ClientData, &clientData)
+	if clientData.Kind == "gateway" || clientData.Kind == "telemetry-service-collector" {
+		if options.ZIP || options.GenerateExample || options.QoS || options.Types || options.Generated || options.IncludeManifest {
+			return fmt.Errorf("artifact flags are only supported for cloud applications")
 		}
-		if _, err := runner.SaveClientFile(options.TargetDir, name+"-"+appName+".zip", bundle, options.ForceOverwrite); err != nil {
-			return err
+		if strings.TrimSpace(artifacts.ClientConfig) == "" {
+			return fmt.Errorf("manager did not return XML configuration for %q", appName)
 		}
-		runner.warnUnknownTypes(artifacts.Manifest)
-		return nil
-	}
-	if options.GenerateExample && artifacts.ClientExample == "" {
-		return fmt.Errorf("manager did not return example for %q", appName)
-	}
-	var manifest []byte
-	if options.IncludeManifest {
-		raw := bytes.TrimSpace(artifacts.Manifest)
-		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
-			return fmt.Errorf("manager did not return manifest")
-		}
-		manifest, err = formatJSON(raw)
-		if err != nil {
-			return err
-		}
-	}
-	type outputFile struct {
-		name string
-		data []byte
-	}
-	files := []outputFile{{appName + ".xml", []byte(artifacts.ClientConfig)}}
-	if options.GenerateExample {
-		files = append(files, outputFile{appName + ".py", []byte(artifacts.ClientExample)})
-	}
-	if options.IncludeManifest {
-		files = append(files, outputFile{"manifest.json", manifest})
-	}
-	for _, file := range files {
-		path := filepath.Join(options.TargetDir, file.name)
-		if info, err := runner.Stat(path); err == nil {
-			if info != nil && info.IsDir() {
-				return fmt.Errorf("%s is a directory", path)
-			}
-			if !options.ForceOverwrite {
-				return fmt.Errorf("%s already exists. Use --force to overwrite", path)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect application output %s: %w", path, err)
-		}
-	}
-	for _, file := range files {
-		saved, err := runner.SaveClientFile(options.TargetDir, file.name, file.data, options.ForceOverwrite)
+		saved, err := runner.SaveClientFile(options.TargetDir, appName+".xml", []byte(artifacts.ClientConfig), options.ForceOverwrite)
 		if err != nil {
 			return err
 		}
 		if !saved {
-			return fmt.Errorf("application artifact %s was not saved", filepath.Join(options.TargetDir, file.name))
+			return fmt.Errorf("application configuration was not saved")
+		}
+		return nil
+	}
+	if err := artifacts.validateComplete(); err != nil {
+		return err
+	}
+	if options.ZIP {
+		fileName := name + "-" + appName + ".zip"
+		if err := validateApplicationOutputPath(filepath.Clean(options.TargetDir), filepath.Join(options.TargetDir, fileName), false); err != nil {
+			return err
+		}
+		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
+		if err != nil {
+			return err
+		}
+		saved, err := runner.SaveClientFile(options.TargetDir, fileName, bundle, options.ForceOverwrite)
+		if err != nil {
+			return err
+		}
+		if !saved {
+			return fmt.Errorf("application archive was not saved")
+		}
+		runner.warnUnknownTypes(artifacts.Manifest)
+		return nil
+	}
+	return runner.downloadSplitApplication(appName, artifacts, options)
+}
+
+// Refresh only the selected managed files. Existing editable files are skipped
+// unless the caller explicitly requests replacement with --force.
+func (runner *Runner) downloadSplitApplication(appName string, artifacts applicationArtifacts, options ApplicationDownloadOptions) error {
+	if err := artifacts.Bundle.validate(); err != nil {
+		return err
+	}
+	files := map[string][]byte{}
+	allGenerated := options.Generated || options.GenerateExample || (!options.QoS && !options.Types)
+	if allGenerated || options.QoS {
+		files["generated/"+appName+".qos.xml"] = []byte(artifacts.Bundle.QoS)
+	}
+	if allGenerated || options.Types {
+		files["generated/"+appName+".types.xml"] = []byte(artifacts.Bundle.Types)
+	}
+	if options.GenerateExample {
+		files = artifacts.Bundle.files(appName)
+	}
+	if options.IncludeManifest || options.GenerateExample {
+		raw := bytes.TrimSpace(artifacts.Manifest)
+		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("manager did not return manifest")
+		}
+		data, err := formatJSON(raw)
+		if err != nil {
+			return err
+		}
+		files["manifest.json"] = data
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	// Check all destinations before writing any files.
+	root := filepath.Clean(options.TargetDir)
+	selected := make([]string, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(options.TargetDir, name)
+		if err := validateApplicationOutputPath(root, path, false); err != nil {
+			return err
+		}
+		if _, err := runner.Stat(path); err == nil {
+			if !strings.HasPrefix(name, "generated/") && name != "manifest.json" && !options.ForceOverwrite {
+				_, _ = fmt.Fprintf(runner.Out, "Preserved %s (use --force to replace examples)\n", path)
+				continue
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect application output %s: %w", path, err)
+		}
+		selected = append(selected, name)
+	}
+	for _, name := range selected {
+		if err := validateApplicationOutputPath(root, filepath.Join(root, name), false); err != nil {
+			return err
+		}
+		saved, err := runner.SaveClientFile(options.TargetDir, name, files[name], true)
+		if err != nil {
+			return err
+		}
+		if !saved {
+			return fmt.Errorf("application artifact %s was not saved", name)
 		}
 	}
 	runner.warnUnknownTypes(artifacts.Manifest)
@@ -453,20 +544,6 @@ func (runner *Runner) ListAppClients(name string, appName string) error {
 	return runner.writeResult(clients)
 }
 
-func CreateClientBundleDirectory(databusName string, appName string, clientName string) (string, error) {
-	if databusName == "" || appName == "" || clientName == "" {
-		return "", fmt.Errorf("databus_name, app_name, and client_name must be provided")
-	}
-	if err := validateApplicationNames(databusName, appName, clientName); err != nil {
-		return "", err
-	}
-	targetDir := fmt.Sprintf("%s-%s-%s", databusName, appName, clientName)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
-	}
-	return targetDir, nil
-}
-
 func (runner *Runner) SaveClientFile(targetDir string, fileName string, data []byte, forceOverwrite bool) (bool, error) {
 	return runner.saveClientFile(targetDir, fileName, data, forceOverwrite, strings.HasSuffix(fileName, ".key"))
 }
@@ -513,7 +590,68 @@ func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey 
 	return nil
 }
 
-func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool, zipOutput bool) error {
+// Validate the path and expected destination type without creating it.
+func validateApplicationOutputPath(root, path string, directory bool) error {
+	if err := rtipaths.ValidateManagedPath(root, path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if directory {
+		if !info.IsDir() {
+			return fmt.Errorf("application output must be a directory: %s", path)
+		}
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("application output must be a regular file: %s", path)
+	}
+	return nil
+}
+
+// Validate all existing bundle destinations before creating client credentials.
+func validateClientBundlePaths(destination, appName string, bundle *applicationBundleV2) error {
+	paths := []string{"manifest.json"}
+	for name := range bundle.files(appName) {
+		paths = append(paths, name)
+	}
+	for _, name := range paths {
+		if err := validateApplicationOutputPath(destination, filepath.Join(destination, name), false); err != nil {
+			return err
+		}
+	}
+	securityDir := filepath.Join(destination, "generated", "security")
+	if err := validateApplicationOutputPath(destination, securityDir, true); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(securityDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Security filenames come from registration, so check existing entries too.
+	for _, entry := range entries {
+		if err := validateApplicationOutputPath(destination, filepath.Join(securityDir, entry.Name()), false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type ApplicationRegistrationOptions struct {
+	CSRFile            string
+	TargetDir          string
+	GeneratePrivateKey bool
+	ForceOverwrite     bool
+	ZIP                bool
+}
+
+func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID string, options ApplicationRegistrationOptions) error {
 	if clientID == "" {
 		_, _ = fmt.Fprintln(runner.Out, "Error: --client-id is required")
 		return nil
@@ -522,14 +660,20 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		return err
 	}
 	destination := name + "-" + appName + "-" + clientID
-	if zipOutput {
-		destination += ".zip"
+	root := "."
+	if options.TargetDir != "" {
+		root = filepath.Clean(options.TargetDir)
 	}
-	if info, err := runner.Stat(destination); err == nil {
-		if zipOutput == info.IsDir() {
-			return fmt.Errorf("%s has the wrong output type", destination)
-		}
-		if !forceOverwrite {
+	if options.ZIP {
+		destination = filepath.Join(root, destination+".zip")
+	} else if options.TargetDir != "" {
+		destination = root
+	}
+	if err := validateApplicationOutputPath(root, destination, !options.ZIP); err != nil {
+		return err
+	}
+	if _, err := runner.Stat(destination); err == nil {
+		if !options.ForceOverwrite {
 			return fmt.Errorf("%s already exists. Use --force to overwrite", destination)
 		}
 	} else if !os.IsNotExist(err) {
@@ -545,13 +689,18 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if err := artifacts.validateComplete(); err != nil {
 		return err
 	}
+	if !options.ZIP {
+		if err := validateClientBundlePaths(destination, appName, artifacts.Bundle); err != nil {
+			return err
+		}
+	}
 	manifest, err := formatJSON(artifacts.Manifest)
 	if err != nil {
 		return err
 	}
 	var privateKey []byte
 	var csrPEM string
-	if genPrivateKey {
+	if options.GeneratePrivateKey {
 		if runner.CSRGenerator == nil {
 			return fmt.Errorf("CSR generator is not configured")
 		}
@@ -562,11 +711,11 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		}
 		_, _ = fmt.Fprintln(runner.Out, "Generated private key and CSR.")
 	} else {
-		if csrFile == "" {
+		if options.CSRFile == "" {
 			_, _ = fmt.Fprintln(runner.Out, "Error: either --csr-file or --gen-private-key is required")
 			return nil
 		}
-		data, err := runner.ReadFile(csrFile)
+		data, err := runner.ReadFile(options.CSRFile)
 		if err != nil {
 			_, _ = fmt.Fprintf(runner.Out, "Error reading CSR file: %v\n", err)
 			return nil
@@ -601,7 +750,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 	if err := validateSecureFileNames(secureFiles); err != nil {
 		return err
 	}
-	if zipOutput {
+	if options.ZIP {
 		bundle, err := applicationBundle(name, appName, clientID, artifacts, secureFiles, privateKey)
 		if err != nil {
 			return err
@@ -610,7 +759,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		for name := range secureFiles {
 			sensitive = sensitive || strings.HasSuffix(name, ".key")
 		}
-		saved, err := runner.saveClientFile("", destination, bundle, forceOverwrite, sensitive)
+		saved, err := runner.saveClientFile("", destination, bundle, options.ForceOverwrite, sensitive)
 		if err != nil {
 			return err
 		}
@@ -620,25 +769,18 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 		runner.warnUnknownTypes(artifacts.Manifest)
 		return nil
 	}
-	targetDir, err := CreateClientBundleDirectory(name, appName, clientID)
-	if err != nil {
+	if err := runner.MkdirAll(destination, 0o755); err != nil {
 		return err
 	}
-	files := map[string][]byte{
-		appName + ".xml": []byte(artifacts.ClientConfig),
-		appName + ".py":  []byte(artifacts.ClientExample),
-		"manifest.json":  manifest,
-	}
+	files := artifacts.Bundle.files(appName)
+	files["manifest.json"] = manifest
 	for fileName, data := range files {
-		if _, err := runner.SaveClientFile(targetDir, fileName, data, forceOverwrite); err != nil {
+		if _, err := runner.SaveClientFile(destination, fileName, data, options.ForceOverwrite); err != nil {
 			return err
 		}
 	}
-	secureDir := targetDir
-	if strings.Contains(artifacts.ClientConfig, "./secure/") {
-		secureDir = filepath.Join(targetDir, "secure")
-	}
-	if err := runner.SaveSecureFiles(secureFiles, privateKey, forceOverwrite, secureDir); err != nil {
+	secureDir := filepath.Join(destination, "generated", "security")
+	if err := runner.SaveSecureFiles(secureFiles, privateKey, options.ForceOverwrite, secureDir); err != nil {
 		return err
 	}
 	runner.warnUnknownTypes(artifacts.Manifest)
@@ -646,7 +788,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name string, appName string, 
 }
 
 func (runner *Runner) RegisterAppClient(name string, appName string, clientID string, csrFile string, genPrivateKey bool, forceOverwrite bool) error {
-	return runner.RegisterAppClientWithOptions(name, appName, clientID, csrFile, genPrivateKey, forceOverwrite, false)
+	return runner.RegisterAppClientWithOptions(name, appName, clientID, ApplicationRegistrationOptions{CSRFile: csrFile, GeneratePrivateKey: genPrivateKey, ForceOverwrite: forceOverwrite})
 }
 
 func (runner *Runner) RevokeAppClient(name string, appName string, clientID string) error {

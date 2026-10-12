@@ -75,27 +75,8 @@ func readInstallHost(directory string) (installHost, error) {
 	return document.Host, err
 }
 
-// Refuse symlinks below the RTI root before writing or trusting managed content.
 func safeManagedPath(root, target string) error {
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return fmt.Errorf("installation path is outside RTI root: %s", target)
-	}
-	current := root
-	for _, part := range append([]string{""}, strings.Split(relative, string(filepath.Separator))...) {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("managed path must not contain symlinks: %s", current)
-		}
-	}
-	return nil
+	return rtipaths.ValidateManagedPath(root, target)
 }
 
 func validateManagedMetadata(directory, version string) (Install, error) {
