@@ -75,6 +75,8 @@ var allArtifacts = []ArtifactID{ArtifactIdentity, ArtifactPermissions, ArtifactP
 // displayArtifacts is the full list shown in the TUI.
 var displayArtifacts = []ArtifactID{ArtifactIdentity, ArtifactPermissions, ArtifactPSK, ArtifactCRL, ArtifactDeviceCert}
 
+var lightweightDisplayArtifacts = []ArtifactID{ArtifactPSK, ArtifactDeviceCert}
+
 // EnrollRequest is the JSON payload placed in the inbox directory to request
 // enrollment of a new Participant Profile.
 //
@@ -84,6 +86,7 @@ var displayArtifacts = []ArtifactID{ArtifactIdentity, ArtifactPermissions, Artif
 type EnrollRequest struct {
 	ServiceID     string   `json:"service_id"`
 	ParticipantID string   `json:"participant_id"`
+	SecurityMode  string   `json:"security_mode,omitempty"`
 	CampaignToken string   `json:"campaign_token,omitempty"`
 	Serial        string   `json:"serial"`
 	MACs          []string `json:"macs"`
@@ -99,10 +102,11 @@ type EnrollRequest struct {
 // AgentState is the on-disk representation of a profile's artifact state.
 // Written to <slot>/agent_state.json after each successful fetch or renewal.
 type AgentState struct {
-	State      ProfileState             `json:"state"`
-	NotAfter   map[ArtifactID]time.Time `json:"not_after"`
-	IssuedAt   map[ArtifactID]time.Time `json:"issued_at,omitempty"`
-	DeviceName string                   `json:"device_name,omitempty"`
+	State        ProfileState             `json:"state"`
+	NotAfter     map[ArtifactID]time.Time `json:"not_after"`
+	IssuedAt     map[ArtifactID]time.Time `json:"issued_at,omitempty"`
+	DeviceName   string                   `json:"device_name,omitempty"`
+	SecurityMode string                   `json:"security_mode,omitempty"`
 
 	// ServiceID is the edge provisioning service (e.g. ces-alpha-123) — the
 	// top level of the layered artifact tree. Used for CSR generation, API
@@ -145,6 +149,7 @@ type profile struct {
 	domainTemplateID string // domain template (e.g. 0:domain-0849); domain scope
 	serial           string // device serial; node id leaf
 	participantID    string // participant template ID (request field); participant scope
+	securityMode     string
 	deviceName       string
 	state            ProfileState
 	notAfter         map[ArtifactID]time.Time
@@ -177,6 +182,23 @@ func (p *profile) domain() string { return p.domainTemplateID }
 
 // participant is the participant template id.
 func (p *profile) participant() string { return p.participantID }
+
+func (p *profile) mode() string {
+	if p.securityMode == "" {
+		if p.participantID == "" {
+			return "lightweight"
+		}
+		return "full"
+	}
+	return p.securityMode
+}
+
+func (p *profile) artifacts() []ArtifactID {
+	if p.mode() == "lightweight" {
+		return lightweightDisplayArtifacts
+	}
+	return allArtifacts
+}
 
 // node is the per-node leaf id. The device serial uniquely identifies the
 // node; deviceName is retained on the profile for in-memory keying and display
@@ -307,6 +329,7 @@ type Agent struct {
 	ListServicesFunc             func() ([]string, error)
 	ListDomainTemplatesFunc      func(service string) ([]string, error)
 	ListParticipantTemplatesFunc func(service string) ([]string, error)
+	GetDomainTemplateModeFunc    func(service, domain string) (string, error)
 
 	RequestIdentityFunc    func(url, cert, key, ca, serverAddr, csrFile, output string) error
 	RequestPermissionsFunc func(url, cert, key, ca, serverAddr, output string) error
@@ -709,6 +732,7 @@ func (a *Agent) loadProfile(statePath string) {
 		domainTemplateID: st.DomainTemplateID,
 		serial:           st.Serial,
 		participantID:    st.ParticipantTemplateID,
+		securityMode:     st.SecurityMode,
 		deviceName:       st.DeviceName,
 		state:            st.State,
 		notAfter:         st.NotAfter,
@@ -739,11 +763,12 @@ func (a *Agent) loadProfile(statePath string) {
 // enrollment and runs the artifact-fetch sequence against the existing
 // credentials.
 type adoptableNode struct {
-	service     string
-	domain      string
-	participant string
-	node        string
-	url         string
+	service      string
+	domain       string
+	participant  string
+	node         string
+	url          string
+	securityMode string
 }
 
 // countProfiles returns the number of in-memory profiles.
@@ -795,6 +820,9 @@ func (a *Agent) findAdoptableNodes() []adoptableNode {
 					continue
 				}
 				node := nd.Name()
+				if n, ok := a.adoptableNode(service, domain, "", node); ok {
+					found = append(found, n)
+				}
 				parts, err := a.ReadDir(filepath.Join(a.Store.MTLSRoot(service), dom.Name(), node))
 				if err != nil {
 					continue
@@ -835,10 +863,20 @@ func (a *Agent) adoptableNode(service, domain, participant, node string) (adopta
 	if url == "" {
 		return adoptableNode{}, false
 	}
+	mode := "full"
+	if participant == "" {
+		mode = "lightweight"
+	}
+	if data, err := a.ReadFile(a.Store.NodeSecurityModePath(service, domain, participant, node)); err == nil {
+		mode = strings.TrimSpace(string(data))
+		if mode != "full" && mode != "lightweight" {
+			return adoptableNode{}, false
+		}
+	}
 	if _, ok := a.profiles.Load(profileKey(domain, participant, node)); ok {
 		return adoptableNode{}, false
 	}
-	return adoptableNode{service: service, domain: domain, participant: participant, node: node, url: url}, true
+	return adoptableNode{service: service, domain: domain, participant: participant, node: node, url: url, securityMode: mode}, true
 }
 
 // adoptProfile builds a profile from an adoptable node's on-disk credentials
@@ -855,6 +893,7 @@ func (a *Agent) adoptProfile(n adoptableNode) error {
 		domainTemplateID: n.domain,
 		serial:           n.node,
 		participantID:    n.participant,
+		securityMode:     n.securityMode,
 		state:            StateEnrolled,
 		notAfter:         make(map[ArtifactID]time.Time),
 		issuedAt:         make(map[ArtifactID]time.Time),
@@ -910,7 +949,7 @@ func (a *Agent) sweep() {
 		owner := a.isDomainOwner(p)
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		for _, artifact := range allArtifacts {
+		for _, artifact := range p.artifacts() {
 			// Domain-scoped artifacts are renewed only by the domain owner.
 			if isDomainArtifact(artifact) && !owner {
 				continue
@@ -1000,9 +1039,9 @@ func (a *Agent) processInboxFile(path string) {
 	}
 	// MACs are required by the campaign enrollment endpoint; direct
 	// (domain_template_id) requests may omit them.
-	if req.ServiceID == "" || req.ParticipantID == "" || req.Serial == "" ||
+	if req.ServiceID == "" || req.Serial == "" ||
 		(req.DomainTemplateID == "" && len(req.MACs) == 0) {
-		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields (service_id, participant_id, serial, macs) path=%s", path)
+		a.emitf(catInbox, tui.LogWarn, "inbox missing required fields (service_id, serial, macs) path=%s", path)
 		a.removeInboxFile(path)
 		return
 	}
@@ -1023,10 +1062,17 @@ func (a *Agent) processInboxFile(path string) {
 
 // enrollProfile runs the full enrollment + artifact-fetch sequence for a new profile.
 func (a *Agent) enrollProfile(req EnrollRequest) error {
+	if req.SecurityMode != "" && req.SecurityMode != "full" && req.SecurityMode != "lightweight" {
+		return fmt.Errorf("invalid enrollment security mode %q", req.SecurityMode)
+	}
 	p := a.getOrCreateProfile(req.ServiceID, req.ParticipantID, req.Serial, req.DeviceName)
 
 	p.mu.Lock()
 	p.serial = req.Serial // set serial upfront so store paths include it from the start
+	p.securityMode = req.SecurityMode
+	if p.securityMode == "" && req.ParticipantID == "" {
+		p.securityMode = "lightweight"
+	}
 	p.setState(StateEnrolling)
 	p.mu.Unlock()
 
@@ -1091,9 +1137,17 @@ func (a *Agent) enrollProfile(req EnrollRequest) error {
 	// was known.  After this point two separate enrollments with the same
 	// participantID but different domainTemplateIDs will have distinct keys.
 	if domainTemplateID != "" {
+		mode := p.mode()
+		if data, err := a.ReadFile(a.Store.NodeSecurityModePath(req.ServiceID, domainTemplateID, req.ParticipantID, req.Serial)); err == nil {
+			mode = strings.TrimSpace(string(data))
+			if mode != "full" && mode != "lightweight" {
+				return fmt.Errorf("invalid stored security mode %q", mode)
+			}
+		}
 		oldKey := profileKey(req.ServiceID, req.ParticipantID, req.Serial)
 		p.mu.Lock()
 		p.domainTemplateID = domainTemplateID
+		p.securityMode = mode
 		p.mu.Unlock()
 		newKey := profileKey(p.domain(), req.ParticipantID, req.Serial)
 		if oldKey != newKey {
@@ -1156,13 +1210,17 @@ func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string
 	}
 	cert, key, ca := a.Store.ResolveNodeMTLS(service, domain, participant, node, "", "", "")
 
-	notAfterIdentity, err := a.renewIdentity(p, url, cert, key, ca, nodeOut)
-	if err != nil {
-		return fmt.Errorf("identity: %w", err)
-	}
+	var notAfterIdentity time.Time
+	if p.mode() == "full" {
+		var err error
+		notAfterIdentity, err = a.renewIdentity(p, url, cert, key, ca, nodeOut)
+		if err != nil {
+			return fmt.Errorf("identity: %w", err)
+		}
 
-	if err := a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err != nil {
-		return fmt.Errorf("permissions: %w", err)
+		if err := a.RequestPermissionsFunc(url, cert, key, ca, "", nodeOut); err != nil {
+			return fmt.Errorf("permissions: %w", err)
+		}
 	}
 
 	// PSK and CRL are domain-scoped: their files live in the shared domain
@@ -1175,8 +1233,10 @@ func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string
 		if err := a.RequestPSKFunc(url, cert, key, ca, "", domainOut); err != nil {
 			return fmt.Errorf("psk: %w", err)
 		}
-		if err := a.GetCRLFunc(url, cert, key, ca, "", domainOut); err != nil {
-			return fmt.Errorf("crl: %w", err)
+		if p.mode() == "full" {
+			if err := a.GetCRLFunc(url, cert, key, ca, "", domainOut); err != nil {
+				return fmt.Errorf("crl: %w", err)
+			}
 		}
 	}
 
@@ -1198,7 +1258,7 @@ func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string
 			p.issuedAt[ArtifactIdentity] = enrolledAt
 		}
 	}
-	if nb, na := a.readLease(filepath.Join(nodeDir, "permissions.lease.json")); !na.IsZero() {
+	if nb, na := a.readLease(filepath.Join(nodeDir, "permissions.lease.json")); p.mode() == "full" && !na.IsZero() {
 		p.notAfter[ArtifactPermissions] = na
 		if !nb.IsZero() {
 			p.issuedAt[ArtifactPermissions] = nb
@@ -1210,7 +1270,7 @@ func (a *Agent) fetchAndActivate(p *profile, campaignToken, directNodeURL string
 	// ArtifactPSKCleanup) are set by initializePSKFiles above (owner only); no
 	// need to re-read psk_secret.lease.json here.
 	// CRL has no server-side lease; refresh periodically (owner only).
-	if owner {
+	if owner && p.mode() == "full" {
 		p.notAfter[ArtifactCRL] = enrolledAt.Add(a.CRLInterval)
 		p.issuedAt[ArtifactCRL] = enrolledAt
 	}
@@ -1274,7 +1334,7 @@ func (a *Agent) Reset() error {
 			_, _ = fmt.Fprintln(a.Out, "No agent state found.")
 			return nil
 		}
-		return err
+		return fmt.Errorf("reset failed: %w", err)
 	}
 	logName := filepath.Base(a.Store.LogPath())
 	removed := false
@@ -1284,7 +1344,7 @@ func (a *Agent) Reset() error {
 		}
 		path := filepath.Join(agentDir, entry.Name())
 		if err := os.RemoveAll(path); err != nil {
-			return err
+			return fmt.Errorf("reset failed: %w", err)
 		}
 		_, _ = fmt.Fprintf(a.Out, "Removed %s\n", path)
 		removed = true

@@ -122,7 +122,7 @@ func TestCLIProcess(t *testing.T) {
 		{name: "template list", args: []string{"edge-provisioning", "governance-template", "list", "--service", "demo"}, calls: 1},
 		{name: "template rejected", args: []string{"edge-provisioning", "permissions-template", "get", "--service", "demo", "--name", "tpl"}, status: 404, code: "NOT_FOUND", exit: 4, calls: 1},
 		{name: "campaign list", args: []string{"edge-provisioning", "campaign", "list", "--service", "demo"}, calls: 1},
-		{name: "participant revoke", args: []string{"edge-provisioning", "participant", "revoke", "--service", "demo", "--participant-id", "tpl", "--campaign-id", "camp", "--serial", "SN1"}, calls: 1},
+		{name: "participant revoke", args: []string{"edge-provisioning", "participant", "revoke", "--service", "demo", "--participant-id", "tpl", "--campaign-id", "camp", "--deployment-name", "SN1"}, calls: 1},
 		{name: "network missing name", args: []string{"network", "delete"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "obs missing name", args: []string{"observability", "create"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "template missing service", args: []string{"edge-provisioning", "governance-template", "list"}, code: "INVALID_ARGUMENT", exit: 2},

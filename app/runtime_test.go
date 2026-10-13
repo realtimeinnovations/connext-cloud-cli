@@ -8,6 +8,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -21,8 +22,51 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 )
+
+func TestRunUpdateRequiresManager(t *testing.T) {
+	for _, runtime := range []*Runtime{nil, {}} {
+		err := runtime.RunUpdate(context.Background(), io.Discard, io.Discard, update.Options{})
+		if err == nil || err.Error() != "update manager is not configured" || clierror.From(err).Code != clierror.CodeCommandFailed {
+			t.Fatalf("expected operational configuration error, got %v", err)
+		}
+	}
+}
+
+func TestConfigureConnextDirCreatesAndSelectsDirectory(t *testing.T) {
+	base := t.TempDir()
+	runtime := &Runtime{EdgeStore: edgestore.New(base)}
+	path := filepath.Join(base, "artifacts")
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := runtime.ConfigureConnextDir(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() || runtime.EdgeStore.ConnextDir != path {
+		t.Fatalf("directory not created or selected: err=%v selected=%q", err, runtime.EdgeStore.ConnextDir)
+	}
+}
+
+func TestConfigureConnextDirClassifiesErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var runtime *Runtime
+	err := runtime.ConfigureConnextDir(path)
+	if err == nil || clierror.From(err).Code != clierror.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument for a regular file, got %v", err)
+	}
+	err = runtime.ConfigureConnextDir(filepath.Join(path, "child"))
+	var cause *os.PathError
+	if !errors.As(err, &cause) || !strings.Contains(err.Error(), "--connext-dir") || clierror.From(err).Code != clierror.CodeCommandFailed {
+		t.Fatalf("expected wrapped filesystem failure, got %v", err)
+	}
+}
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
 	_, err := decodeCommandJSON(nil, config.ErrNotConfigured, "GET", "/databuses?extra_fields=true", "", "gateway")

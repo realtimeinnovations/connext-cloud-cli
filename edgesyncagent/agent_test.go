@@ -727,6 +727,39 @@ func TestEnrollProfile_StateTransitionsToActive(t *testing.T) {
 	}
 }
 
+func TestEnrollProfile_ServerModeOverridesRequest(t *testing.T) {
+	ffs := newFakeFS()
+	a := buildTestAgent(t, ffs)
+	nonFiringTimers(a)
+	a.EnrollFunc = func(service, participant, serial string, _ []string, _, _, _ string) (string, error) {
+		ffs.WriteFile(a.Store.NodeSecurityModePath(service, "0:light", participant, serial), []byte("lightweight"), 0o644)
+		return "0:light", nil
+	}
+	a.RequestIdentityFunc = func(string, string, string, string, string, string, string) error {
+		t.Fatal("server-selected lightweight enrollment must not request identity")
+		return nil
+	}
+	a.RequestPermissionsFunc = func(string, string, string, string, string, string) error {
+		t.Fatal("server-selected lightweight enrollment must not request permissions")
+		return nil
+	}
+	a.GetCRLFunc = func(string, string, string, string, string, string) error {
+		t.Fatal("server-selected lightweight enrollment must not request CRL")
+		return nil
+	}
+	req := EnrollRequest{
+		ServiceID: "svc", ParticipantID: "part", Serial: "SN-light", SecurityMode: "full",
+		CampaignToken: buildJWT(map[string]any{"device_domain": "device.example"}),
+	}
+	if err := a.enrollProfile(req); err != nil {
+		t.Fatal(err)
+	}
+	value, ok := a.profiles.Load(profileKey("0:light", "part", "SN-light"))
+	if !ok || value.(*profile).mode() != "lightweight" {
+		t.Fatalf("server mode not applied: profile=%v", value)
+	}
+}
+
 func TestEnrollProfile_DomainArtifactsDedupedAcrossParticipants(t *testing.T) {
 	ffs := newFakeFS()
 	a := buildTestAgent(t, ffs)

@@ -22,7 +22,7 @@ import (
 )
 
 // ParseCampaignToken decodes the JWT payload (without signature verification)
-// and extracts the service_id and participant_id claims.
+// and extracts the service ID and optional participant_id claims.
 func ParseCampaignToken(token string) (serviceID, participantID string, err error) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
@@ -40,10 +40,10 @@ func ParseCampaignToken(token string) (serviceID, participantID string, err erro
 	// namespaced URIs (e.g. "https://devices.cloud.rti.com/edge_system_id").
 	serviceID = claimValue(claims, "edge_system_id", "service_id")
 	participantID = claimValue(claims, "participant_id")
-	if serviceID == "" || participantID == "" {
+	if serviceID == "" {
 		formatted, _ := json.MarshalIndent(claims, "", "  ")
 		return "", "", fmt.Errorf(
-			"could not find edge_system_id/participant_id in token claims.\nDecoded payload:\n%s",
+			"could not find edge_system_id in token claims.\nDecoded payload:\n%s",
 			formatted,
 		)
 	}
@@ -138,12 +138,13 @@ const (
 // enrollment — picking the Provisioning Service and templates from the
 // account catalogue — and campaign enrollment (pasting a campaign token).
 // When the enrollment is fully specified up front (CampaignToken, or Service +
-// DomainTemplateID + ParticipantTemplateID) it runs headless with no prompts.
+// DomainTemplateID with a participant template for full-security domains) it
+// runs headless with no prompts.
 func (a *Agent) ConfigureFirstRun(ctx context.Context) error {
 	if a.CampaignToken != "" {
 		return a.enrollHeadlessCampaign()
 	}
-	if a.Service != "" && a.DomainTemplateID != "" && a.ParticipantTemplateID != "" {
+	if a.Service != "" && a.DomainTemplateID != "" {
 		return a.enrollHeadlessDirect()
 	}
 
@@ -282,7 +283,7 @@ func (a *Agent) chooseAdoptable(adoptable []adoptableNode) ([]adoptableNode, err
 
 // adoptableLabel renders a discovered enrollment for the reuse pick-list.
 func adoptableLabel(n adoptableNode) string {
-	return fmt.Sprintf("%s / %s / %s (serial %s)", n.service, n.domain, n.participant, n.node)
+	return fmt.Sprintf("%s / %s / %s (deployment name %s)", n.service, n.domain, n.participant, n.node)
 }
 
 // campaignWizard drives campaign enrollment: the user pastes a campaign token
@@ -376,7 +377,7 @@ func (e wizardRetryError) Unwrap() error { return e.err }
 // trigger the login flow when no session exists.
 func (a *Agent) operatorWizard(ctx context.Context) error {
 	if a.ListServicesFunc == nil || a.ListDomainTemplatesFunc == nil ||
-		a.ListParticipantTemplatesFunc == nil {
+		a.GetDomainTemplateModeFunc == nil {
 		return fmt.Errorf("operator enrollment is not configured")
 	}
 	for {
@@ -430,11 +431,31 @@ func (a *Agent) buildDirectRequest() (EnrollRequest, error) {
 	if err != nil {
 		return EnrollRequest{}, err
 	}
-	participant, err := a.chooseCatalogItem("Participant Template", a.ParticipantTemplateID,
-		func() ([]string, error) { return a.ListParticipantTemplatesFunc(service) },
-		fmt.Sprintf("rticloud edge-provisioning participant-template create --service %s ...", service))
+	if a.GetDomainTemplateModeFunc == nil {
+		return EnrollRequest{}, fmt.Errorf("domain template mode lookup is not configured")
+	}
+	securityMode, err := a.GetDomainTemplateModeFunc(service, domain)
 	if err != nil {
-		return EnrollRequest{}, err
+		return EnrollRequest{}, wizardRetryError{fmt.Errorf("getting security mode for domain template %q: %w", domain, err)}
+	}
+	var participant string
+	switch securityMode {
+	case "lightweight":
+		if a.ParticipantTemplateID != "" {
+			return EnrollRequest{}, fmt.Errorf("--participant-tpl-id is not allowed for lightweight-security domains")
+		}
+	case "full":
+		if a.ListParticipantTemplatesFunc == nil {
+			return EnrollRequest{}, fmt.Errorf("participant template lookup is not configured")
+		}
+		participant, err = a.chooseCatalogItem("Participant Template", a.ParticipantTemplateID,
+			func() ([]string, error) { return a.ListParticipantTemplatesFunc(service) },
+			fmt.Sprintf("rticloud edge-provisioning participant-template create --service %s ...", service))
+		if err != nil {
+			return EnrollRequest{}, err
+		}
+	default:
+		return EnrollRequest{}, fmt.Errorf("domain template %q has invalid security mode %q", domain, securityMode)
 	}
 	serial, err := a.resolveSerial()
 	if err != nil {
@@ -448,6 +469,7 @@ func (a *Agent) buildDirectRequest() (EnrollRequest, error) {
 		ServiceID:        service,
 		DomainTemplateID: domain,
 		ParticipantID:    participant,
+		SecurityMode:     securityMode,
 		Serial:           serial,
 		MACs:             macs,
 	}, nil
@@ -501,6 +523,25 @@ func (a *Agent) enrollHeadlessCampaign() error {
 // domain template and participant template with no prompting (requires a
 // logged-in management token).
 func (a *Agent) enrollHeadlessDirect() error {
+	if a.GetDomainTemplateModeFunc == nil {
+		return fmt.Errorf("domain template mode lookup is not configured")
+	}
+	securityMode, err := a.GetDomainTemplateModeFunc(a.Service, a.DomainTemplateID)
+	if err != nil {
+		return fmt.Errorf("getting security mode for domain template %q: %w", a.DomainTemplateID, err)
+	}
+	switch securityMode {
+	case "lightweight":
+		if a.ParticipantTemplateID != "" {
+			return fmt.Errorf("--participant-tpl-id is not allowed for lightweight-security domains")
+		}
+	case "full":
+		if a.ParticipantTemplateID == "" {
+			return fmt.Errorf("--participant-tpl-id is required for full-security domains")
+		}
+	default:
+		return fmt.Errorf("domain template %q has invalid security mode %q", a.DomainTemplateID, securityMode)
+	}
 	serial, macs, err := a.headlessSerialAndMACs(false)
 	if err != nil {
 		return err
@@ -509,6 +550,7 @@ func (a *Agent) enrollHeadlessDirect() error {
 		ServiceID:        a.Service,
 		DomainTemplateID: a.DomainTemplateID,
 		ParticipantID:    a.ParticipantTemplateID,
+		SecurityMode:     securityMode,
 		Serial:           serial,
 		MACs:             macs,
 	}
@@ -534,7 +576,7 @@ func (a *Agent) headlessSerialAndMACs(macsRequired bool) (string, []string, erro
 		serial = DetectSerial()
 	}
 	if serial == "" {
-		return "", nil, fmt.Errorf("could not auto-detect a serial number; pass --deployment-name")
+		return "", nil, fmt.Errorf("could not auto-detect a deployment name; pass --deployment-name")
 	}
 	macs := a.MACs
 	if len(macs) == 0 {
@@ -580,7 +622,7 @@ func (a *Agent) resolveSerial() (string, error) {
 		if serial != "" {
 			return serial, nil
 		}
-		_, _ = fmt.Fprintln(a.Out, "Error: serial number is required")
+		_, _ = fmt.Fprintln(a.Out, "Error: deployment name is required")
 	}
 }
 
