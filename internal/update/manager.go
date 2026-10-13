@@ -20,6 +20,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 const (
@@ -299,16 +300,10 @@ func (manager *Manager) download(ctx context.Context, url string, target string)
 		}
 		return fmt.Errorf("download failed for %s: HTTP %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
 	}
-	file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
+	if err := fileoutput.Copy(target, response.Body, 0o600); err != nil {
+		return fmt.Errorf("download response: %w", err)
 	}
-	_, copyErr := io.Copy(file, response.Body)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return fmt.Errorf("download response: %w", copyErr)
-	}
-	return closeErr
+	return nil
 }
 
 func (manager *Manager) replaceUnix(newBinary string, currentBinary string) error {
@@ -337,6 +332,10 @@ func (manager *Manager) replaceUnix(newBinary string, currentBinary string) erro
 }
 
 func copyFile(source string, target string, mode os.FileMode) error {
+	// The updater must exclusively create its staging name, never replace it.
+	if err := fileoutput.Validate(target, fileoutput.File); err != nil {
+		return err
+	}
 	input, err := os.Open(source)
 	if err != nil {
 		return err
@@ -423,6 +422,9 @@ func extractTarGzBinary(archivePath string, binaryName string, target string) er
 }
 
 func writeExtractedFile(target string, source io.Reader) error {
+	if err := fileoutput.Validate(target, fileoutput.File); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
 	if err != nil {
 		return err

@@ -11,7 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 var UserHomeDir = os.UserHomeDir
@@ -47,26 +48,8 @@ func resolveHomeAndCloudRoot() (string, string, error) {
 	return home, root, nil
 }
 
-// ValidateManagedPath rejects paths outside root and symlinks at or below root.
-// Missing components are allowed so outputs can be checked before creation.
+// ValidateManagedPath checks containment and rejects symlinks throughout the path,
+// including ancestors above root. Missing components are allowed for preflight.
 func ValidateManagedPath(root, target string) error {
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return fmt.Errorf("managed path is outside root: %s", target)
-	}
-	current := root
-	for _, part := range append([]string{""}, strings.Split(relative, string(filepath.Separator))...) {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("managed path must not contain symlinks: %s", current)
-		}
-	}
-	return nil
+	return fileoutput.ValidateWithin(root, target, fileoutput.FileOrDirectory)
 }

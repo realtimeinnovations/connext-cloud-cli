@@ -15,14 +15,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 type applicationManifest struct {
@@ -84,27 +85,14 @@ func (artifacts applicationArtifacts) validateComplete() error {
 	return nil
 }
 
-func validArtifactName(name string) bool {
-	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\:\x00")
-}
-
 func validateApplicationNames(databusName, appName, clientID string) error {
 	names := []struct{ label, value string }{{"Databus name", databusName}, {"application name", appName}}
 	if clientID != "" {
 		names = append(names, struct{ label, value string }{"client ID", clientID})
 	}
 	for _, name := range names {
-		if !validArtifactName(name.value) {
+		if !fileoutput.ValidName(name.value) {
 			return fmt.Errorf("invalid %s %q: expected a name without path components", name.label, name.value)
-		}
-	}
-	return nil
-}
-
-func validateSecureFileNames(secureFiles map[string]string) error {
-	for name := range secureFiles {
-		if !validArtifactName(name) {
-			return fmt.Errorf("invalid secure filename %q: expected a filename without path components", name)
 		}
 	}
 	return nil
@@ -114,7 +102,7 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 	if err := artifacts.validateComplete(); err != nil {
 		return nil, err
 	}
-	if err := validateSecureFileNames(secureFiles); err != nil {
+	if err := common.ValidateSecureFileNames(secureFiles); err != nil {
 		return nil, err
 	}
 	if err := validateApplicationNames(databusName, appName, clientID); err != nil {
@@ -409,7 +397,7 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 	}
 	if options.ZIP {
 		fileName := name + "-" + appName + ".zip"
-		if err := validateApplicationOutputPath(filepath.Clean(options.TargetDir), filepath.Join(options.TargetDir, fileName), false); err != nil {
+		if err := fileoutput.ValidateWithin(filepath.Clean(options.TargetDir), filepath.Join(options.TargetDir, fileName), fileoutput.File); err != nil {
 			return err
 		}
 		bundle, err := applicationBundle(name, appName, "", artifacts, nil, nil)
@@ -467,7 +455,7 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 	selected := make([]string, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(options.TargetDir, name)
-		if err := validateApplicationOutputPath(root, path, false); err != nil {
+		if err := fileoutput.ValidateWithin(root, path, fileoutput.File); err != nil {
 			return err
 		}
 		if _, err := runner.Stat(path); err == nil {
@@ -481,9 +469,6 @@ func (runner *Runner) downloadSplitApplication(appName string, artifacts applica
 		selected = append(selected, name)
 	}
 	for _, name := range selected {
-		if err := validateApplicationOutputPath(root, filepath.Join(root, name), false); err != nil {
-			return err
-		}
 		saved, err := runner.SaveClientFile(options.TargetDir, name, files[name], true)
 		if err != nil {
 			return err
@@ -558,6 +543,8 @@ func (runner *Runner) saveClientFile(targetDir string, fileName string, data []b
 			_, _ = fmt.Fprintf(runner.Out, "%s already exists. Use -f to overwrite.\n", filePath)
 			return false, nil
 		}
+	} else if !os.IsNotExist(err) {
+		return false, err
 	}
 	if err := runner.writeOutputFile(filePath, data, sensitive); err != nil {
 		return false, err
@@ -567,47 +554,19 @@ func (runner *Runner) saveClientFile(targetDir string, fileName string, data []b
 }
 
 func (runner *Runner) SaveSecureFiles(secureFiles map[string]string, privateKey []byte, forceOverwrite bool, targetDir string) error {
-	if err := validateSecureFileNames(secureFiles); err != nil {
-		return err
-	}
-	for filename, encoded := range secureFiles {
-		if filename == "client.key" && len(privateKey) > 0 {
-			continue
-		}
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return err
-		}
-		if _, err := runner.SaveClientFile(targetDir, filename, decoded, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	if len(privateKey) > 0 {
-		if _, err := runner.SaveClientFile(targetDir, "client.key", privateKey, forceOverwrite); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Validate the path and expected destination type without creating it.
-func validateApplicationOutputPath(root, path string, directory bool) error {
-	if err := rtipaths.ValidateManagedPath(root, path); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	files, err := common.DecodeSecureFiles(secureFiles, privateKey)
 	if err != nil {
 		return err
 	}
-	if directory {
-		if !info.IsDir() {
-			return fmt.Errorf("application output must be a directory: %s", path)
+	for name := range files {
+		if err := fileoutput.ValidateWithin(filepath.Clean(targetDir), filepath.Join(targetDir, name), fileoutput.File); err != nil {
+			return err
 		}
-	} else if !info.Mode().IsRegular() {
-		return fmt.Errorf("application output must be a regular file: %s", path)
+	}
+	for name, data := range files {
+		if _, err := runner.SaveClientFile(targetDir, name, data, forceOverwrite); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -619,28 +578,11 @@ func validateClientBundlePaths(destination, appName string, bundle *applicationB
 		paths = append(paths, name)
 	}
 	for _, name := range paths {
-		if err := validateApplicationOutputPath(destination, filepath.Join(destination, name), false); err != nil {
+		if err := fileoutput.ValidateWithin(destination, filepath.Join(destination, name), fileoutput.File); err != nil {
 			return err
 		}
 	}
-	securityDir := filepath.Join(destination, "generated", "security")
-	if err := validateApplicationOutputPath(destination, securityDir, true); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(securityDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	// Security filenames come from registration, so check existing entries too.
-	for _, entry := range entries {
-		if err := validateApplicationOutputPath(destination, filepath.Join(securityDir, entry.Name()), false); err != nil {
-			return err
-		}
-	}
-	return nil
+	return common.PreflightSecureDirectory(filepath.Join(destination, "generated", "security"))
 }
 
 type ApplicationRegistrationOptions struct {
@@ -669,10 +611,14 @@ func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID strin
 	} else if options.TargetDir != "" {
 		destination = root
 	}
-	if err := validateApplicationOutputPath(root, destination, !options.ZIP); err != nil {
+	kind := fileoutput.Directory
+	if options.ZIP {
+		kind = fileoutput.File
+	}
+	if err := fileoutput.ValidateWithin(root, destination, kind); err != nil {
 		return err
 	}
-	if _, err := runner.Stat(destination); err == nil {
+	if _, err := fileoutput.Inspect(destination, kind); err == nil {
 		if !options.ForceOverwrite {
 			return fmt.Errorf("%s already exists. Use --force to overwrite", destination)
 		}
@@ -747,7 +693,7 @@ func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID strin
 	delete(payload, "secure_files")
 	formatted, _ := json.MarshalIndent(payload, "", "  ")
 	_, _ = fmt.Fprintln(runner.Out, string(formatted))
-	if err := validateSecureFileNames(secureFiles); err != nil {
+	if err := common.ValidateSecureFileNames(secureFiles); err != nil {
 		return err
 	}
 	if options.ZIP {

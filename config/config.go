@@ -23,6 +23,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
@@ -150,10 +151,10 @@ func (manager *Manager) WriteConfig(config map[string]string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(manager.Path), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(manager.Path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(manager.Path, data, 0o600); err != nil {
+	if err := fileoutput.WriteFile(manager.Path, data, 0o600); err != nil {
 		return err
 	}
 	manager.cache = copyMap(config)

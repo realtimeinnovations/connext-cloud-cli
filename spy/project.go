@@ -23,6 +23,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -135,14 +136,14 @@ func (app *App) ReadConfig() (map[string]any, error) {
 }
 
 func (app *App) WriteConfig(config map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.ConfigPath(), data, 0o644)
+	return fileoutput.WriteFile(app.ConfigPath(), data, 0o644)
 }
 
 func (app *App) RuntimeState() (map[string]any, error) {
@@ -161,14 +162,14 @@ func (app *App) RuntimeState() (map[string]any, error) {
 }
 
 func (app *App) WriteRuntimeState(state map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.RuntimePath(), data, 0o644)
+	return fileoutput.WriteFile(app.RuntimePath(), data, 0o644)
 }
 
 func HasDatabus(config map[string]any) bool {
@@ -269,6 +270,9 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 		return nil
 	}
 	target := app.qosPath(config)
+	if err := fileoutput.ValidateWithin(filepath.Join(app.AppDir(), "generated"), target, fileoutput.File); err != nil {
+		return err
+	}
 	if force || !common.FileExists(target) {
 		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
@@ -304,10 +308,10 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 		return err
 	}
 	// DDS Spy discovers types remotely, so only the bundle's QoS is needed.
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(target, []byte(bundle.QoS), 0o644)
+	return fileoutput.WriteFile(target, []byte(bundle.QoS), 0o644)
 }
 
 func isMissingExternalEndpointError(err error) bool {
@@ -432,6 +436,9 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 }
 
 func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string) error {
+	if err := common.PreflightSecureDirectory(app.secureDir()); err != nil {
+		return err
+	}
 	if app.LocalSecureArtifacts() {
 		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Reusing local spy credentials"))
 		return nil
@@ -484,14 +491,14 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 		"-qosFile", xmlPath,
 		"-qosProfile", qosProfile,
 	}
-	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
 	}
 	liveView := NewLiveView(config)
 	liveView.DatabusSecure = databusSecure
 	renderer := TerminalRenderer{Out: app.Out}
 	defer func() { _ = renderer.Finish() }()
-	logFile, err := os.OpenFile(app.SpyLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := fileoutput.OpenAppend(app.SpyLogPath(), 0o644)
 	if err != nil {
 		return 0, err
 	}
@@ -715,6 +722,15 @@ func (app *App) Reset() error {
 	if !common.FileExists(app.ConfigPath()) {
 		_, _ = fmt.Fprintln(app.Out, "No spy configuration found.")
 		return nil
+	}
+	// Check every destination before deleting configuration or credentials.
+	if err := fileoutput.Validate(app.ConfigPath(), fileoutput.File); err != nil {
+		return err
+	}
+	for _, name := range spySecureFiles {
+		if err := fileoutput.ValidateWithin(app.AppDir(), filepath.Join(app.secureDir(), name), fileoutput.File); err != nil {
+			return err
+		}
 	}
 	if err := os.Remove(app.ConfigPath()); err != nil {
 		return err

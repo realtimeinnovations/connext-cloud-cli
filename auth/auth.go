@@ -24,6 +24,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"golang.org/x/oauth2"
@@ -275,10 +276,10 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(manager.TokenPath), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(manager.TokenPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(manager.TokenPath, data, 0o600); err != nil {
+	if err := fileoutput.WriteFile(manager.TokenPath, data, 0o600); err != nil {
 		return err
 	}
 	return os.Chmod(manager.TokenPath, 0o600)

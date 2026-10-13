@@ -23,6 +23,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -2378,9 +2379,6 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 						}
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
-					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
-						return err
-					}
 					if serial == "" {
 						serial = edgesyncagent.DetectSerial()
 					}
@@ -2418,7 +2416,13 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 					data, _ := json.MarshalIndent(req, "", "  ")
 					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
 					dest := filepath.Join(inboxDir, "enroll-"+fname)
-					if err := os.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
+					if err := fileoutput.ValidateWithin(inboxDir, dest, fileoutput.File); err != nil {
+						return err
+					}
+					if err := fileoutput.MkdirAll(inboxDir, 0o755); err != nil {
+						return err
+					}
+					if err := fileoutput.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
 						return err
 					}
 					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Enrollment request written to %s\n", dest)

@@ -22,6 +22,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
@@ -60,10 +61,10 @@ func New(api API, out io.Writer) *Runner {
 		Out:       out,
 		Sleep:     time.Sleep,
 		ReadFile:  os.ReadFile,
-		WriteFile: os.WriteFile,
+		WriteFile: fileoutput.WriteFile,
 		Chmod:     os.Chmod,
-		MkdirAll:  os.MkdirAll,
-		Stat:      os.Stat,
+		MkdirAll:  fileoutput.MkdirAll,
+		Stat:      fileoutput.StatFile,
 	}
 }
 
@@ -81,6 +82,9 @@ func (runner *Runner) printResponseBody(body []byte) error {
 }
 
 func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
+	if err := fileoutput.Validate(filePath, fileoutput.File); err != nil {
+		return err
+	}
 	fileMode := os.FileMode(0o644)
 	dirMode := os.FileMode(0o755)
 	if sensitive {

@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 type Install struct {
@@ -242,15 +243,7 @@ func downloadFileWithDescription(url string, targetPath string, description stri
 	if response.StatusCode != http.StatusOK {
 		return common.UserError{Message: fmt.Sprintf("%s download failed: %s", description, response.Status)}
 	}
-	file, err := os.Create(targetPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := io.Copy(file, response.Body); err != nil {
-		return err
-	}
-	return nil
+	return fileoutput.Copy(targetPath, response.Body, 0o666)
 }
 
 func normalizeOptions(options DiscoveryOptions) DiscoveryOptions {

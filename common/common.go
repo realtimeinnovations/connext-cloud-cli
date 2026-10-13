@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 type UserError struct {
@@ -181,21 +183,75 @@ func RemoveSecureFiles(directory string) error {
 	return nil
 }
 
-func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return err
+// ValidateSecureFileNames keeps server-supplied credentials inside their directory.
+func ValidateSecureFileNames(files map[string]string) error {
+	for name := range files {
+		if !fileoutput.ValidName(name) {
+			return fmt.Errorf("invalid secure filename %q: expected a filename without path components", name)
+		}
 	}
-	for filename, content := range files {
-		decoded, err := base64.StdEncoding.DecodeString(content)
+	return nil
+}
+
+// DecodeSecureFiles validates the entire response before any output is written.
+// A locally generated private key takes precedence over the server's copy.
+func DecodeSecureFiles(files map[string]string, privateKey []byte) (map[string][]byte, error) {
+	if err := ValidateSecureFileNames(files); err != nil {
+		return nil, err
+	}
+	decoded := make(map[string][]byte, len(files)+1)
+	for name, content := range files {
+		if name == "client.key" && len(privateKey) > 0 {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(content)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("decode %s: %w", name, err)
 		}
-		if err := os.WriteFile(filepath.Join(targetDir, filename), decoded, secureFileMode(filename)); err != nil {
-			return err
-		}
+		decoded[name] = data
 	}
 	if len(privateKey) > 0 {
-		if err := os.WriteFile(filepath.Join(targetDir, "client.key"), privateKey, secureFileMode("client.key")); err != nil {
+		decoded["client.key"] = privateKey
+	}
+	return decoded, nil
+}
+
+// PreflightSecureDirectory checks existing entries before requesting credentials,
+// whose complete filenames are only known after the response arrives.
+func PreflightSecureDirectory(directory string) error {
+	if err := fileoutput.Validate(directory, fileoutput.Directory); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(directory)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := fileoutput.Validate(filepath.Join(directory, entry.Name()), fileoutput.File); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir string) error {
+	decoded, err := DecodeSecureFiles(files, privateKey)
+	if err != nil {
+		return err
+	}
+	for name := range decoded {
+		if err := fileoutput.ValidateWithin(filepath.Clean(targetDir), filepath.Join(targetDir, name), fileoutput.File); err != nil {
+			return err
+		}
+	}
+	if err := fileoutput.MkdirAll(targetDir, 0o755); err != nil {
+		return err
+	}
+	for name, data := range decoded {
+		if err := fileoutput.WriteFile(filepath.Join(targetDir, name), data, secureFileMode(name)); err != nil {
 			return err
 		}
 	}

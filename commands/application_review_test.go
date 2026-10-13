@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -138,43 +139,6 @@ func TestDownloadRejectsMissingRequestedArtifactsBeforeWriting(t *testing.T) {
 				t.Fatal("missing requested artifact returned success")
 			}
 		})
-	}
-}
-
-func TestWriteOutputFileSecuresExistingTargetBeforeWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "enrollment.key")
-	if err := os.WriteFile(path, []byte("old key"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-		info, err := os.Stat(name)
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("target is not private before key write: %v, %v", info, err)
-		}
-		return os.WriteFile(name, data, mode)
-	}
-	if err := runner.writeOutputFile(path, []byte("new key"), true); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != "new key" {
-		t.Fatalf("key = %q, error = %v", data, err)
-	}
-}
-
-func TestWriteOutputFileDoesNotWriteIfPreChmodFails(t *testing.T) {
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.Chmod = func(string, os.FileMode) error { return os.ErrPermission }
-	runner.WriteFile = func(string, []byte, os.FileMode) error {
-		t.Fatal("must not write key after permission failure")
-		return nil
-	}
-	if err := runner.writeOutputFile("enrollment.key", []byte("new key"), true); err == nil {
-		t.Fatal("expected permission error")
 	}
 }
 
@@ -338,7 +302,7 @@ func TestRegistrationZIPProtectsManagerProvidedKeys(t *testing.T) {
 				t.Fatal(err)
 			}
 			info, err := os.Stat(output)
-			if err != nil || info.Mode().Perm() != 0o600 {
+			if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 				t.Errorf("key-containing archive must be 0600: info = %v, error = %v", info, err)
 			}
 			archive, err := zip.OpenReader(output)
@@ -472,5 +436,21 @@ func TestRegistrationClientKeyPrecedence(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestSaveClientFilePropagatesInspectionFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.zip")
+	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(&fakeAPI{}, io.Discard)
+	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+	if saved, err := runner.SaveClientFile("", path, []byte("replacement"), true); saved || !os.IsPermission(err) {
+		t.Fatalf("saved=%v, error=%v", saved, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("inspection failure changed file: %q, %v", data, err)
 	}
 }

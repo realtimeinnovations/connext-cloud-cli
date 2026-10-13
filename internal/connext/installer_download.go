@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
 
@@ -41,10 +42,7 @@ func cachedInstaller(ctx context.Context, url, digest string, client *http.Clien
 		}
 	}
 	target := filepath.Join(directory, filepath.Base(url))
-	if info, err := os.Lstat(target); err == nil {
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("installer cache path is not a regular file: %s", target)
-		}
+	if _, err := fileoutput.StatFile(target); err == nil {
 		if verifyInstallerContext(ctx, target, digest) == nil {
 			fmt.Fprintln(out, "Using verified cached Connext installer.")
 			return target, nil
@@ -99,10 +97,7 @@ func cachedInstaller(ctx context.Context, url, digest string, client *http.Clien
 		return "", err
 	}
 	// Never traverse an existing symlink or replace unrelated non-file entries.
-	if info, err := os.Lstat(target); err == nil {
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("installer cache path is not a regular file: %s", target)
-		}
+	if _, err := fileoutput.StatFile(target); err == nil {
 		// Windows rename does not replace existing destinations. Our installation
 		// lock serializes cache writers for this product/version/platform.
 		if err := os.Remove(target); err != nil {
@@ -119,7 +114,7 @@ func cachedInstaller(ctx context.Context, url, digest string, client *http.Clien
 }
 
 func writableDownloadDirectory(directory string) (string, error) {
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := fileoutput.MkdirAll(directory, 0o700); err != nil {
 		return "", err
 	}
 	probe, err := os.CreateTemp(directory, ".rticloud-write-check-*")

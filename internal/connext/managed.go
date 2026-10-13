@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -178,11 +179,11 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if install, err := validateManaged(directory, artifact.version, options); err == nil {
 		return install, nil
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := fileoutput.MkdirAll(root, 0o755); err != nil {
 		return Install{}, err
 	}
 	lockPath := filepath.Join(root, ".installer-"+artifact.version+"-"+artifact.platform+".lock")
-	if err := safeManagedPath(rti, lockPath); err != nil {
+	if err := fileoutput.ValidateWithin(rti, lockPath, fileoutput.File); err != nil {
 		return Install{}, err
 	}
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -216,7 +217,7 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if err := safeManagedPath(rti, logs); err != nil {
 		return Install{}, err
 	}
-	if err := os.MkdirAll(logs, 0o755); err != nil {
+	if err := fileoutput.MkdirAll(logs, 0o755); err != nil {
 		return Install{}, err
 	}
 	log, err := os.CreateTemp(logs, "connext-install-"+time.Now().UTC().Format("20060102T150405Z")+"-*.log")
@@ -252,14 +253,14 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if err := safeManagedPath(rti, prefix); err != nil {
 		return Install{}, err
 	}
-	if err := os.MkdirAll(prefix, 0o755); err != nil {
+	if err := fileoutput.MkdirAll(prefix, 0o755); err != nil {
 		return Install{}, err
 	}
 	pending := filepath.Join(prefix, installationPendingFile)
 	if err := safeManagedPath(rti, pending); err != nil {
 		return Install{}, err
 	}
-	if err := os.WriteFile(pending, nil, 0o600); err != nil {
+	if err := fileoutput.WriteFile(pending, nil, 0o600); err != nil {
 		return Install{}, err
 	}
 	fmt.Fprintf(out, "Installing Connext Professional into %s\nInstallation log: %s\n", prefix, log.Name())
@@ -274,7 +275,7 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	}
 	install, err := validateManaged(directory, artifact.version, options)
 	if err != nil {
-		_ = os.WriteFile(pending, nil, 0o600)
+		_ = fileoutput.WriteFile(pending, nil, 0o600)
 		return Install{}, fmt.Errorf("Connext installation validation failed (see %s): %w", log.Name(), err)
 	}
 	for _, warning := range pruneManagedInstallation(directory, options) {

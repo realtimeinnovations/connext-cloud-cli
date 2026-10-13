@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -596,7 +597,7 @@ func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
 	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); string(got) != "private-key" {
 		t.Fatalf("unexpected client.key: %s", string(got))
 	}
-	if info, err := os.Stat(filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("client.key permissions = %v, %v; want 0600", info.Mode().Perm(), err)
 	}
 	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.crt")); string(got) != "cert" {
@@ -605,6 +606,9 @@ func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
 }
 
 func TestStartCollectorLaunchesProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
@@ -705,6 +709,9 @@ func TestCollectorDiscoveryQueueRetainsLatestStateForEachEventType(t *testing.T)
 }
 
 func TestRoutingShutdownStopsCollectorBeforeFinalSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
@@ -762,6 +769,9 @@ func TestRoutingShutdownStopsCollectorBeforeFinalSnapshot(t *testing.T) {
 }
 
 func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
@@ -893,6 +903,9 @@ func TestCollectorCommandOmitsUnsupportedDiscoveryOption(t *testing.T) {
 }
 
 func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	executable := filepath.Join(t.TempDir(), "collector")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\necho '  * ENTITY_DISCOVERY'\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -909,6 +922,9 @@ func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
 }
 
 func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	t.Setenv("RTI_MONITORING2_ENABLE", "true")
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
@@ -966,6 +982,9 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 }
 
 func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
@@ -1008,6 +1027,9 @@ func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
 }
 
 func TestRunRoutingServiceWithTextOutputPrintsPlainEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
@@ -1055,6 +1077,9 @@ echo "ERROR NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicas
 }
 
 func TestRunRoutingServiceInterruptRendersStoppedScreen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {

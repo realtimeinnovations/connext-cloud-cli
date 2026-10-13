@@ -68,6 +68,28 @@ func TestConfigureConnextDirClassifiesErrors(t *testing.T) {
 	}
 }
 
+func TestConfigureConnextDirRejectsLinkedDirectory(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	link := filepath.Join(base, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	runtime := &Runtime{EdgeStore: edgestore.New(base)}
+	original := runtime.EdgeStore.ConnextDir
+	for _, path := range []string{link, filepath.Join(link, "new")} {
+		if err := runtime.ConfigureConnextDir(path); err == nil {
+			t.Fatalf("accepted linked destination %s", path)
+		}
+		if runtime.EdgeStore.ConnextDir != original {
+			t.Fatal("rejected destination changed the selected directory")
+		}
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("rejected destination changed external directory: %v", err)
+	}
+}
+
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
 	_, err := decodeCommandJSON(nil, config.ErrNotConfigured, "GET", "/databuses?extra_fields=true", "", "gateway")
 	if err == nil {

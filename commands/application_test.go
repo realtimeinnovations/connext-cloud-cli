@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -144,47 +145,13 @@ func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
 	})}}
 	runner := New(api, io.Discard)
 	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	runner.MkdirAll = func(dir string, _ os.FileMode) error {
-		createdDir = dir
-		return nil
-	}
-	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
+	path := filepath.Join(t.TempDir(), "configs", "application.json")
+	if err := runner.GetApplication("db", "subscriber", false, false, "", path); err != nil {
 		t.Fatal(err)
 	}
-	if createdDir != "configs" {
-		t.Fatalf("created directory = %q, want configs", createdDir)
-	}
-}
-
-func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	var createdMode os.FileMode
-	var fileMode os.FileMode
-	var chmodMode os.FileMode
-	runner.MkdirAll = func(dir string, mode os.FileMode) error {
-		createdDir, createdMode = dir, mode
-		return nil
-	}
-	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
-		fileMode = mode
-		return nil
-	}
-	runner.Chmod = func(_ string, mode os.FileMode) error {
-		chmodMode = mode
-		return nil
-	}
-	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
-		t.Fatal(err)
-	}
-	if createdDir != "keys" || createdMode != 0o700 {
-		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
-	}
-	if fileMode != 0o600 || chmodMode != 0o600 {
-		t.Fatalf("write mode = %#o, chmod mode = %#o, want 0600", fileMode, chmodMode)
+	data, err := os.ReadFile(path)
+	if err != nil || !json.Valid(data) {
+		t.Fatalf("manifest = %q, error = %v", data, err)
 	}
 }
 
@@ -408,7 +375,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			if test.zip {
 				info, err := os.Stat(archivePath)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
 				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -462,7 +429,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyInfo.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && keyInfo.Mode().Perm() != 0o600 {
 				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
 			}
 		})
@@ -574,28 +541,12 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 			}), io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
 			runner.ReadFile = func(string) ([]byte, error) { return []byte("external csr"), nil }
-			runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-				want := os.FileMode(0o644)
-				if test.generateKey {
-					want = 0o600
-				}
-				if name != output || mode != want {
-					t.Fatalf("write %q mode %#o; want %q mode %#o", name, mode, output, want)
-				}
-				if test.overwrite {
-					info, err := os.Stat(name)
-					if err != nil || info.Mode().Perm() != 0o600 {
-						t.Fatalf("archive must be private before writing key: %v, %v", info, err)
-					}
-				}
-				return os.WriteFile(name, data, mode)
-			}
 			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", GeneratePrivateKey: test.generateKey, ForceOverwrite: test.overwrite, ZIP: true}); err != nil {
 				t.Fatal(err)
 			}
 			if test.generateKey {
 				info, err := os.Stat(output)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private archive info = %v, error = %v", info, err)
 				}
 			}

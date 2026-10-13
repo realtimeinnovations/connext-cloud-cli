@@ -51,7 +51,7 @@ func fixture(t *testing.T) (Options, string, connext.Install) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
 	oldHome, oldPlatform, oldPaths := connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir
 	connext.UserHomeDir = func() (string, error) { return home, nil }
-	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	connext.Platform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 	rtipaths.UserHomeDir = connext.UserHomeDir
 	t.Cleanup(func() { connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir = oldHome, oldPlatform, oldPaths })
 	t.Setenv("NDDSHOME", "")
@@ -73,7 +73,7 @@ func fixture(t *testing.T) (Options, string, connext.Install) {
 		writeFile(t, connext.Executable(path, tool), "launcher")
 	}
 	license := "FEATURE RTIPRO RTI 4. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. 12-oct-2026 0 SIGN=SECRET_LICENSE"
-	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), license)
+	writeFile(t, filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat"), license)
 	writeFile(t, filepath.Join(path, "rti_license.dat"), license)
 	project := filepath.Join(home, "project")
 	gatewayPath, spyPath := filepath.Join(project, ".connext", "gateway.yaml"), filepath.Join(project, ".connext", "spy.yaml")
@@ -329,7 +329,7 @@ func TestLocalFailuresRemainScoped(t *testing.T) {
 
 func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
 	o, home, _ := fixture(t)
-	rtiRoot := filepath.Join(home, ".rti")
+	rtiRoot := rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA"))
 	target := filepath.Join(home, "rti-target")
 	if err := os.Rename(rtiRoot, target); err != nil {
 		t.Fatal(err)
@@ -418,7 +418,7 @@ func TestPathScanDeduplicatesLinks(t *testing.T) {
 
 func TestLicenseInspectionDoesNotProvisionFallback(t *testing.T) {
 	o, home, install := fixture(t)
-	canonical := filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")
+	canonical := filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat")
 	os.Remove(canonical)
 	os.Remove(filepath.Join(install.Path, "rti_license.dat"))
 	source := filepath.Join(home, "external-license.dat")
