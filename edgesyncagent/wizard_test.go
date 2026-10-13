@@ -55,6 +55,30 @@ func TestParseCampaignToken_NamespacedKeys(t *testing.T) {
 	}
 }
 
+func TestParseCampaignToken_LightweightWithoutParticipant(t *testing.T) {
+	for _, prefix := range []string{"", "https://devices.cloud.rti.com/"} {
+		t.Run(prefix, func(t *testing.T) {
+			token := buildJWT(map[string]any{
+				prefix + "edge_system_id": "ces-micro-demo2",
+				prefix + "domain_id":      "0:micro",
+				prefix + "campaign_id":    "campaign-micro",
+				prefix + "device_domain":  "micro-demo2.devices.test.cloud.dev-rti.com",
+			})
+			service, participant, err := ParseCampaignToken(token)
+			if err != nil || service != "ces-micro-demo2" || participant != "" {
+				t.Fatalf("service=%q participant=%q err=%v", service, participant, err)
+			}
+		})
+	}
+}
+
+func TestParseCampaignToken_ParticipantWithoutService(t *testing.T) {
+	_, _, err := ParseCampaignToken(buildJWT(map[string]any{"participant_id": "part"}))
+	if err == nil {
+		t.Fatal("expected error for missing service ID")
+	}
+}
+
 func TestParseCampaignToken_MissingKeys(t *testing.T) {
 	token := buildJWT(map[string]any{
 		"iss": "https://auth.example.com/",

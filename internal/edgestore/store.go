@@ -7,6 +7,7 @@
 package edgestore
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,7 @@ type Store struct {
 
 // EnrollArtifacts holds the security material returned by a successful enrollment.
 type EnrollArtifacts struct {
+	SecurityMode  string
 	DeviceCertPEM []byte // written to mtls_artifacts/node.crt  (0644)
 	CAChainPEM    []byte // written to mtls_artifacts/ca-chain.crt (0644) and, as identity_ca.crt + permissions_ca.crt, to connext_artifacts/<domain>/ (0644)
 	PrivateKeyPEM []byte // written to mtls_artifacts/node.key   (0600)
@@ -229,6 +231,10 @@ func (s *Store) NodeURLPath(service, domain, participant, node string) string {
 	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "node_url")
 }
 
+func (s *Store) NodeSecurityModePath(service, domain, participant, node string) string {
+	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "security_mode")
+}
+
 // NodeStatePath is the persisted agent state for a node.
 func (s *Store) NodeStatePath(service, domain, participant, node string) string {
 	return filepath.Join(s.NodeAgentDir(service, domain, participant, node), "agent_state.json")
@@ -242,7 +248,17 @@ func (s *Store) NodeStatePath(service, domain, participant, node string) string 
 //
 // Fields with nil or empty bytes are silently skipped.
 func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, a EnrollArtifacts) error {
+	mode := a.SecurityMode
+	if mode == "" {
+		mode = "full"
+	}
+	if mode != "full" && mode != "lightweight" {
+		return fmt.Errorf("invalid enrollment security mode %q", mode)
+	}
 	if err := s.MkdirAll(s.NodeAgentDir(service, domain, participant, node), 0o755); err != nil {
+		return err
+	}
+	if err := s.WriteFile(s.NodeSecurityModePath(service, domain, participant, node), []byte(mode), 0o644); err != nil {
 		return err
 	}
 	if len(a.DeviceCertPEM) > 0 {
@@ -259,6 +275,8 @@ func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, 
 		if err := s.WriteFile(s.NodeCAChainPath(service, domain, participant, node), a.CAChainPEM, 0o644); err != nil {
 			return err
 		}
+	}
+	if mode == "full" && len(a.CAChainPEM) > 0 {
 		if err := s.MkdirAll(s.DomainDir(service, domain), 0o755); err != nil {
 			return err
 		}
@@ -269,7 +287,7 @@ func (s *Store) WriteEnrollArtifacts(service, domain, participant, node string, 
 			return err
 		}
 	}
-	if len(a.GovernanceP7S) > 0 {
+	if mode == "full" && len(a.GovernanceP7S) > 0 {
 		if err := s.MkdirAll(s.DomainDir(service, domain), 0o755); err != nil {
 			return err
 		}

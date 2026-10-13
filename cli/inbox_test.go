@@ -9,20 +9,24 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/app"
+	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
+	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 )
 
 func TestAgentEnrollWritesInboxRequest(t *testing.T) {
 	inbox := filepath.Join(t.TempDir(), "inbox")
 	agent := &edgesyncagent.Agent{InboxDir: inbox}
-	rt := &app.Runtime{EdgeSyncAgent: agent}
-	err := Execute([]string{"edge-sync", "agent", "enroll", "--service", "svc/team", "--domain-tpl-id", "0:domain", "--participant-tpl-id", "part", "--serial", "device", "--mac", "00:11:22:33:44:55", "--non-interactive"}, io.Discard, io.Discard, rt)
+	rt := inboxTestRuntime(agent)
+	err := Execute([]string{"edge-sync", "agent", "enroll", "--service", "svc/team", "--domain-tpl-id", "0:domain", "--participant-tpl-id", "part", "--deployment-name", "device", "--mac", "00:11:22:33:44:55", "--non-interactive"}, io.Discard, io.Discard, rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +63,10 @@ func TestAgentEnrollRejectsWindowsInboxEscape(t *testing.T) {
 				service = `svc\..\..\outside`
 			}
 			agent := &edgesyncagent.Agent{InboxDir: filepath.Join(root, "inbox")}
-			rt := &app.Runtime{EdgeSyncAgent: agent}
-			err := Execute([]string{"edge-sync", "agent", "enroll", "--service", service, "--domain-tpl-id", "0:domain", "--participant-tpl-id", "part", "--serial", "device", "--mac", "00:11:22:33:44:55", "--non-interactive"}, io.Discard, io.Discard, rt)
-			if err == nil {
-				t.Fatal("accepted enrollment destination outside inbox")
+			rt := inboxTestRuntime(agent)
+			err := Execute([]string{"edge-sync", "agent", "enroll", "--service", service, "--domain-tpl-id", "0:domain", "--participant-tpl-id", "part", "--deployment-name", "device", "--mac", "00:11:22:33:44:55", "--non-interactive"}, io.Discard, io.Discard, rt)
+			if err == nil || !strings.Contains(err.Error(), "outside root") {
+				t.Fatalf("expected containment rejection, got %v", err)
 			}
 			data, err := os.ReadFile(outside)
 			if err != nil || string(data) != "untouched" {
@@ -74,4 +78,13 @@ func TestAgentEnrollRejectsWindowsInboxEscape(t *testing.T) {
 			}
 		})
 	}
+}
+
+func inboxTestRuntime(agent *edgesyncagent.Agent) *app.Runtime {
+	api := cloudapi.New(func() (string, error) { return "https://api.example.test", nil },
+		func() (map[string]string, error) { return map[string]string{}, nil })
+	api.HTTPClient = roundTripClient(func(*http.Request) (*http.Response, error) {
+		return stringResponse(http.StatusOK, `{"domain_templates":[{"templateId":"0:domain","securityMode":"full"}]}`), nil
+	})
+	return &app.Runtime{Commands: commands.New(api, io.Discard), EdgeSyncAgent: agent}
 }
