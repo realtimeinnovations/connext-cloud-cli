@@ -386,46 +386,84 @@ func TestDownloadArtifactsExplainsMissingDatabusEndpoint(t *testing.T) {
 	}
 }
 
-func TestSecureSpyCredentialsSavedNextToAppXML(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewApp(tmpDir, &out)
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": name, "config": map[string]any{"secure": true}}, nil
-	}
-	app.GenerateCSRFunc = func(resource string, template string, clientID string) ([]byte, string, error) {
-		return []byte("private-key"), "csr", nil
-	}
-	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
-		if path != "/databuses/db/applications/app_1/clients" || payload["client_id"] != "app_1-1" {
-			return nil, UserError{Message: path}
-		}
-		return map[string]any{"secure_files": map[string]any{
-			"client.crt":         base64.StdEncoding.EncodeToString([]byte("cert")),
-			"identity_ca.crt":    base64.StdEncoding.EncodeToString([]byte("identity")),
-			"permissions_ca.crt": base64.StdEncoding.EncodeToString([]byte("permissions")),
-			"governance.p7s":     base64.StdEncoding.EncodeToString([]byte("governance")),
-			"permissions.p7s":    base64.StdEncoding.EncodeToString([]byte("signed")),
-			"psk.key":            base64.StdEncoding.EncodeToString([]byte("psk")),
-		}}, nil
-	}
-	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}, "clients": map[string]any{"app_client_id": "app_1-1"}}
-	secure, err := app.EnsureSecureArtifacts(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !secure {
-		t.Fatal("expected secure databus")
-	}
-	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "client.key")); got != "private-key" {
-		t.Fatalf("unexpected client.key: %s", got)
-	}
-	if got := readFile(t, filepath.Join(tmpDir, ".connext", "spy", "app", "client.crt")); got != "cert" {
-		t.Fatalf("unexpected client.crt: %s", got)
-	}
-	output := out.String()
-	if !strings.Contains(output, "•") || !strings.Contains(output, "Secure Databus detected.") || strings.Count(output, "✓") < 2 || !strings.Contains(output, "Registered spy client credentials") || !strings.Contains(output, "Saved spy credentials to ") {
-		t.Fatalf("unexpected output: %s", output)
+func TestSecureSpyCredentialsUseDownloadedLayout(t *testing.T) {
+	for _, bundled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bundled=%t", bundled), func(t *testing.T) {
+			tmpDir := t.TempDir()
+			var out bytes.Buffer
+			app := NewApp(tmpDir, &out)
+			targetDir := app.AppDir()
+			if bundled {
+				targetDir = filepath.Join(app.AppDir(), "generated", "security")
+				if err := os.MkdirAll(filepath.Dir(targetDir), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(app.AppDir(), "generated", "app_1.qos.xml"), []byte(bundleSpyQoS), 0644); err != nil {
+					t.Fatal(err)
+				}
+				// Stale legacy credentials must not mask a missing bundle credential set.
+				for _, name := range common.SecureFiles {
+					if err := os.WriteFile(filepath.Join(app.AppDir(), name), []byte("legacy"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			registrations := 0
+			app.GetResourceFunc = func(name string) (map[string]any, error) {
+				return map[string]any{"name": name, "config": map[string]any{"secure": true}}, nil
+			}
+			app.GenerateCSRFunc = func(resource string, template string, clientID string) ([]byte, string, error) {
+				return []byte("private-key"), "csr", nil
+			}
+			app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
+				if path != "/databuses/db/applications/app_1/clients" || payload["client_id"] != "app_1-1" {
+					return nil, UserError{Message: path}
+				}
+				registrations++
+				governance, permissions := "governance.p7s", "permissions.p7s"
+				if bundled {
+					governance, permissions = "signed_governance.p7s", "signed_permissions.p7s"
+				}
+				return map[string]any{"secure_files": map[string]any{
+					"client.crt":         base64.StdEncoding.EncodeToString([]byte("cert")),
+					"identity_ca.crt":    base64.StdEncoding.EncodeToString([]byte("identity")),
+					"permissions_ca.crt": base64.StdEncoding.EncodeToString([]byte("permissions")),
+					governance:           base64.StdEncoding.EncodeToString([]byte("governance")),
+					permissions:          base64.StdEncoding.EncodeToString([]byte("signed")),
+					"psk.key":            base64.StdEncoding.EncodeToString([]byte("psk")),
+				}}, nil
+			}
+			config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}, "clients": map[string]any{"app_client_id": "app_1-1"}}
+			secure, err := app.EnsureSecureArtifacts(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !secure {
+				t.Fatal("expected secure databus")
+			}
+			if got := readFile(t, filepath.Join(targetDir, "client.key")); got != "private-key" {
+				t.Fatalf("unexpected client.key: %s", got)
+			}
+			if got := readFile(t, filepath.Join(targetDir, "client.crt")); got != "cert" {
+				t.Fatalf("unexpected client.crt: %s", got)
+			}
+			output := out.String()
+			if !strings.Contains(output, "•") || !strings.Contains(output, "Secure Databus detected.") || strings.Count(output, "✓") < 2 || !strings.Contains(output, "Registered spy client credentials") || !strings.Contains(output, "Saved spy credentials to ") {
+				t.Fatalf("unexpected output: %s", output)
+			}
+			if !app.LocalSecureArtifacts(config) {
+				t.Fatal("saved credentials not recognized")
+			}
+			if _, err := app.EnsureSecureArtifacts(config); err != nil {
+				t.Fatal(err)
+			}
+			if registrations != 1 {
+				t.Fatalf("registered %d times; expected credential reuse", registrations)
+			}
+			if !containsString(app.spyEnv(config), "RTI_PRIVATE_KEY_FILE="+filepath.Join(targetDir, "client.key")) {
+				t.Fatal("Spy environment selected the wrong private key")
+			}
+		})
 	}
 }
 
@@ -720,6 +758,20 @@ func TestResetRemovesConfigAndCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	security := filepath.Join(appDir, "generated", "security")
+	if err := os.MkdirAll(security, 0700); err != nil {
+		t.Fatal(err)
+	}
+	bundleNames := []string{"client.key", "client.crt", "identity_ca.crt", "permissions_ca.crt", "signed_governance.p7s", "signed_permissions.p7s", "psk.key"}
+	for _, name := range bundleNames {
+		if err := os.WriteFile(filepath.Join(security, name), []byte("bundle credential"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	qos := filepath.Join(appDir, "generated", "app_1.qos.xml")
+	if err := os.WriteFile(qos, []byte(bundleSpyQoS), 0644); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
 	app := NewApp(tmpDir, &out)
 	if err := app.Reset(); err != nil {
@@ -732,6 +784,14 @@ func TestResetRemovesConfigAndCredentials(t *testing.T) {
 		if common.FileExists(filepath.Join(appDir, name)) {
 			t.Fatalf("spy credential was not removed: %s", name)
 		}
+	}
+	for _, name := range bundleNames {
+		if common.FileExists(filepath.Join(security, name)) {
+			t.Fatalf("bundle credential not removed: %s", name)
+		}
+	}
+	if got := readFile(t, qos); got != bundleSpyQoS {
+		t.Fatal("reset changed managed QoS")
 	}
 	if !strings.Contains(out.String(), "Removed spy credentials") || !strings.Contains(out.String(), "Runtime artifacts were left in") {
 		t.Fatalf("unexpected output: %s", out.String())

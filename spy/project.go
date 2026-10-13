@@ -268,12 +268,12 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 	if appName == "" {
 		return nil
 	}
-	target := filepath.Join(app.AppDir(), appName+".xml")
+	target := app.qosPath(config)
 	if force || !common.FileExists(target) {
-		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
+		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, filepath.Join(app.AppDir(), appName+".xml")); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", target)))
+		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", app.qosPath(config))))
 	}
 	return nil
 }
@@ -288,6 +288,29 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 			return UserError{Message: fmt.Sprintf("Databus '%s' does not have an external endpoint yet, so spy cannot download the cloud application configuration.\n\nStart or resume the Databus and wait for it to be running:\n  rticloud databus resume --name %s\nThen rerun:\n  rticloud spy", databusName, databusName)}
 		}
 		return err
+	}
+	if rawBundle, exists := payload["bundle"]; exists {
+		encoded, err := json.Marshal(rawBundle)
+		if err != nil {
+			return err
+		}
+		var bundle struct {
+			Version int    `json:"version"`
+			QoS     string `json:"qos"`
+		}
+		if err := json.Unmarshal(encoded, &bundle); err != nil || bundle.Version != 2 || strings.TrimSpace(bundle.QoS) == "" {
+			return UserError{Message: fmt.Sprintf("Invalid application QoS bundle for '%s'", appName)}
+		}
+		if _, err := qosProfileFromXML([]byte(bundle.QoS), appName); err != nil {
+			return err
+		}
+		// DDS Spy discovers types remotely. It only needs the generated QoS,
+		// whose security references are relative to AppDir's generated/security.
+		target = app.bundleQoSPath(appName)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, []byte(bundle.QoS), 0o644)
 	}
 	clientConfig := payload["client_config"]
 	if clientConfig == nil {
@@ -304,7 +327,14 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(target, []byte(content), 0o644)
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		return err
+	}
+	// A forced refresh from an older manager switches back to its flat layout.
+	if err := os.Remove(app.bundleQoSPath(appName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func isMissingExternalEndpointError(err error) bool {
@@ -344,16 +374,56 @@ func (app *App) ValidateLocalArtifacts(config map[string]any) error {
 	if !HasDatabus(config) {
 		return UserError{Message: "No Databus or Cloud Native application is configured for this spy."}
 	}
-	appName := common.NestedString(config, "templates", "app")
-	path := filepath.Join(app.AppDir(), appName+".xml")
+	path := app.qosPath(config)
 	if !common.FileExists(path) {
 		return UserError{Message: fmt.Sprintf("Local spy artifact was not found: %s\n\nRun without --skip-preflight to refresh artifacts:\n  rticloud spy", path)}
 	}
 	return nil
 }
 
-func (app *App) LocalSecureArtifacts() bool {
-	return common.LocalSecureFilesExist(app.AppDir())
+func (app *App) bundleQoSPath(appName string) string {
+	return filepath.Join(app.AppDir(), "generated", appName+".qos.xml")
+}
+
+func (app *App) qosPath(config map[string]any) string {
+	name := common.NestedString(config, "templates", "app")
+	if path := app.bundleQoSPath(name); common.FileExists(path) {
+		return path
+	}
+	return filepath.Join(app.AppDir(), name+".xml")
+}
+
+func (app *App) secureDir(config map[string]any) string {
+	if common.FileExists(app.bundleQoSPath(common.NestedString(config, "templates", "app"))) {
+		return filepath.Join(app.AppDir(), "generated", "security")
+	}
+	return app.AppDir()
+}
+
+func (app *App) secureFileNames(directory string) []string {
+	if directory == app.AppDir() {
+		return common.SecureFiles
+	}
+	names := append([]string(nil), common.SecureFiles...)
+	for i, name := range names {
+		if name == "governance.p7s" || name == "permissions.p7s" {
+			names[i] = "signed_" + name
+		}
+	}
+	return names
+}
+
+func (app *App) localSecureFilesExist(directory string) bool {
+	for _, name := range app.secureFileNames(directory) {
+		if !common.FileExists(filepath.Join(directory, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (app *App) LocalSecureArtifacts(config map[string]any) bool {
+	return app.localSecureFilesExist(app.secureDir(config))
 }
 
 func (app *App) validateServiceActive(resource map[string]any, label string, name string, command string) error {
@@ -405,14 +475,14 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 	if clientID == "" {
 		clientID = common.GenerateClientID()
 	}
-	if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "app"), clientID, app.AppDir()); err != nil {
+	if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "app"), clientID, app.secureDir(config)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string, targetDir string) error {
-	if common.LocalSecureFilesExist(targetDir) {
+	if app.localSecureFilesExist(targetDir) {
 		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Reusing local spy credentials"))
 		return nil
 	}
@@ -451,7 +521,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	if appName == "" {
 		return 0, UserError{Message: "No Cloud Native application is configured for this spy."}
 	}
-	xmlPath := filepath.Join(app.AppDir(), appName+".xml")
+	xmlPath := app.qosPath(config)
 	qosProfile, err := QosProfileFromXML(xmlPath, appName)
 	if err != nil {
 		return 0, err
@@ -480,7 +550,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
-	cmd.Env = mergeEnv(os.Environ(), append(app.spyEnv(), connext.EnvironmentOverrides()...)...)
+	cmd.Env = mergeEnv(os.Environ(), append(app.spyEnv(config), connext.EnvironmentOverrides()...)...)
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
 		return 0, err
@@ -657,9 +727,9 @@ func shouldWriteSpyLogLine(line string) bool {
 	return spyDataRE.FindStringSubmatch(line) == nil
 }
 
-func (app *App) spyEnv() []string {
+func (app *App) spyEnv(config map[string]any) []string {
 	env := []string{"RTI_MONITORING2_ENABLE=false"}
-	privateKeyPath := filepath.Join(app.AppDir(), "client.key")
+	privateKeyPath := filepath.Join(app.secureDir(config), "client.key")
 	if common.FileExists(privateKeyPath) {
 		env = append(env, "RTI_PRIVATE_KEY_FILE="+privateKeyPath)
 	}
@@ -709,8 +779,12 @@ func (app *App) Reset() error {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
-	if err := common.RemoveSecureFiles(app.AppDir()); err != nil {
-		return err
+	for _, directory := range []string{app.AppDir(), filepath.Join(app.AppDir(), "generated", "security")} {
+		for _, name := range app.secureFileNames(directory) {
+			if err := os.Remove(filepath.Join(directory, name)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed spy credentials from %s\n", app.AppDir())
 	_, _ = fmt.Fprintln(app.Out)
@@ -741,6 +815,10 @@ func QosProfileFromXML(xmlPath string, appName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return qosProfileFromXML(data, appName)
+}
+
+func qosProfileFromXML(data []byte, appName string) (string, error) {
 	decoder := xml.NewDecoder(strings.NewReader(string(data)))
 	library := ""
 	currentLibrary := ""
@@ -784,7 +862,7 @@ func QosProfileFromXML(xmlPath string, appName string) (string, error) {
 	if firstLibrary != "" && firstProfile != "" {
 		return firstLibrary + "::" + firstProfile, nil
 	}
-	return "", UserError{Message: fmt.Sprintf("Unable to find a QoS profile in %s", xmlPath)}
+	return "", UserError{Message: fmt.Sprintf("Unable to find a QoS profile for application %s", appName)}
 }
 
 func attr(element xml.StartElement, name string) string {

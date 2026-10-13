@@ -351,7 +351,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 		if err := runtime.Spy.ValidateLocalArtifacts(configValues); err != nil {
 			return err
 		}
-		databusSecure = runtime.Spy.LocalSecureArtifacts()
+		databusSecure = runtime.Spy.LocalSecureArtifacts(configValues)
 	} else {
 		if existingConfig {
 			_, _ = fmt.Fprint(runtime.Out, spy.RenderInfoMessage("Checking service status. To skip this check, rerun with --skip-preflight."))
