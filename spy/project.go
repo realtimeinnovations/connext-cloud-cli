@@ -270,10 +270,10 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 	}
 	target := app.qosPath(config)
 	if force || !common.FileExists(target) {
-		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, filepath.Join(app.AppDir(), appName+".xml")); err != nil {
+		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", app.qosPath(config))))
+		_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Downloaded cloud application template: %s", target)))
 	}
 	return nil
 }
@@ -289,52 +289,25 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 		}
 		return err
 	}
-	if rawBundle, exists := payload["bundle"]; exists {
-		encoded, err := json.Marshal(rawBundle)
-		if err != nil {
-			return err
-		}
-		var bundle struct {
-			Version int    `json:"version"`
-			QoS     string `json:"qos"`
-		}
-		if err := json.Unmarshal(encoded, &bundle); err != nil || bundle.Version != 2 || strings.TrimSpace(bundle.QoS) == "" {
-			return UserError{Message: fmt.Sprintf("Invalid application QoS bundle for '%s'", appName)}
-		}
-		if _, err := qosProfileFromXML([]byte(bundle.QoS), appName); err != nil {
-			return err
-		}
-		// DDS Spy discovers types remotely. It only needs the generated QoS,
-		// whose security references are relative to AppDir's generated/security.
-		target = app.bundleQoSPath(appName)
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(target, []byte(bundle.QoS), 0o644)
+	encoded, err := json.Marshal(payload["bundle"])
+	if err != nil {
+		return err
 	}
-	clientConfig := payload["client_config"]
-	if clientConfig == nil {
-		return UserError{Message: fmt.Sprintf("Error: Unexpected application response for '%s'", appName)}
+	var bundle struct {
+		Version int    `json:"version"`
+		QoS     string `json:"qos"`
 	}
-	var content string
-	switch typed := clientConfig.(type) {
-	case string:
-		content = typed
-	default:
-		encoded, _ := json.MarshalIndent(typed, "", "  ")
-		content = string(encoded)
+	if err := json.Unmarshal(encoded, &bundle); err != nil || bundle.Version != 2 || strings.TrimSpace(bundle.QoS) == "" {
+		return UserError{Message: fmt.Sprintf("Invalid application QoS bundle for '%s'", appName)}
 	}
+	if _, err := qosProfileFromXML([]byte(bundle.QoS), appName); err != nil {
+		return err
+	}
+	// DDS Spy discovers types remotely, so only the bundle's QoS is needed.
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
-		return err
-	}
-	// A forced refresh from an older manager switches back to its flat layout.
-	if err := os.Remove(app.bundleQoSPath(appName)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return os.WriteFile(target, []byte(bundle.QoS), 0o644)
 }
 
 func isMissingExternalEndpointError(err error) bool {
@@ -381,49 +354,26 @@ func (app *App) ValidateLocalArtifacts(config map[string]any) error {
 	return nil
 }
 
-func (app *App) bundleQoSPath(appName string) string {
-	return filepath.Join(app.AppDir(), "generated", appName+".qos.xml")
-}
-
 func (app *App) qosPath(config map[string]any) string {
-	name := common.NestedString(config, "templates", "app")
-	if path := app.bundleQoSPath(name); common.FileExists(path) {
-		return path
-	}
-	return filepath.Join(app.AppDir(), name+".xml")
+	return filepath.Join(app.AppDir(), "generated", common.NestedString(config, "templates", "app")+".qos.xml")
 }
 
-func (app *App) secureDir(config map[string]any) string {
-	if common.FileExists(app.bundleQoSPath(common.NestedString(config, "templates", "app"))) {
-		return filepath.Join(app.AppDir(), "generated", "security")
-	}
-	return app.AppDir()
+func (app *App) secureDir() string {
+	return filepath.Join(app.AppDir(), "generated", "security")
 }
 
-func (app *App) secureFileNames(directory string) []string {
-	if directory == app.AppDir() {
-		return common.SecureFiles
-	}
-	names := append([]string(nil), common.SecureFiles...)
-	for i, name := range names {
-		if name == "governance.p7s" || name == "permissions.p7s" {
-			names[i] = "signed_" + name
-		}
-	}
-	return names
+var spySecureFiles = []string{
+	"client.key", "client.crt", "identity_ca.crt", "permissions_ca.crt",
+	"signed_governance.p7s", "signed_permissions.p7s", "psk.key",
 }
 
-func (app *App) localSecureFilesExist(directory string) bool {
-	for _, name := range app.secureFileNames(directory) {
-		if !common.FileExists(filepath.Join(directory, name)) {
+func (app *App) LocalSecureArtifacts() bool {
+	for _, name := range spySecureFiles {
+		if !common.FileExists(filepath.Join(app.secureDir(), name)) {
 			return false
 		}
 	}
 	return true
-}
-
-func (app *App) LocalSecureArtifacts(config map[string]any) bool {
-	return app.localSecureFilesExist(app.secureDir(config))
 }
 
 func (app *App) validateServiceActive(resource map[string]any, label string, name string, command string) error {
@@ -475,14 +425,14 @@ func (app *App) EnsureSecureArtifacts(config map[string]any) (bool, error) {
 	if clientID == "" {
 		clientID = common.GenerateClientID()
 	}
-	if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "app"), clientID, app.secureDir(config)); err != nil {
+	if err := app.ensureSecureCredentials(common.StringValue(config, "databus"), common.NestedString(config, "templates", "app"), clientID); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string, targetDir string) error {
-	if app.localSecureFilesExist(targetDir) {
+func (app *App) ensureSecureCredentials(databusName string, appName string, clientID string) error {
+	if app.LocalSecureArtifacts() {
 		_, _ = fmt.Fprint(app.Out, RenderInfoMessage("Reusing local spy credentials"))
 		return nil
 	}
@@ -504,11 +454,11 @@ func (app *App) ensureSecureCredentials(databusName string, appName string, clie
 			secureMap[key] = text
 		}
 	}
-	if err := common.SaveSecureFiles(secureMap, privateKey, targetDir); err != nil {
+	if err := common.SaveSecureFiles(secureMap, privateKey, app.secureDir()); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage("Registered spy client credentials"))
-	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Saved spy credentials to %s", targetDir)))
+	_, _ = fmt.Fprint(app.Out, RenderSuccessMessage(fmt.Sprintf("Saved spy credentials to %s", app.secureDir())))
 	return nil
 }
 
@@ -550,7 +500,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()
-	cmd.Env = mergeEnv(os.Environ(), append(app.spyEnv(config), connext.EnvironmentOverrides()...)...)
+	cmd.Env = mergeEnv(os.Environ(), append([]string{"RTI_MONITORING2_ENABLE=false"}, connext.EnvironmentOverrides()...)...)
 	stdout, stderr, err := terminal.StartProcess(cmd)
 	if err != nil {
 		return 0, err
@@ -727,15 +677,6 @@ func shouldWriteSpyLogLine(line string) bool {
 	return spyDataRE.FindStringSubmatch(line) == nil
 }
 
-func (app *App) spyEnv(config map[string]any) []string {
-	env := []string{"RTI_MONITORING2_ENABLE=false"}
-	privateKeyPath := filepath.Join(app.secureDir(config), "client.key")
-	if common.FileExists(privateKeyPath) {
-		env = append(env, "RTI_PRIVATE_KEY_FILE="+privateKeyPath)
-	}
-	return env
-}
-
 func (app *App) Status() error {
 	config, err := app.ReadConfig()
 	if err != nil {
@@ -779,14 +720,12 @@ func (app *App) Reset() error {
 		return err
 	}
 	_, _ = fmt.Fprintf(app.Out, "Removed %s\n", app.ConfigPath())
-	for _, directory := range []string{app.AppDir(), filepath.Join(app.AppDir(), "generated", "security")} {
-		for _, name := range app.secureFileNames(directory) {
-			if err := os.Remove(filepath.Join(directory, name)); err != nil && !os.IsNotExist(err) {
-				return err
-			}
+	for _, name := range spySecureFiles {
+		if err := os.Remove(filepath.Join(app.secureDir(), name)); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
-	_, _ = fmt.Fprintf(app.Out, "Removed spy credentials from %s\n", app.AppDir())
+	_, _ = fmt.Fprintf(app.Out, "Removed spy credentials from %s\n", app.secureDir())
 	_, _ = fmt.Fprintln(app.Out)
 	_, _ = fmt.Fprintf(app.Out, "Runtime artifacts were left in\nPath: %s\n", app.SpyDir())
 	_, _ = fmt.Fprintf(app.Out, "Logs were left in\nPath: %s\n", app.LogsDir())
