@@ -93,7 +93,7 @@ func TestProjectCredentialPreflightRunsBeforeRegistration(t *testing.T) {
 				app.GetResourceFunc = get
 				app.GenerateCSRFunc = generate
 				app.APIPost = post
-				target = app.AppDir()
+				target = filepath.Join(app.AppDir(), "generated", "security")
 				ensure = func() error { _, err := app.EnsureSecureArtifacts(configuration); return err }
 			}
 			if err := os.MkdirAll(filepath.Join(target, "client.key"), 0700); err != nil {
@@ -121,7 +121,15 @@ func TestTemplateDownloadsStayWithinTheirOutputDirectory(t *testing.T) {
 				if err := os.MkdirAll(parent, 0700); err != nil {
 					t.Fatal(err)
 				}
-				outside := filepath.Join(parent, "outside.xml")
+				extension := ".xml"
+				if kind == "spy" {
+					parent = filepath.Join(parent, "app")
+					extension = ".qos.xml"
+					if err := os.MkdirAll(parent, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				outside := filepath.Join(parent, "outside"+extension)
 				if err := os.WriteFile(outside, []byte("untouched"), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -132,7 +140,7 @@ func TestTemplateDownloadsStayWithinTheirOutputDirectory(t *testing.T) {
 				calls := 0
 				get := func(string) (map[string]any, error) {
 					calls++
-					return map[string]any{"client_config": "replacement"}, nil
+					return map[string]any{"client_config": "replacement", "bundle": map[string]any{"version": 2, "qos": `<dds><qos_library name="lib"><qos_profile name="profile"/></qos_library></dds>`}}, nil
 				}
 				var err error
 				if kind == "spy" {
