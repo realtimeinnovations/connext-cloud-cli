@@ -151,6 +151,9 @@ func (manager *Manager) WriteConfig(config map[string]string) error {
 	if err != nil {
 		return err
 	}
+	if err := fileoutput.MkdirAll(filepath.Dir(manager.Path), 0o700); err != nil {
+		return err
+	}
 	if err := fileoutput.WriteFile(manager.Path, data, 0o600); err != nil {
 		return err
 	}

@@ -12,20 +12,13 @@ ancestors above the chosen output directory. Paths are normalized before use;
 macOS's fixed `/var`, `/tmp`, and `/etc` aliases are accepted only when they point
 to their standard `/private` locations. Arbitrary links are never resolved.
 
-Replacement writes stage complete contents in the destination directory and
-set permissions before publishing. The requested mode cannot loosen existing
-file permissions. Callers select the mode: credentials and private keys use
-`0600`, ordinary output generally uses `0644`. New parents for private writes
-use `0700`; existing directory permissions are retained. Replacement requires
-a writable parent and replaces the inode, so other hard links retain their old
-contents. Append streams keep the existing inode.
-
-Permission-bit guarantees above apply to POSIX systems. On Windows, Go's mode
-bits only control the read-only attribute: `0600` does not establish an
-owner-only ACL. Staged files inherit the parent directory's ACL, and replacement
-does not preserve a destination's custom ACL. Native Windows CI exercises path
-validation and write behavior; passing it does not establish ACL protection.
-Windows replacement can also fail when an existing reader denies delete sharing.
+Writers validate the destination and then use ordinary OS writes. They do not
+stage files, rename destinations, create parents, or change permissions. Callers
+keep their existing directory-creation and permission policies, including any
+credential-specific chmod. New files respect the process umask on POSIX;
+overwriting an existing file retains its inode and permissions. On Windows,
+in-place writes preserve custom ACLs and work with readers that deny deletion.
+Go's `0600` mode does not establish an owner-only Windows ACL.
 
 Callers retain their overwrite, force, and editable-example preservation rules.
 Validate an entire batch before writing when a known bad destination must block
@@ -41,7 +34,7 @@ for explicit license repair, their parent directories.
 
 These checks are path-based, not a sandbox against concurrent ancestor swaps.
 Preflight does not guarantee a later write will succeed. Multiple file writes
-are not a transaction, and publication does not imply crash durability.
+are not a transaction; interrupted writes can leave partial contents.
 
 Filesystem edge cases belong in the utility's test matrix. Caller tests check
 production wiring, permission selection, overwrite behavior, and whether

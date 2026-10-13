@@ -276,10 +276,13 @@ func (manager *Manager) SaveAccessToken(token string, expiresIn int) error {
 	if err != nil {
 		return err
 	}
+	if err := fileoutput.MkdirAll(filepath.Dir(manager.TokenPath), 0o700); err != nil {
+		return err
+	}
 	if err := fileoutput.WriteFile(manager.TokenPath, data, 0o600); err != nil {
 		return err
 	}
-	return nil
+	return os.Chmod(manager.TokenPath, 0o600)
 }
 
 func (manager *Manager) Logout() error {

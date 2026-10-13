@@ -247,6 +247,9 @@ func SaveSecureFiles(files map[string]string, privateKey []byte, targetDir strin
 			return err
 		}
 	}
+	if err := fileoutput.MkdirAll(targetDir, 0o755); err != nil {
+		return err
+	}
 	for name, data := range decoded {
 		if err := fileoutput.WriteFile(filepath.Join(targetDir, name), data, secureFileMode(name)); err != nil {
 			return err

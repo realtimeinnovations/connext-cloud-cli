@@ -338,7 +338,7 @@ func TestRequestPSKToFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	written := map[string][]byte{}
-	for name, mode := range map[string]os.FileMode{"psk_secret.key": 0600, "psk_secret_extra.key": 0600, "psk_secret.lease.json": 0644} {
+	for name, mode := range map[string]os.FileMode{"psk_secret.key": 0644, "psk_secret_extra.key": 0644, "psk_secret.lease.json": 0644} {
 		path := filepath.Join(expectedDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {

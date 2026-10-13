@@ -136,6 +136,9 @@ func (app *App) ReadConfig() (map[string]any, error) {
 }
 
 func (app *App) WriteConfig(config map[string]any) error {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
@@ -159,6 +162,9 @@ func (app *App) RuntimeState() (map[string]any, error) {
 }
 
 func (app *App) WriteRuntimeState(state map[string]any) error {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -295,6 +301,9 @@ func (app *App) downloadTemplate(databusName string, appName string, target stri
 	default:
 		encoded, _ := json.MarshalIndent(typed, "", "  ")
 		content = string(encoded)
+	}
+	if err := fileoutput.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
 	}
 	return fileoutput.WriteFile(target, []byte(content), 0o644)
 }

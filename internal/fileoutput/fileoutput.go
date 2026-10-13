@@ -9,15 +9,13 @@
 // Symlinks, including dangling links and links above a caller's selected root,
 // are rejected. Missing paths are permitted during preflight.
 //
-// Writes stage a complete file beside the destination before replacing it.
-// This avoids truncation on copy failure and writing through existing hard links.
+// Writers validate, then use ordinary OS writes without changing their semantics.
 // Validation is path-based: it does not protect against concurrent replacement of
 // ancestor directories. Callers needing a multi-file preflight must still run it
 // before side effects; individual writes are not a multi-file transaction.
 package fileoutput
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -146,71 +144,49 @@ func MkdirAll(path string, mode os.FileMode) error {
 	return os.MkdirAll(path, mode)
 }
 
-// WriteFile replaces or creates a regular file. Callers own whether replacement
-// is appropriate (force, generated refresh, or editable-example preservation).
-// POSIX permission modes apply before publication, including on replacement.
-// Windows access control follows inherited ACLs, not POSIX permission bits.
+// WriteFile validates the destination, then uses os.WriteFile unchanged.
+// Callers retain parent creation, permissions, and overwrite policy.
 func WriteFile(path string, data []byte, mode os.FileMode) error {
-	return Copy(path, bytes.NewReader(data), mode)
+	path, err := validatedFile(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, mode)
 }
 
-// Copy is the streaming form of WriteFile. Failed reads leave the old file intact.
+// Copy validates before opening a stream with ordinary truncate/write semantics.
+// As with an ordinary write, a copy failure can leave partial output.
 func Copy(path string, source io.Reader, mode os.FileMode) error {
-	var err error
-	path, err = absolutePath(path)
+	file, err := OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	info, err := Inspect(path, File)
-	if err != nil && !os.IsNotExist(err) {
-		return err
+	_, copyErr := io.Copy(file, source)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
 	}
-	// Never loosen an existing mode.
-	if info != nil {
-		mode &= info.Mode().Perm()
-	}
-	directory := filepath.Dir(path)
-	directoryMode := os.FileMode(0o755)
-	if mode.Perm()&0o077 == 0 {
-		directoryMode = 0o700
-	}
-	if err := MkdirAll(directory, directoryMode); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, ".rticloud-output-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(temporary.Name())
-	defer temporary.Close()
-	if _, err := io.Copy(temporary, source); err != nil {
-		return err
-	}
-	if err := temporary.Chmod(mode.Perm()); err != nil {
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := Validate(path, File); err != nil {
-		return err
-	}
-	return os.Rename(temporary.Name(), path)
+	return closeErr
 }
 
-// OpenAppend opens a validated regular file for a long-lived append stream.
-// Unlike replacement writes, append streams necessarily retain the existing inode.
-func OpenAppend(path string, mode os.FileMode) (*os.File, error) {
-	var err error
-	path, err = absolutePath(path)
+// OpenFile validates a regular-file destination before applying the caller's flags.
+func OpenFile(path string, flags int, mode os.FileMode) (*os.File, error) {
+	path, err := validatedFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := Validate(path, File); err != nil {
-		return nil, err
+	return os.OpenFile(path, flags, mode)
+}
+
+func validatedFile(path string) (string, error) {
+	path, err := absolutePath(path)
+	if err != nil {
+		return "", err
 	}
-	if err := MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, mode)
+	return path, Validate(path, File)
+}
+
+// OpenAppend is OpenFile with the standard log append flags.
+func OpenAppend(path string, mode os.FileMode) (*os.File, error) {
+	return OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, mode)
 }

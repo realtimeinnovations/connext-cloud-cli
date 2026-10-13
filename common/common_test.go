@@ -43,7 +43,7 @@ func TestSecureFilesValidateWholeResponseBeforeWriting(t *testing.T) {
 	}
 }
 
-func TestSecureFilesPreferLocalKeyAndKeepSecretsPrivate(t *testing.T) {
+func TestSecureFilesPreferLocalKeyAndPreserveExistingPermissions(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "client.key")
 	if err := os.WriteFile(path, []byte("old key"), 0644); err != nil {
@@ -63,7 +63,7 @@ func TestSecureFilesPreferLocalKeyAndKeepSecretsPrivate(t *testing.T) {
 			t.Fatal(err)
 		}
 		mode := os.FileMode(0600)
-		if name == "client.crt" {
+		if name == "client.crt" || name == "client.key" {
 			mode = 0644
 		}
 		if runtime.GOOS != "windows" && info.Mode().Perm() != mode {

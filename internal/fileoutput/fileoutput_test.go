@@ -8,6 +8,7 @@ package fileoutput
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -145,51 +146,35 @@ func TestContainmentAndDirectoryPreflight(t *testing.T) {
 	}
 }
 
-func TestWritePublishesCompleteContentsAndRestrictsPermissions(t *testing.T) {
-	for _, tc := range []struct {
-		name                      string
-		existing, requested, want os.FileMode
-	}{
-		{"new private file", 0, 0600, 0600},
-		{"tighten existing public file", 0644, 0600, 0600},
-		{"keep existing private file private", 0600, 0644, 0600},
-		{"new public file", 0, 0644, 0644},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "nested", "output")
-			if tc.existing != 0 {
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte("old data longer than replacement"), tc.existing); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := WriteFile(path, []byte("new data"), tc.requested); err != nil {
-				t.Fatal(err)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil || string(data) != "new data" {
-				t.Fatalf("contents=%q, error=%v", data, err)
-			}
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if runtime.GOOS != "windows" && info.Mode().Perm() != tc.want {
-				t.Errorf("mode=%04o, want=%04o", info.Mode().Perm(), tc.want)
-			}
-			entries, err := os.ReadDir(filepath.Dir(path))
-			if err != nil || len(entries) != 1 {
-				t.Fatalf("temporary files leaked: %v, %v", entries, err)
-			}
-			if tc.existing == 0 && tc.requested == 0600 && runtime.GOOS != "windows" {
-				info, err := os.Stat(filepath.Dir(path))
-				if err != nil || info.Mode().Perm() != 0700 {
-					t.Fatalf("private parent=%v, %v", info, err)
-				}
-			}
-		})
+// Holding the file open verifies in-place writing, including Windows handles
+// that allow writes but deny replacement. Existing permission bits must survive.
+func TestOverwritePreservesOpenFileAndPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output")
+	if err := os.WriteFile(path, []byte("old contents longer than new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	before, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(path, []byte("new contents"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != "new contents" {
+		t.Fatalf("open file contents=%q, error=%v", data, err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode() != after.Mode() {
+		t.Fatalf("permissions changed: %v -> %v", before.Mode(), after.Mode())
 	}
 }
 
@@ -197,38 +182,23 @@ type failedReader struct{ err error }
 
 func (r failedReader) Read(p []byte) (int, error) { return copy(p, "partial"), r.err }
 
-func TestCopyFailurePreservesOldFileAndCleansStaging(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "output")
-	if err := os.WriteFile(path, []byte("original"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	before := snapshot(t, root)
+func TestCopyReportsReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output")
 	failure := errors.New("download interrupted")
 	if err := Copy(path, failedReader{failure}, 0600); !errors.Is(err, failure) {
 		t.Fatalf("error=%v", err)
 	}
-	if after := snapshot(t, root); !reflect.DeepEqual(before, after) {
-		t.Fatalf("failed copy changed files: %v", after)
-	}
 }
 
-func TestReplacingHardLinkDoesNotModifyOtherName(t *testing.T) {
+func TestWriterLeavesParentCreationToCaller(t *testing.T) {
 	root := t.TempDir()
-	original := filepath.Join(root, "original")
-	target := filepath.Join(root, "output")
-	if err := os.WriteFile(original, []byte("original"), 0644); err != nil {
-		t.Fatal(err)
+	path := filepath.Join(root, "missing", "output")
+	if err := WriteFile(path, []byte("data"), 0600); !os.IsNotExist(err) {
+		t.Fatalf("want missing-parent error, got %v", err)
 	}
-	if err := os.Link(original, target); err != nil {
-		t.Skipf("hard links unavailable: %v", err)
-	}
-	if err := WriteFile(target, []byte("private replacement"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(original)
-	if err != nil || string(data) != "original" {
-		t.Fatalf("other hard link changed: %q, %v", data, err)
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("write created parent: %v, %v", entries, err)
 	}
 }
 
@@ -287,7 +257,7 @@ func TestWriteRechecksAfterPreflight(t *testing.T) {
 }
 
 func TestAppendPreservesPreviousLogContents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "logs", "output.log")
+	path := filepath.Join(t.TempDir(), "output.log")
 	for _, line := range []string{"first\n", "second\n"} {
 		file, err := OpenAppend(path, 0644)
 		if err != nil {

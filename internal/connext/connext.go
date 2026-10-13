@@ -243,7 +243,7 @@ func downloadFileWithDescription(url string, targetPath string, description stri
 	if response.StatusCode != http.StatusOK {
 		return common.UserError{Message: fmt.Sprintf("%s download failed: %s", description, response.Status)}
 	}
-	return fileoutput.Copy(targetPath, response.Body, 0o644)
+	return fileoutput.Copy(targetPath, response.Body, 0o666)
 }
 
 func normalizeOptions(options DiscoveryOptions) DiscoveryOptions {

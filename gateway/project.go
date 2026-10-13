@@ -163,6 +163,9 @@ func (app *GatewayApp) ReadConfig() (map[string]any, error) {
 }
 
 func (app *GatewayApp) WriteConfig(config map[string]any) error {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
@@ -186,6 +189,9 @@ func (app *GatewayApp) RuntimeState() (map[string]any, error) {
 }
 
 func (app *GatewayApp) WriteRuntimeState(state map[string]any) error {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -279,6 +285,9 @@ func (app *GatewayApp) downloadTemplate(resourceName string, templateName string
 	default:
 		encoded, _ := json.MarshalIndent(typed, "", "  ")
 		content = string(encoded)
+	}
+	if err := fileoutput.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
 	}
 	return fileoutput.WriteFile(target, []byte(content), 0o644)
 }

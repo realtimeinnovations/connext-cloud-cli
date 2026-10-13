@@ -48,6 +48,7 @@ type Runner struct {
 	Sleep        func(time.Duration)
 	ReadFile     func(string) ([]byte, error)
 	WriteFile    func(string, []byte, os.FileMode) error
+	Chmod        func(string, os.FileMode) error
 	MkdirAll     func(string, os.FileMode) error
 	Stat         func(string) (os.FileInfo, error)
 	CSRGenerator CSRGenerator
@@ -61,6 +62,7 @@ func New(api API, out io.Writer) *Runner {
 		Sleep:     time.Sleep,
 		ReadFile:  os.ReadFile,
 		WriteFile: fileoutput.WriteFile,
+		Chmod:     os.Chmod,
 		MkdirAll:  fileoutput.MkdirAll,
 		Stat:      fileoutput.StatFile,
 	}
@@ -80,11 +82,32 @@ func (runner *Runner) printResponseBody(body []byte) error {
 }
 
 func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
-	mode := os.FileMode(0o644)
-	if sensitive {
-		mode = 0o600
+	if err := fileoutput.Validate(filePath, fileoutput.File); err != nil {
+		return err
 	}
-	return runner.WriteFile(filePath, data, mode)
+	fileMode := os.FileMode(0o644)
+	dirMode := os.FileMode(0o755)
+	if sensitive {
+		fileMode = 0o600
+		dirMode = 0o700
+	}
+	if dir := filepath.Dir(filePath); dir != "." {
+		if err := runner.MkdirAll(dir, dirMode); err != nil {
+			return err
+		}
+	}
+	if sensitive {
+		if err := runner.Chmod(filePath, fileMode); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := runner.WriteFile(filePath, data, fileMode); err != nil {
+		return err
+	}
+	if sensitive {
+		return runner.Chmod(filePath, fileMode)
+	}
+	return nil
 }
 
 func (runner *Runner) ListTopics(name string) error {
