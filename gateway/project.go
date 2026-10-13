@@ -244,6 +244,9 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 	if databus := common.StringValue(config, "databus"); databus != "" {
 		if gatewayTemplate, _ := templates["gateway"].(string); gatewayTemplate != "" {
 			target := filepath.Join(app.RoutingDir(), gatewayTemplate+".xml")
+			if err := fileoutput.ValidateWithin(app.RoutingDir(), target, fileoutput.File); err != nil {
+				return err
+			}
 			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(databus, gatewayTemplate, target); err != nil {
 					return err
@@ -255,6 +258,9 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 	if observability := common.StringValue(config, "observability"); observability != "" {
 		if collectorTemplate, _ := templates["collector"].(string); collectorTemplate != "" {
 			target := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
+			if err := fileoutput.ValidateWithin(app.CollectorDir(), target, fileoutput.File); err != nil {
+				return err
+			}
 			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(observability, collectorTemplate, target); err != nil {
 					return err

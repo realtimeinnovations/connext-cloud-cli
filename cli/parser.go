@@ -2378,9 +2378,6 @@ agent's management login.`,
 						return argumentError("provide --campaign-token, or --service, --domain-tpl-id and --participant-tpl-id for direct enrollment")
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
-					if err := fileoutput.MkdirAll(inboxDir, 0o755); err != nil {
-						return err
-					}
 					if serial == "" {
 						serial = edgesyncagent.DetectSerial()
 					}
@@ -2417,6 +2414,12 @@ agent's management login.`,
 					data, _ := json.MarshalIndent(req, "", "  ")
 					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
 					dest := filepath.Join(inboxDir, "enroll-"+fname)
+					if err := fileoutput.ValidateWithin(inboxDir, dest, fileoutput.File); err != nil {
+						return err
+					}
+					if err := fileoutput.MkdirAll(inboxDir, 0o755); err != nil {
+						return err
+					}
 					if err := fileoutput.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
 						return err
 					}

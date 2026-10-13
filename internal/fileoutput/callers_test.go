@@ -8,6 +8,7 @@ package fileoutput_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -102,5 +103,62 @@ func TestProjectCredentialPreflightRunsBeforeRegistration(t *testing.T) {
 				t.Fatalf("want unsafe credential output error, got %v", err)
 			}
 		})
+	}
+}
+
+// Exercise each template caller with one escape, leaving traversal mechanics to
+// the utility matrix. Cover both overwrites and missing-parent side effects.
+func TestTemplateDownloadsStayWithinTheirOutputDirectory(t *testing.T) {
+	for _, kind := range []string{"gateway", "collector", "spy"} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", kind, existing), func(t *testing.T) {
+				work := t.TempDir()
+				project := "gateway"
+				if kind == "spy" {
+					project = "spy"
+				}
+				parent := filepath.Join(work, ".connext", project)
+				if err := os.MkdirAll(parent, 0700); err != nil {
+					t.Fatal(err)
+				}
+				outside := filepath.Join(parent, "outside.xml")
+				if err := os.WriteFile(outside, []byte("untouched"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				name := "../newdir/outside"
+				if existing {
+					name = "../outside"
+				}
+				calls := 0
+				get := func(string) (map[string]any, error) {
+					calls++
+					return map[string]any{"client_config": "replacement"}, nil
+				}
+				var err error
+				if kind == "spy" {
+					app := spy.NewApp(work, io.Discard)
+					app.APIGet = get
+					err = app.DownloadArtifacts(map[string]any{"databus": "db", "templates": map[string]any{"app": name}}, true)
+				} else {
+					app := gateway.NewGatewayApp(work, io.Discard)
+					app.APIGet = get
+					err = app.DownloadArtifacts(map[string]any{"databus": "db", "observability": "obs", "templates": map[string]any{kind: name}}, true)
+				}
+				if err == nil {
+					t.Fatal("accepted template outside output directory")
+				}
+				if calls != 0 {
+					t.Fatalf("invalid destination triggered %d downloads", calls)
+				}
+				data, err := os.ReadFile(outside)
+				if err != nil || string(data) != "untouched" {
+					t.Fatalf("outside contents=%q, error=%v", data, err)
+				}
+				entries, err := os.ReadDir(parent)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("rejected output created directories: %v, %v", entries, err)
+				}
+			})
+		}
 	}
 }

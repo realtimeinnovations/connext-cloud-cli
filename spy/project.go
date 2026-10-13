@@ -270,6 +270,9 @@ func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
 		return nil
 	}
 	target := filepath.Join(app.AppDir(), appName+".xml")
+	if err := fileoutput.ValidateWithin(app.AppDir(), target, fileoutput.File); err != nil {
+		return err
+	}
 	if force || !common.FileExists(target) {
 		if err := app.downloadTemplate(common.StringValue(config, "databus"), appName, target); err != nil {
 			return err
