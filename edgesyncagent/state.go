@@ -97,6 +97,7 @@ func (a *Agent) persistState(p *profile) error {
 	st := AgentState{
 		State:                 p.state,
 		DeviceName:            p.deviceName,
+		SecurityMode:          p.mode(),
 		ServiceID:             p.serviceID,
 		DomainTemplateID:      p.domainTemplateID,
 		Serial:                p.serial,

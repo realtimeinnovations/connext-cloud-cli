@@ -146,6 +146,43 @@ func TestWriteEnrollArtifacts_Layered(t *testing.T) {
 	}
 }
 
+func TestWriteEnrollArtifacts_LightweightWritesOnlyMTLS(t *testing.T) {
+	s := newTestStore(t)
+	const service, domain, node = "edge-prov", "1:light", "SN-001"
+	artifacts := EnrollArtifacts{
+		SecurityMode:  "lightweight",
+		DeviceCertPEM: []byte("CERT"),
+		CAChainPEM:    []byte("CHAIN"),
+		PrivateKeyPEM: []byte("KEY"),
+		GovernanceP7S: []byte("MUST-NOT-BE-WRITTEN"),
+	}
+	if err := s.WriteEnrollArtifacts(service, domain, "", node, artifacts); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		s.NodeCertPath(service, domain, "", node),
+		s.NodeKeyPath(service, domain, "", node),
+		s.NodeCAChainPath(service, domain, "", node),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing lightweight mTLS artifact %s: %v", path, err)
+		}
+	}
+	mode, err := os.ReadFile(s.NodeSecurityModePath(service, domain, "", node))
+	if err != nil || string(mode) != "lightweight" {
+		t.Fatalf("stored security mode = %q, error = %v", mode, err)
+	}
+	for _, path := range []string{
+		s.IdentityCAPath(service, domain),
+		s.PermissionsCAPath(service, domain),
+		s.GovernancePath(service, domain),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("unexpected lightweight DDS artifact %s", path)
+		}
+	}
+}
+
 func TestResolveNodeMTLSAndURL(t *testing.T) {
 	s := newTestStore(t)
 	const (

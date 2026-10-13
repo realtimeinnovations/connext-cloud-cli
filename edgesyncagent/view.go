@@ -73,6 +73,7 @@ type profileSnapshot struct {
 	serviceID        string
 	domainTemplateID string
 	participantID    string
+	securityMode     string
 	deviceName       string
 	state            ProfileState
 	notAfter         map[ArtifactID]time.Time
@@ -81,6 +82,13 @@ type profileSnapshot struct {
 
 func (p profileSnapshot) key() string {
 	return p.serviceID + "/" + p.participantID + "/" + p.serial
+}
+
+func (p profileSnapshot) artifacts() []ArtifactID {
+	if p.securityMode == "lightweight" {
+		return lightweightDisplayArtifacts
+	}
+	return displayArtifacts
 }
 
 func (a *Agent) snapshotProfiles() []profileSnapshot {
@@ -101,7 +109,11 @@ func (a *Agent) snapshotProfiles() []profileSnapshot {
 		for k, v := range p.issuedAt {
 			is[k] = v
 		}
-		snap := profileSnapshot{p.serial, p.serviceID, p.domain(), p.participantID, p.deviceName, p.state, na, is}
+		snap := profileSnapshot{
+			serial: p.serial, serviceID: p.serviceID, domainTemplateID: p.domain(),
+			participantID: p.participantID, securityMode: p.mode(), deviceName: p.deviceName,
+			state: p.state, notAfter: na, issuedAt: is,
+		}
 		p.mu.Unlock()
 		if owner {
 			domainShared[domainOwnerKey(snap.serviceID, snap.domainTemplateID)] = snap
@@ -295,7 +307,10 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 		body = append(body, tui.Dim("  Deployment Name:      ")+pr.serial)
 		body = append(body, tui.Dim("  Edge Provision Svc:   ")+pr.serviceID)
 		body = append(body, tui.Dim("  Domain Template:      ")+pr.domainTemplateID)
-		body = append(body, tui.Dim("  Participant Template: ")+pr.participantID)
+		body = append(body, tui.Dim("  Security Mode:        ")+pr.securityMode)
+		if pr.securityMode != "lightweight" {
+			body = append(body, tui.Dim("  Participant Template: ")+pr.participantID)
+		}
 		if pr.state == StateRevoked {
 			body = append(body, tui.Dim("  Status:               ")+
 				"\x1b[1;31m✗ REVOKED — credentials rejected by the server. Re-enroll to restore this participant\x1b[0m")
@@ -309,7 +324,7 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 		artSep := "  " + tui.Dim(strings.Repeat("─", colArtifactW+2+colRenewalW+2+colExpirationW))
 		body = append(body, artHeader, artSep)
 
-		for rowIdx, art := range displayArtifacts {
+		for rowIdx, art := range pr.artifacts() {
 			// This participant's own credentials were rejected, so it cannot
 			// itself renew ANY artifact — including PSK/CRL: another, still
 			// valid participant may keep the shared domain secrets renewed
@@ -382,7 +397,7 @@ func (a *Agent) renderAgentView(vs agentViewState) string {
 func countArtifactsNeedingRenewal(now time.Time, profiles []profileSnapshot) int {
 	count := 0
 	for _, p := range profiles {
-		for _, art := range displayArtifacts {
+		for _, art := range p.artifacts() {
 			na, ok := p.notAfter[art]
 			if !ok || na.IsZero() {
 				continue
@@ -732,8 +747,9 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			if vs.activeTab < 0 {
 				vs.activeTab = 0
 			}
-			if vs.rowSel >= len(displayArtifacts) {
-				vs.rowSel = len(displayArtifacts) - 1
+			artifacts := profs[vs.activeTab].artifacts()
+			if vs.rowSel >= len(artifacts) {
+				vs.rowSel = len(artifacts) - 1
 			}
 			if vs.rowSel < 0 {
 				vs.rowSel = 0
@@ -745,11 +761,12 @@ func (a *Agent) runDisplay(ctx context.Context) {
 			if vs.activeTab >= len(profs) {
 				return
 			}
-			if vs.rowSel >= len(displayArtifacts) {
+			artifacts := profs[vs.activeTab].artifacts()
+			if vs.rowSel >= len(artifacts) {
 				return
 			}
 			p := profs[vs.activeTab]
-			art := displayArtifacts[vs.rowSel]
+			art := artifacts[vs.rowSel]
 			if err := a.RenewArtifact(p.domainTemplateID, p.participantID, p.serial, art); err != nil {
 				a.emitf(catRenewal, tui.LogWarn, "manual renew %s failed: %v", artifactLabel[art], err)
 			} else {
@@ -826,7 +843,12 @@ func (a *Agent) runDisplay(ctx context.Context) {
 					repaint()
 				case keyRowDown:
 					vs.focus = focusTable
-					if vs.rowSel < len(displayArtifacts)-1 {
+					profiles := a.snapshotProfiles()
+					artifactCount := 0
+					if vs.activeTab < len(profiles) {
+						artifactCount = len(profiles[vs.activeTab].artifacts())
+					}
+					if vs.rowSel < artifactCount-1 {
 						vs.rowSel++
 					}
 					repaint()
