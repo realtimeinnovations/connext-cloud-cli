@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 var UserHomeDir = os.UserHomeDir
@@ -44,4 +45,28 @@ func resolveHomeAndCloudRoot() (string, string, error) {
 		return "", "", fmt.Errorf("determine RTI Cloud directory: path is not absolute: %s", root)
 	}
 	return home, root, nil
+}
+
+// ValidateManagedPath rejects paths outside root and symlinks at or below root.
+// Missing components are allowed so outputs can be checked before creation.
+func ValidateManagedPath(root, target string) error {
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return fmt.Errorf("managed path is outside root: %s", target)
+	}
+	current := root
+	for _, part := range append([]string{""}, strings.Split(relative, string(filepath.Separator))...) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("managed path must not contain symlinks: %s", current)
+		}
+	}
+	return nil
 }
