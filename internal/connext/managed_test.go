@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -373,3 +374,102 @@ func TestAlternativeInstallationHintUsesHostScript(t *testing.T) {
 type testRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f testRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
+	const childHome = "RTICLOUD_TEST_REPAIR_HOME"
+	if home := os.Getenv(childHome); home != "" {
+		UserHomeDir = func() (string, error) { return home, nil }
+		Platform = func() (string, string) { return "linux", "amd64" }
+	} else {
+		managedTestEnvironment(t)
+	}
+	root, err := managedRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Join(root, installerVersion, platformDirectory())
+	script := "#!/bin/sh\nexit 1\n"
+	artifact, err := bundledInstaller("linux", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.sha256 = fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+	options := DiscoveryOptions{
+		HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
+		})},
+		Confirmations: ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }),
+		Output:        io.Discard,
+	}
+	oldRun := runInstallerCommand
+	t.Cleanup(func() { runInstallerCommand = oldRun })
+	if os.Getenv(childHome) != "" {
+		runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+			os.Exit(23) // Abrupt exit bypasses every restoration defer.
+			return nil
+		}
+		_, err := installManagedArtifact(options, artifact)
+		t.Fatalf("expected abrupt exit, got %v", err)
+	}
+	directory := writeManagedFixture(t, prefix, installerVersion)
+	license := filepath.Join(directory, LicenseFileName)
+	if err := os.WriteFile(license, []byte("installation-only license"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(Executable(directory, "rtiddsspy")); err != nil {
+		t.Fatal(err)
+	}
+	home, _ := UserHomeDir()
+	child := exec.Command(os.Args[0], "-test.run=^TestManagedRepairRecoversLicenseAfterAbruptExit$")
+	child.Env = append(os.Environ(), childHome+"="+home)
+	if output, err := child.CombinedOutput(); err == nil {
+		t.Fatal("expected abrupt exit")
+	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 23 {
+		t.Fatalf("child: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(license); !os.IsNotExist(err) {
+		t.Fatalf("installer had not removed the old license: %v", err)
+	}
+	recovery := installationLicenseRecoveryPath(directory)
+	if data, err := os.ReadFile(recovery); err != nil || string(data) != "installation-only license" {
+		t.Fatalf("recovery copy: %q %v", data, err)
+	}
+	runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+		writeManagedFixture(t, prefix, installerVersion)
+		return nil
+	}
+	if _, err := installManagedArtifact(options, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(license); err != nil || string(data) != "installation-only license" {
+		t.Fatalf("restored license: %q %v", data, err)
+	}
+	if _, err := os.Stat(recovery); !os.IsNotExist(err) {
+		t.Fatalf("recovery copy was not cleaned up: %v", err)
+	}
+	canonical, _ := managedLicensePath()
+	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
+		t.Fatalf("repair silently imported license: %v", err)
+	}
+}
+
+func TestManagedDiscoveryRecoversLicenseBeforeReusingInstall(t *testing.T) {
+	root := managedTestEnvironment(t)
+	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
+	recovery := installationLicenseRecoveryPath(directory)
+	if err := writeVerifiedLicense(recovery, []byte("recover me")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverInstall(map[string]string{}, DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("recovery must not download an installer")
+		return nil, nil
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(directory, LicenseFileName)); err != nil || string(data) != "recover me" {
+		t.Fatalf("restored license: %q %v", data, err)
+	}
+	if _, err := os.Stat(recovery); !os.IsNotExist(err) {
+		t.Fatalf("recovery copy was not cleaned up: %v", err)
+	}
+}

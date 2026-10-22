@@ -7,6 +7,7 @@
 package spy
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -1035,6 +1036,8 @@ func (app *App) defaultSelect(message string, choices []string) (string, error) 
 		selector.DefaultChoice = connext.CancelManagedDownloadLabel
 	} else if len(choices) == 2 && choices[0] == connext.ImportManagedLicenseLabel && choices[1] == connext.DeclineManagedLicenseLabel {
 		selector.DefaultChoice = connext.ImportManagedLicenseLabel
+	} else if len(choices) == 2 && choices[0] == connext.DeclineManagedLicenseLabel && choices[1] == connext.ImportManagedLicenseLabel {
+		selector.DefaultChoice = connext.DeclineManagedLicenseLabel
 	} else if len(choices) >= 2 && choices[0] == connext.DeclineLicensePrecheckLabel && choices[1] == connext.ProceedLicensePrecheckLabel {
 		selector.DefaultChoice = connext.DeclineLicensePrecheckLabel
 	}
@@ -1054,10 +1057,17 @@ func (app *App) defaultConfirmReload(message string) (bool, error) {
 }
 
 func (app *App) input() io.Reader {
-	if app.In != nil {
-		return app.In
+	if app.In == nil {
+		app.In = os.Stdin
 	}
-	return os.Stdin
+	// Keep read-ahead between numbered menus and path prompts. Terminals must
+	// remain files so the cursor UI can use them directly.
+	if _, _, interactive := terminal.PromptFiles(app.In, app.Out); !interactive {
+		if _, buffered := app.In.(*bufio.Reader); !buffered {
+			app.In = bufio.NewReader(app.In)
+		}
+	}
+	return app.In
 }
 
 func (app *App) selector() prompt.Selector {

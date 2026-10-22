@@ -7,6 +7,7 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1573,6 +1574,8 @@ func (app *GatewayApp) defaultSelect(message string, choices []string) (string, 
 		selector.DefaultChoice = internalconnext.CancelManagedDownloadLabel
 	} else if len(choices) == 2 && choices[0] == internalconnext.ImportManagedLicenseLabel && choices[1] == internalconnext.DeclineManagedLicenseLabel {
 		selector.DefaultChoice = internalconnext.ImportManagedLicenseLabel
+	} else if len(choices) == 2 && choices[0] == internalconnext.DeclineManagedLicenseLabel && choices[1] == internalconnext.ImportManagedLicenseLabel {
+		selector.DefaultChoice = internalconnext.DeclineManagedLicenseLabel
 	} else if len(choices) >= 2 && choices[0] == internalconnext.DeclineLicensePrecheckLabel && choices[1] == internalconnext.ProceedLicensePrecheckLabel {
 		selector.DefaultChoice = internalconnext.DeclineLicensePrecheckLabel
 	}
@@ -1615,10 +1618,17 @@ func (app *GatewayApp) defaultConfirmReload(message string) (bool, error) {
 }
 
 func (app *GatewayApp) input() io.Reader {
-	if app.In != nil {
-		return app.In
+	if app.In == nil {
+		app.In = os.Stdin
 	}
-	return os.Stdin
+	// Keep read-ahead between numbered menus and path prompts. Terminals must
+	// remain files so the cursor UI can use them directly.
+	if _, _, interactive := terminal.PromptFiles(app.In, app.Out); !interactive {
+		if _, buffered := app.In.(*bufio.Reader); !buffered {
+			app.In = bufio.NewReader(app.In)
+		}
+	}
+	return app.In
 }
 
 func (app *GatewayApp) selector() prompt.Selector {

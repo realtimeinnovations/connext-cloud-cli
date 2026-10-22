@@ -1299,6 +1299,7 @@ func TestConfirmationDefaultsOnEnter(t *testing.T) {
 	for _, choices := range [][]string{
 		{"Cancel", "Accept license and install"},
 		{"Copy and use this license", "Choose another license"},
+		{"Choose another license", "Copy and use this license"},
 		{"No, stop", "Yes, proceed anyway"},
 	} {
 		t.Run(choices[0], func(t *testing.T) {
@@ -1310,5 +1311,37 @@ func TestConfirmationDefaultsOnEnter(t *testing.T) {
 				t.Fatalf("choice=%q error=%v", got, err)
 			}
 		})
+	}
+}
+
+func TestPipedLicensePromptAnswers(t *testing.T) {
+	var out bytes.Buffer
+	app := NewGatewayApp(t.TempDir(), &out)
+	app.In = strings.NewReader("2\n/missing.dat\n/license.dat\n3\n2\n/replacement.dat\n\n")
+	menu := []string{"Download", "Enter license path", "Manual", "Skip"}
+	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
+		t.Fatalf("menu: %q %v", got, err)
+	}
+	for _, want := range []string{"/missing.dat", "/license.dat"} {
+		if got, err := app.defaultInput("Path?"); err != nil || got != want {
+			t.Fatalf("path: %q %v, want %q", got, err, want)
+		}
+	}
+	warnings := []string{"No, stop", "Yes, proceed anyway", "Choose another license"}
+	if got, err := app.defaultSelect("Warnings", warnings); err != nil || got != warnings[2] {
+		t.Fatalf("warnings: %q %v", got, err)
+	}
+	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
+		t.Fatalf("retry menu: %q %v", got, err)
+	}
+	if got, err := app.defaultInput("Path?"); err != nil || got != "/replacement.dat" {
+		t.Fatalf("replacement: %q %v", got, err)
+	}
+	choices := []string{"Copy and use this license", "Choose another license"}
+	if got, err := app.defaultSelect("Copy?", choices); err != nil || got != choices[0] {
+		t.Fatalf("copy: %q %v", got, err)
+	}
+	if _, err := app.defaultSelect("Copy again?", choices); err == nil {
+		t.Fatal("EOF must cancel")
 	}
 }

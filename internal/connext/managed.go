@@ -81,8 +81,10 @@ func safeManagedPath(root, target string) error {
 }
 
 func validateManagedMetadata(directory, version string) (Install, error) {
-	if _, err := os.Lstat(filepath.Join(filepath.Dir(directory), installationPendingFile)); !os.IsNotExist(err) {
-		return Install{}, fmt.Errorf("Connext installation is incomplete at %s", directory)
+	for _, marker := range []string{filepath.Join(filepath.Dir(directory), installationPendingFile), installationLicenseRecoveryPath(directory)} {
+		if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+			return Install{}, fmt.Errorf("Connext installation is incomplete at %s", directory)
+		}
 	}
 	metadata := filepath.Join(directory, "rti_versions.xml")
 	if err := safeManagedPath(directory, metadata); err != nil {
@@ -176,9 +178,6 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if err := safeManagedPath(rti, directory); err != nil {
 		return Install{}, err
 	}
-	if install, err := validateManaged(directory, artifact.version, options); err == nil {
-		return install, nil
-	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return Install{}, err
 	}
@@ -195,6 +194,9 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		return Install{}, fmt.Errorf("another Connext setup is running: %w", err)
 	}
 	defer lock.Close() // OS releases this lock on cancellation or process exit too.
+	if err := restoreInstallationLicense(directory); err != nil {
+		return Install{}, fmt.Errorf("recovering installation license: %w", err)
+	}
 	if install, err := validateManaged(directory, artifact.version, options); err == nil {
 		return install, nil
 	}
@@ -237,16 +239,20 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		if !info.IsDir() {
 			return Install{}, fmt.Errorf("managed installation is not a directory: %s", directory)
 		}
-		// Preserve the local copy without importing it into the shared store.
-		// Provisioning will ask for confirmation if it needs to import it later.
-		if preservedLicense, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
+		// Save outside the replaced tree, without importing into the license store.
+		// The next repair can recover this copy if the process exits abruptly.
+		if contents, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
+			if err := writeVerifiedLicense(installationLicenseRecoveryPath(directory), contents); err != nil {
+				return Install{}, fmt.Errorf("preserving installation license: %w", err)
+			}
 			defer func() {
-				// Restore even when the installer fails or is cancelled.
-				if err := writeVerifiedLicense(filepath.Join(directory, LicenseFileName), preservedLicense); err != nil {
+				if err := restoreInstallationLicense(directory); err != nil {
 					result = Install{}
 					resultErr = errors.Join(resultErr, fmt.Errorf("restoring installation license: %w", err))
 				}
 			}()
+		} else if !os.IsNotExist(err) {
+			return Install{}, fmt.Errorf("preserving installation license: %w", err)
 		}
 		if err := os.RemoveAll(directory); err != nil {
 			return Install{}, err
@@ -274,6 +280,9 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	}
 	if err := safeManagedPath(rti, filepath.Join(directory, "bin", options.ExecutableName)); err != nil {
 		return Install{}, err
+	}
+	if err := restoreInstallationLicense(directory); err != nil {
+		return Install{}, fmt.Errorf("restoring installation license: %w", err)
 	}
 	if err := os.Remove(pending); err != nil {
 		return Install{}, err
@@ -319,4 +328,32 @@ func alternativeInstallationHint() string {
 		extension = shell
 	}
 	return "To use another installation, set NDDSHOME or source its environment script:\n  source \"<installation-dir>/resource/scripts/rtisetenv_" + bundle + "." + extension + "\""
+}
+
+func installationLicenseRecoveryPath(directory string) string {
+	return filepath.Join(filepath.Dir(directory), ".rticloud-license-recovery.dat")
+}
+
+// Called under the installer lock before reusing or replacing an installation.
+// Keep the recovery copy until the restored file has been written and verified.
+func restoreInstallationLicense(directory string) error {
+	path := installationLicenseRecoveryPath(directory)
+	root, err := managedRoot()
+	if err != nil {
+		return err
+	}
+	if err := safeManagedPath(filepath.Dir(filepath.Dir(root)), path); err != nil {
+		return err
+	}
+	contents, err := readCopyableLicense(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := writeVerifiedLicense(filepath.Join(directory, LicenseFileName), contents); err != nil {
+		return err
+	}
+	return os.Remove(path)
 }
