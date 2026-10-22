@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -150,7 +151,7 @@ func installManaged(options DiscoveryOptions) (Install, error) {
 	return installManagedArtifact(options, artifact)
 }
 
-func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact) (Install, error) {
+func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact) (result Install, resultErr error) {
 	options = normalizeOptions(options)
 	parent := options.Context
 	if parent == nil {
@@ -236,11 +237,16 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		if !info.IsDir() {
 			return Install{}, fmt.Errorf("managed installation is not a directory: %s", directory)
 		}
-		// Preserve a readable license before replacing invalid binaries.
-		if data, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
-			if err := seedManagedLicense(data); err != nil {
-				return Install{}, err
-			}
+		// Preserve the local copy without importing it into the shared store.
+		// Provisioning will ask for confirmation if it needs to import it later.
+		if preservedLicense, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
+			defer func() {
+				// Restore even when the installer fails or is cancelled.
+				if err := writeVerifiedLicense(filepath.Join(directory, LicenseFileName), preservedLicense); err != nil {
+					result = Install{}
+					resultErr = errors.Join(resultErr, fmt.Errorf("restoring installation license: %w", err))
+				}
+			}()
 		}
 		if err := os.RemoveAll(directory); err != nil {
 			return Install{}, err

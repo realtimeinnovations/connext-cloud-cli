@@ -8,11 +8,12 @@ package connext
 
 import "fmt"
 
-// Confirmation is a binary decision. Decline is always the default.
+// Confirmation is a binary decision. Decline is the default unless explicitly changed.
 type Confirmation struct {
-	Message      string
-	AcceptLabel  string
-	DeclineLabel string
+	Message       string
+	AcceptLabel   string
+	DeclineLabel  string
+	DefaultAccept bool
 }
 
 type Confirmer interface {
@@ -38,7 +39,11 @@ func (selectChoice selectionConfirmer) Confirm(request Confirmation) (bool, erro
 	if selectChoice == nil {
 		return false, fmt.Errorf("confirmation is unavailable")
 	}
-	choice, err := selectChoice(request.Message, []string{request.DeclineLabel, request.AcceptLabel})
+	choices := []string{request.DeclineLabel, request.AcceptLabel}
+	if request.DefaultAccept {
+		choices[0], choices[1] = choices[1], choices[0]
+	}
+	choice, err := selectChoice(request.Message, choices)
 	if err != nil {
 		return false, err
 	}

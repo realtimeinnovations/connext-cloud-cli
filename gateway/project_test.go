@@ -1295,12 +1295,20 @@ func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
 	}
 }
 
-func TestDownloadConfirmationDefaultsToCancel(t *testing.T) {
-	var out bytes.Buffer
-	app := NewGatewayApp(t.TempDir(), &out)
-	app.In = strings.NewReader("\n")
-	got, err := app.defaultSelect("Download and accept the license?", []string{"Cancel", "Accept license and install"})
-	if err != nil || got != "Cancel" {
-		t.Fatalf("choice=%q error=%v", got, err)
+func TestConfirmationDefaultsOnEnter(t *testing.T) {
+	for _, choices := range [][]string{
+		{"Cancel", "Accept license and install"},
+		{"Copy and use this license", "Choose another license"},
+		{"No, stop", "Yes, proceed anyway"},
+	} {
+		t.Run(choices[0], func(t *testing.T) {
+			var out bytes.Buffer
+			app := NewGatewayApp(t.TempDir(), &out)
+			app.In = strings.NewReader("\n")
+			got, err := app.defaultSelect("Confirm?", choices)
+			if err != nil || got != choices[0] {
+				t.Fatalf("choice=%q error=%v", got, err)
+			}
+		})
 	}
 }

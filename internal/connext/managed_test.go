@@ -114,7 +114,7 @@ func TestManagedInstallVerifiedDownloadAndFailures(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX test installer")
 	}
-	for _, scenario := range []string{"success", "repair", "checksum", "exit", "metadata"} {
+	for _, scenario := range []string{"success", "repair", "repair-exit", "checksum", "exit", "metadata"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := managedTestEnvironment(t)
 			script := `#!/bin/sh
@@ -130,7 +130,7 @@ cp "$prefix/rti_connext_dds-7.7.0/bin/rtiroutingservice" "$prefix/rti_connext_dd
 printf '<rti><host><base_version>7.7.0.1</base_version><install_dirname>rti_connext_dds-7.7.0</install_dirname></host></rti>' > "$prefix/rti_connext_dds-7.7.0/rti_versions.xml"
 echo installed
 `
-			if scenario == "exit" {
+			if scenario == "exit" || scenario == "repair-exit" {
 				script = "#!/bin/sh\nexit 1\n"
 			}
 			if scenario == "metadata" {
@@ -148,7 +148,7 @@ echo installed
 				return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
 			}
 			var repairedDirectory, sibling string
-			if scenario == "repair" {
+			if scenario == "repair" || scenario == "repair-exit" {
 				prefix := filepath.Join(root, installerVersion, platformDirectory())
 				repairedDirectory = writeManagedFixture(t, prefix, installerVersion)
 				if err := os.Remove(Executable(repairedDirectory, "rtiddsspy")); err != nil {
@@ -194,7 +194,7 @@ echo installed
 			} else if err == nil {
 				t.Fatal("expected failure")
 			}
-			if scenario == "repair" {
+			if scenario == "repair" || scenario == "repair-exit" {
 				if _, err := os.Stat(filepath.Join(repairedDirectory, "incomplete")); !os.IsNotExist(err) {
 					t.Fatal("incomplete tree was not replaced")
 				}
@@ -202,7 +202,10 @@ echo installed
 					t.Fatal("repair removed sibling")
 				}
 				canonical, _ := managedLicensePath()
-				data, err := os.ReadFile(canonical)
+				if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
+					t.Fatalf("repair silently imported a license into the shared store: %v", err)
+				}
+				data, err := os.ReadFile(filepath.Join(repairedDirectory, LicenseFileName))
 				if err != nil || string(data) != "preserved license" {
 					t.Fatalf("license lost during repair: %q %v", data, err)
 				}

@@ -289,7 +289,7 @@ func runPackageInstaller(install Install, packagePath string, out io.Writer) err
 	cmd.Dir = install.Path
 	for _, item := range os.Environ() {
 		key := strings.SplitN(item, "=", 2)[0]
-		if !strings.EqualFold(key, "NDDSHOME") && !strings.EqualFold(key, "CONNEXTDDS_DIR") && !(IsManagedInstallation(install) && strings.EqualFold(key, "RTI_LICENSE_FILE")) {
+		if !strings.EqualFold(key, "NDDSHOME") && !strings.EqualFold(key, "CONNEXTDDS_DIR") && !strings.EqualFold(key, "RTI_LICENSE_FILE") {
 			cmd.Env = append(cmd.Env, item)
 		}
 	}

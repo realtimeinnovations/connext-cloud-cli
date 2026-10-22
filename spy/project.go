@@ -1033,6 +1033,10 @@ func (app *App) defaultSelect(message string, choices []string) (string, error) 
 		selector.DefaultChoice = connext.UseManagedConnextLabel
 	} else if len(choices) == 2 && choices[0] == connext.CancelManagedDownloadLabel && choices[1] == connext.AcceptManagedDownloadLabel {
 		selector.DefaultChoice = connext.CancelManagedDownloadLabel
+	} else if len(choices) == 2 && choices[0] == connext.ImportManagedLicenseLabel && choices[1] == connext.DeclineManagedLicenseLabel {
+		selector.DefaultChoice = connext.ImportManagedLicenseLabel
+	} else if len(choices) == 2 && choices[0] == connext.DeclineLicensePrecheckLabel && choices[1] == connext.ProceedLicensePrecheckLabel {
+		selector.DefaultChoice = connext.DeclineLicensePrecheckLabel
 	}
 	return selector.Select(message, choices)
 }

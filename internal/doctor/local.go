@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
@@ -75,31 +76,42 @@ func toolsCheck(install connext.Install, id, label, minimum string, tools []stri
 }
 
 func licenseCheck(install connext.Install, options Options) Check {
-	c := Check{ID: "license", Label: "Connext license", Status: CheckPass, Message: "Expiration metadata read; Connext validates the license at runtime"}
+	c := Check{ID: "license", Label: "Connext license", Status: CheckPass, Message: "Required feature and expiration metadata checked; Connext validates the license at runtime"}
 	inspection, err := connext.InspectManagedLicense(install)
+	environmentLicense := os.Getenv("RTI_LICENSE_FILE") != ""
 	if err != nil {
 		c.Status, c.Code, c.Message = CheckFail, "LICENSE_UNREADABLE", "License source cannot be read safely"
 		c.RequiredAction, c.NextStep = "repair_license", "Check the configured license file paths and permissions, then run rticloud doctor."
+		if environmentLicense {
+			c.Details = append(c.Details, detail("RTI_LICENSE_FILE", inspection.Source))
+			c.NextStep = "Check RTI_LICENSE_FILE and its file permissions, or unset RTI_LICENSE_FILE to use a different license."
+		}
 		return c
 	}
 	if inspection.Contents == nil {
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_MISSING", "No readable license found"
-		c.RequiredAction, c.NextStep = "setup_license", "Run rticloud gateway or rticloud spy interactively to provision a Connext license."
+		c.RequiredAction, c.NextStep = "setup_license", "Run rticloud gateway or rticloud spy interactively to download a license or provide a license file."
 		return c
 	}
 	c.Details = append(c.Details, detail("Source", inspection.Source))
-	if inspection.CopyMatches {
+	if environmentLicense {
+		c.Details = append(c.Details, detail("Selection", "Found via RTI_LICENSE_FILE; used directly without copying"), detail("Override", "Unset RTI_LICENSE_FILE to use a different license."))
+	} else if inspection.Source != inspection.CanonicalPath {
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_IMPORT_CONFIRMATION_REQUIRED", "Confirmation is required to copy and use this license file for Connext Professional components"
+		c.Details = append(c.Details, detail("Copy destination", inspection.CanonicalPath), detail("Copy", "Explicit confirmation required; license file has not been copied"))
+		c.RequiredAction, c.NextStep = "confirm_license_import", "Run rticloud gateway or rticloud spy interactively to copy and use this license file, or download a license from evaluation.rti.com."
+	} else if inspection.CopyMatches {
 		c.Details = append(c.Details, detail("Installation", "License copy matches source"))
 	} else {
 		c.Status, c.Code = CheckWarn, "LICENSE_COPY_PENDING"
-		c.Details = append(c.Details, detail("Installation", "License copy needs provisioning on next Gateway/Spy run"))
+		c.Details = append(c.Details, detail("Installation", "License copy will be updated when rticloud runs Connext Professional components"))
 	}
-	c.Features = licenseFeatures(inspection.Contents, options.Now)
+	c.Features = connext.ParseLicenseFeatures(inspection.Contents, options.Now)
 	unknown, expiring, expired := len(c.Features) == 0, false, false
 	for _, f := range c.Features {
-		unknown = unknown || f.Status == LicenseUnknown
-		expiring = expiring || f.Status == LicenseExpiring
-		expired = expired || f.Status == LicenseExpired
+		unknown = unknown || f.Status == connext.LicenseUnknown
+		expiring = expiring || f.Status == connext.LicenseExpiring
+		expired = expired || f.Status == connext.LicenseExpired
 	}
 	// Concatenated license files can contain alternative grants for a feature.
 	// Report expired records, but do not infer runtime rejection from those alone.
@@ -112,6 +124,17 @@ func licenseCheck(install connext.Install, options Options) Check {
 	case expiring:
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRING", "License feature records expire within 14 days"
 		c.RequiredAction, c.NextStep = "renew_license", "If using Gateway/Spy, renew the Connext license before the reported expiration date."
+	}
+	if problems := connext.LicenseFeatureProblems(c.Features); len(problems) != 0 {
+		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_REQUIRED_FEATURES_UNAVAILABLE", "Required license features are missing, expired, or unverified"
+		c.Details = append(c.Details, detail("Required features", strings.Join(connext.RequiredLicenseFeatures(), ", ")))
+		for _, problem := range problems {
+			c.Details = append(c.Details, detail("Precheck", problem))
+		}
+		c.RequiredAction, c.NextStep = "review_connext_license", "Obtain a license from evaluation.rti.com, or provide a license file with RTIPRO, RTISECURITY, and RTIRWT."
+	}
+	if environmentLicense {
+		c.NextStep = strings.TrimSpace(c.NextStep + " Unset RTI_LICENSE_FILE to use a different license.")
 	}
 	return c
 }

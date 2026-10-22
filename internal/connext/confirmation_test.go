@@ -21,11 +21,18 @@ func TestConfirmationAdapter(t *testing.T) {
 		choice              string
 		err                 error
 		accepted, wantError bool
+		defaultAccept       bool
 	}{
-		{"Accept", nil, true, false}, {"Cancel", nil, false, false}, {"unexpected", nil, false, true}, {"", inputErr, false, true},
+		{"Accept", nil, true, false, false}, {"Cancel", nil, false, false, false}, {"unexpected", nil, false, true, false}, {"", inputErr, false, true, false},
+		{"Accept", nil, true, false, true}, {"Cancel", nil, false, false, true},
 	} {
+		request.DefaultAccept = test.defaultAccept
 		confirmer := ConfirmationFromSelector(func(message string, choices []string) (string, error) {
-			if message != request.Message || len(choices) != 2 || choices[0] != "Cancel" || choices[1] != "Accept" {
+			first, second := "Cancel", "Accept"
+			if test.defaultAccept {
+				first, second = second, first
+			}
+			if message != request.Message || len(choices) != 2 || choices[0] != first || choices[1] != second {
 				t.Fatalf("unexpected request: %s %v", message, choices)
 			}
 			return test.choice, test.err

@@ -1571,6 +1571,10 @@ func (app *GatewayApp) defaultSelect(message string, choices []string) (string, 
 		selector.DefaultChoice = internalconnext.UseManagedConnextLabel
 	} else if len(choices) == 2 && choices[0] == internalconnext.CancelManagedDownloadLabel && choices[1] == internalconnext.AcceptManagedDownloadLabel {
 		selector.DefaultChoice = internalconnext.CancelManagedDownloadLabel
+	} else if len(choices) == 2 && choices[0] == internalconnext.ImportManagedLicenseLabel && choices[1] == internalconnext.DeclineManagedLicenseLabel {
+		selector.DefaultChoice = internalconnext.ImportManagedLicenseLabel
+	} else if len(choices) == 2 && choices[0] == internalconnext.DeclineLicensePrecheckLabel && choices[1] == internalconnext.ProceedLicensePrecheckLabel {
+		selector.DefaultChoice = internalconnext.DeclineLicensePrecheckLabel
 	}
 	return selector.Select(message, choices)
 }

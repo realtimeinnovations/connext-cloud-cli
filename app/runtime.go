@@ -45,6 +45,7 @@ import (
 
 const (
 	downloadConnextLicenseLabel       = "Yes, download a license from evaluation.rti.com"
+	enterConnextLicensePathLabel      = "Enter license path"
 	manualDownloadConnextLicenseLabel = "Manually download a license"
 	cancelConnextLicenseLabel         = "No, skip license download"
 	evaluationLicenseURL              = "https://evaluation.rti.com/workspaces/license"
@@ -402,7 +403,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc); err != nil {
+	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc, runtime.Spy.InputFunc); err != nil {
 		return err
 	}
 	if err := spy.EnsureEnhancedDDSSpy(connext, runtime.Spy.SelectFunc, runtime.Out); err != nil {
@@ -468,7 +469,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
 			return err
 		}
 		if gateway.HasObservability(configValues) {
@@ -500,7 +501,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
 			return err
 		}
 		if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
@@ -539,9 +540,14 @@ func (runtime *Runtime) liveTextOutput(format string) bool {
 	return format == "text" || terminal.PlainOutputRequested(runtime.Out)
 }
 
-func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error)) error {
-	if internalconnext.IsManagedInstallation(install) {
-		available, err := internalconnext.ProvisionManagedLicense(install)
+func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error), inputFunc func(string) (string, error)) error {
+	confirm := internalconnext.ConfirmationFromSelector(selectFunc)
+	if os.Getenv("RTI_LICENSE_FILE") != "" {
+		return internalconnext.PrecheckEnvironmentLicense(confirm, runtime.Out)
+	}
+	managed := internalconnext.IsManagedInstallation(install)
+	if managed {
+		available, err := internalconnext.ProvisionManagedLicense(install, confirm)
 		if err != nil {
 			return err
 		}
@@ -554,10 +560,35 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	if selectFunc == nil {
 		return common.UserError{Message: fmt.Sprintf("Connext Pro at %s is license-managed and no license file was found. Run rticloud in an interactive terminal to download a license from evaluation.rti.com.", install.Path)}
 	}
-	message := fmt.Sprintf("Connext Pro at %s is license-managed, but no license file was found.\n\nDownload a license from evaluation.rti.com now?", install.Path)
-	selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
-	if err != nil {
-		return err
+	message := fmt.Sprintf("Connext Pro at %s is license-managed, but no license file was found.\n\nChoose how to provide a Connext license:", install.Path)
+	if managed {
+		message = fmt.Sprintf("No Connext license is available for %s.\n\nChoose how to provide a Connext license:", install.Path)
+	}
+	var selected string
+	for {
+		choice, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
+		if err != nil {
+			return err
+		}
+		selected = choice
+		if selected != enterConnextLicensePathLabel {
+			break
+		}
+		if inputFunc == nil {
+			return clierror.InputRequired("Enter the path to an existing Connext license file in an interactive terminal.", "provide_connext_license_path")
+		}
+		path, err := inputFunc("Path to Connext license file")
+		if err != nil {
+			return err
+		}
+		imported, err := internalconnext.ImportLicenseFile(install, path, confirm)
+		if err != nil {
+			return err
+		}
+		if imported {
+			_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
+			return nil
+		}
 	}
 	if selected == manualDownloadConnextLicenseLabel {
 		licensePath := internalconnext.LicenseFilePath(install)
@@ -565,7 +596,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 			{Key: "Step 1", Value: "Open the evaluation license page:"},
 			{Value: tui.StyleLink(evaluationLicenseURL)},
 			{Key: "Step 2", Value: "Download the license file."},
-			{Key: "Step 3", Value: fmt.Sprintf("Copy it to %s", licensePath)},
+			{Key: "Step 3", Value: fmt.Sprintf("Copy the license file to %s", licensePath)},
 		}))
 		return common.UserError{Message: fmt.Sprintf("Copy the license file to %s, then rerun this command.", licensePath)}
 	}
@@ -579,7 +610,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	if err != nil {
 		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
 	}
-	if err := internalconnext.WriteLicenseFile(install, licenseContent); err != nil {
+	if err := internalconnext.WriteLicenseFile(install, licenseContent, confirm); err != nil {
 		return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)
 	}
 	_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
