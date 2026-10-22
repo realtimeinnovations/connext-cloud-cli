@@ -239,7 +239,7 @@ func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, str
 }
 
 func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
-	for _, scenario := range []string{"complete", "decline-incomplete", "override-incomplete", "noninteractive-incomplete", "missing-file", "external-install", "relative-file", "quoted-file"} {
+	for _, scenario := range []string{"complete", "decline-incomplete", "override-incomplete", "noninteractive-incomplete", "missing-file", "external-install", "relative-file", "quoted-file", "symlink-file"} {
 		t.Run(scenario, func(t *testing.T) {
 			runtime, install, shared := managedLicenseRuntime(t)
 			var out bytes.Buffer
@@ -266,7 +266,13 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				}
 			}
 			environmentPath := source
-			if scenario == "relative-file" {
+			if scenario == "symlink-file" {
+				environmentPath = filepath.Join(t.TempDir(), "current-license.dat")
+				if err := os.Symlink(source, environmentPath); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				source = environmentPath
+			} else if scenario == "relative-file" {
 				cwd, err := os.Getwd()
 				if err != nil {
 					t.Fatal(err)
@@ -299,7 +305,7 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 			}
 			for attempt := 0; attempt < 2; attempt++ {
 				err := runtime.ensureConnextLicense(selected, selectFunc, nil)
-				wantSuccess := scenario == "complete" || scenario == "external-install" || scenario == "override-incomplete" || scenario == "relative-file" || scenario == "quoted-file"
+				wantSuccess := scenario == "complete" || scenario == "external-install" || scenario == "override-incomplete" || scenario == "relative-file" || scenario == "quoted-file" || scenario == "symlink-file"
 				if (err == nil) != wantSuccess {
 					t.Fatalf("unexpected environment precheck: %v", err)
 				}
@@ -373,7 +379,7 @@ func TestEnsureConnextLicenseAcceptsEnteredPath(t *testing.T) {
 			if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 				t.Fatal(err)
 			}
-			menus := 0
+			menus, inputs := 0, 0
 			var steps []string
 			selectFunc := func(message string, choices []string) (string, error) {
 				if len(choices) == 4 {
@@ -413,18 +419,22 @@ func TestEnsureConnextLicenseAcceptsEnteredPath(t *testing.T) {
 				return internalconnext.DeclineLicensePrecheckLabel, nil
 			}
 			err := runtime.ensureConnextLicense(install, selectFunc, func(string) (string, error) {
-				if scenario == "missing-file" {
+				inputs++
+				if scenario == "missing-file" && inputs == 1 {
 					return "~/missing.dat", nil
 				}
 				return "~/chosen license.dat", nil
 			})
-			success := scenario == "complete" || scenario == "override-features"
+			success := scenario == "complete" || scenario == "override-features" || scenario == "missing-file"
 			if success != (err == nil) {
 				t.Fatalf("unexpected import result: %v", err)
 			}
-			wantSteps := map[string]string{"complete": "copy", "decline-import": "copy", "decline-features": "features", "override-features": "features,copy", "missing-file": ""}[scenario]
+			wantSteps := map[string]string{"complete": "copy", "decline-import": "copy", "decline-features": "features", "override-features": "features,copy", "missing-file": "copy"}[scenario]
 			if got := strings.Join(steps, ","); got != wantSteps {
 				t.Fatalf("prompt order = %q, want %q", got, wantSteps)
+			}
+			if scenario == "missing-file" && (inputs != 2 || menus != 1) {
+				t.Fatal("mistyped path must allow correction without restarting setup")
 			}
 			for _, path := range []string{shared, internalconnext.LicenseFilePath(install)} {
 				data, err := os.ReadFile(path)
@@ -439,6 +449,58 @@ func TestEnsureConnextLicenseAcceptsEnteredPath(t *testing.T) {
 			if success {
 				if err := runtime.ensureConnextLicense(install, nil, nil); err != nil {
 					t.Fatalf("unchanged license required another prompt: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureConnextLicenseCanChooseAnotherAfterDiscoveredFeatureWarnings(t *testing.T) {
+	for _, next := range []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel} {
+		t.Run(next, func(t *testing.T) {
+			runtime, install, shared := managedLicenseRuntime(t)
+			if err := os.WriteFile(internalconnext.LicenseFilePath(install), []byte("FEATURE RTIPRO RTI 4. 01-jan-2000 SECRET_LICENSE"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(t.TempDir(), "replacement.dat")
+			if err := os.WriteFile(source, []byte(runtimeValidConnextLicense), 0600); err != nil {
+				t.Fatal(err)
+			}
+			api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, runtimeValidConnextLicense)}}
+			runtime.License = commands.New(api, io.Discard)
+			var steps []string
+			err := runtime.ensureConnextLicense(install, func(_ string, choices []string) (string, error) {
+				if _, err := os.Lstat(shared); !os.IsNotExist(err) {
+					t.Fatal("license was copied before approval")
+				}
+				switch len(choices) {
+				case 3:
+					steps = append(steps, "features")
+					if choices[0] != internalconnext.DeclineLicensePrecheckLabel || choices[2] != internalconnext.DeclineManagedLicenseLabel {
+						t.Fatalf("missing default No or recovery option: %#v", choices)
+					}
+					return internalconnext.DeclineManagedLicenseLabel, nil
+				case 4:
+					steps = append(steps, "menu")
+					return next, nil
+				default:
+					steps = append(steps, "copy")
+					return internalconnext.ImportManagedLicenseLabel, nil
+				}
+			}, func(string) (string, error) { return source, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "features,menu"
+			if next == enterConnextLicensePathLabel {
+				want += ",copy"
+			}
+			if strings.Join(steps, ",") != want {
+				t.Fatalf("unexpected recovery flow: %v", steps)
+			}
+			for _, path := range []string{shared, internalconnext.LicenseFilePath(install)} {
+				if data, err := os.ReadFile(path); err != nil || string(data) != runtimeValidConnextLicense {
+					t.Fatalf("replacement license not saved: %v", err)
 				}
 			}
 		})

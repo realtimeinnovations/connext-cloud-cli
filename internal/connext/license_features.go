@@ -148,7 +148,7 @@ func PrecheckEnvironmentLicense(confirm Confirmer, out io.Writer) error {
 	if out != nil {
 		_, _ = fmt.Fprintf(out, "Connext license found via RTI_LICENSE_FILE:\n  %s\n\n%s\n", path, unsetHint)
 	}
-	contents, err := readCopyableLicense(path)
+	contents, err := readEnvironmentLicense(path)
 	if err != nil {
 		return fmt.Errorf("reading license from RTI_LICENSE_FILE (%s): %w\n%s", path, err, unsetHint)
 	}

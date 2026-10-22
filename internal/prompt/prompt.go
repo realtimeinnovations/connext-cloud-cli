@@ -77,11 +77,11 @@ func (selector Selector) numberedSelect(message string, choices []string) (strin
 		}
 		input := strings.TrimSpace(line)
 		if input == "" {
-			if selected, ok := selector.defaultSelection(choices); ok {
-				return selected, nil
-			}
 			if err == io.EOF {
 				return "", common.UserError{Message: selector.cancelMessage()}
+			}
+			if selected, ok := selector.defaultSelection(choices); ok {
+				return selected, nil
 			}
 			continue
 		}

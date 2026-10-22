@@ -8,6 +8,7 @@ package connext
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,15 @@ func readCopyableLicense(path string) ([]byte, error) {
 		return nil, fmt.Errorf("license must be a readable regular file: %s", path)
 	}
 	return os.ReadFile(path)
+}
+
+// Environment overrides are read directly by Connext and may be symlinks.
+func readEnvironmentLicense(path string) ([]byte, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	return readCopyableLicense(resolved)
 }
 
 func managedLicensePath() (string, error) {
@@ -68,6 +78,11 @@ func writeVerifiedLicense(path string, contents []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	return writeAtomicLicense(path, contents)
+}
+
+// Publish a verified temporary file without writing through the destination entry.
+func writeAtomicLicense(path string, contents []byte) error {
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".rti-license-*")
 	if err != nil {
 		return err
@@ -106,6 +121,8 @@ const (
 	DeclineManagedLicenseLabel = "Choose another license"
 )
 
+var ErrLicenseSourceUnreadable = errors.New("license file cannot be read")
+
 // ProvisionManagedLicense repairs the per-version copy from product-owned
 // storage. Importing any other source into that storage requires confirmation.
 // An explicit RTI_LICENSE_FILE is used directly without provisioning.
@@ -136,7 +153,7 @@ func ProvisionManagedLicense(install Install, confirm Confirmer) (bool, error) {
 func ImportLicenseFile(install Install, source string, confirm Confirmer) (bool, error) {
 	source = strings.TrimSpace(source)
 	if source == "" {
-		return false, fmt.Errorf("license file path cannot be empty")
+		return false, fmt.Errorf("%w: path cannot be empty", ErrLicenseSourceUnreadable)
 	}
 	if source == "~" || strings.HasPrefix(source, "~/") {
 		home, err := UserHomeDir()
@@ -154,7 +171,7 @@ func ImportLicenseFile(install Install, source string, confirm Confirmer) (bool,
 	}
 	contents, err := readCopyableLicense(source)
 	if err != nil {
-		return false, fmt.Errorf("reading license file %s: %w", source, err)
+		return false, fmt.Errorf("%w (%s): %w", ErrLicenseSourceUnreadable, source, err)
 	}
 	return writeLicenseFile(install, contents, confirm, source)
 }
@@ -176,7 +193,7 @@ func InspectManagedLicense(install Install) (LicenseInspection, error) {
 	if env := os.Getenv("RTI_LICENSE_FILE"); env != "" {
 		result.Source = environmentLicensePath()
 		var err error
-		result.Contents, err = readCopyableLicense(result.Source)
+		result.Contents, err = readEnvironmentLicense(result.Source)
 		return result, err
 	}
 	canonical, err := managedLicensePath()

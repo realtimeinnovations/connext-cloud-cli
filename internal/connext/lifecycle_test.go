@@ -201,6 +201,44 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestExternalLicenseImportDoesNotWriteThroughLinks(t *testing.T) {
+	managedTestEnvironment(t)
+	for _, kind := range []string{"symlink", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			install := Install{Path: t.TempDir()}
+			outside := filepath.Join(t.TempDir(), "unrelated.dat")
+			if err := os.WriteFile(outside, []byte("unrelated contents"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			target := LicenseFilePath(install)
+			link := os.Link
+			if kind == "symlink" {
+				link = os.Symlink
+			}
+			if err := link(outside, target); err != nil {
+				t.Skipf("link unavailable: %v", err)
+			}
+			source := filepath.Join(t.TempDir(), LicenseFileName)
+			if err := os.WriteFile(source, []byte(validTestConnextLicense), 0600); err != nil {
+				t.Fatal(err)
+			}
+			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }))
+			if kind == "symlink" {
+				if err == nil || imported {
+					t.Fatal("symlink destination was accepted")
+				}
+			} else if err != nil || !imported {
+				t.Fatalf("hardlinked destination was not safely replaced: %v", err)
+			} else if data, err := os.ReadFile(target); err != nil || string(data) != validTestConnextLicense {
+				t.Fatalf("license contents not saved: %v", err)
+			}
+			if data, err := os.ReadFile(outside); err != nil || string(data) != "unrelated contents" {
+				t.Fatalf("unrelated file changed: %v", err)
+			}
+		})
+	}
+}
+
 func TestEnvironmentLicensePrecedesInvalidNDDSHOME(t *testing.T) {
 	root := managedTestEnvironment(t)
 	dir := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)

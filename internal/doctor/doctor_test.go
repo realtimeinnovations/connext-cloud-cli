@@ -416,10 +416,15 @@ func TestPathScanDeduplicatesLinks(t *testing.T) {
 	}
 }
 
-func TestLicenseInspectionUsesEnvironmentWithoutCopying(t *testing.T) {
+func TestLicenseInspectionUsesSymlinkedEnvironmentWithoutCopying(t *testing.T) {
 	o, home, _ := fixture(t)
 	source := filepath.Join(home, "external-license.dat")
 	writeFile(t, source, "FEATURE RTIPRO RTI 4. 12-oct-2026 SECRET_LICENSE")
+	alias := filepath.Join(home, "current-license.dat")
+	if err := os.Symlink(source, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	source = alias
 	t.Setenv("RTI_LICENSE_FILE", source)
 	before := snapshot(t, home)
 	r := Run(context.Background(), o)

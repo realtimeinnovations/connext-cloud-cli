@@ -85,6 +85,10 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 		if err := safeManagedPath(filepath.Dir(filepath.Dir(filepath.Dir(target))), filepath.Dir(target)); err != nil {
 			return false, err
 		}
+	} else if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
+		return false, fmt.Errorf("license destination must be a regular file: %s", target)
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, err
 	}
 	current, err := readCopyableLicense(target)
 	changed := err != nil || !bytes.Equal(current, content)
@@ -123,7 +127,7 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 			if err := writeVerifiedLicense(target, content); err != nil {
 				return false, err
 			}
-		} else if err := os.WriteFile(target, content, 0o600); err != nil {
+		} else if err := writeAtomicLicense(target, content); err != nil {
 			return false, err
 		}
 	}

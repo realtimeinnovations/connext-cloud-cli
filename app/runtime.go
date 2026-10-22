@@ -540,15 +540,31 @@ func (runtime *Runtime) liveTextOutput(format string) bool {
 	return format == "text" || terminal.PlainOutputRequested(runtime.Out)
 }
 
+var errChooseAnotherConnextLicense = errors.New("choose another Connext license")
+
 func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error), inputFunc func(string) (string, error)) error {
 	confirm := internalconnext.ConfirmationFromSelector(selectFunc)
 	if os.Getenv("RTI_LICENSE_FILE") != "" {
 		return internalconnext.PrecheckEnvironmentLicense(confirm, runtime.Out)
 	}
+	// An explicit environment override must be unset to choose another license.
+	// For files being copied, let users leave feature warnings for the full menu.
+	if selectFunc != nil {
+		confirm = internalconnext.ConfirmationFromSelector(func(message string, choices []string) (string, error) {
+			if len(choices) == 2 && choices[0] == internalconnext.DeclineLicensePrecheckLabel && choices[1] == internalconnext.ProceedLicensePrecheckLabel {
+				choice, err := selectFunc(message, append(choices, internalconnext.DeclineManagedLicenseLabel))
+				if err == nil && choice == internalconnext.DeclineManagedLicenseLabel {
+					return "", errChooseAnotherConnextLicense
+				}
+				return choice, err
+			}
+			return selectFunc(message, choices)
+		})
+	}
 	managed := internalconnext.IsManagedInstallation(install)
 	if managed {
 		available, err := internalconnext.ProvisionManagedLicense(install, confirm)
-		if err != nil {
+		if err != nil && !errors.Is(err, errChooseAnotherConnextLicense) {
 			return err
 		}
 		if available {
@@ -564,55 +580,65 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	if managed {
 		message = fmt.Sprintf("No Connext license is available for %s.\n\nChoose how to provide a Connext license:", install.Path)
 	}
-	var selected string
 	for {
-		choice, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
+		selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
 		if err != nil {
 			return err
 		}
-		selected = choice
-		if selected != enterConnextLicensePathLabel {
-			break
-		}
-		if inputFunc == nil {
-			return clierror.InputRequired("Enter the path to an existing Connext license file in an interactive terminal.", "provide_connext_license_path")
-		}
-		path, err := inputFunc("Path to Connext license file")
-		if err != nil {
-			return err
-		}
-		imported, err := internalconnext.ImportLicenseFile(install, path, confirm)
-		if err != nil {
-			return err
-		}
-		if imported {
+		switch selected {
+		case enterConnextLicensePathLabel:
+			if inputFunc == nil {
+				return clierror.InputRequired("Enter the path to an existing Connext license file in an interactive terminal.", "provide_connext_license_path")
+			}
+			for {
+				path, err := inputFunc("Path to Connext license file")
+				if err != nil {
+					return err
+				}
+				imported, err := internalconnext.ImportLicenseFile(install, path, confirm)
+				if errors.Is(err, internalconnext.ErrLicenseSourceUnreadable) {
+					_, _ = fmt.Fprintln(runtime.Out, err)
+					continue
+				}
+				if errors.Is(err, errChooseAnotherConnextLicense) {
+					break
+				}
+				if err != nil {
+					return err
+				}
+				if imported {
+					_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
+					return nil
+				}
+				break
+			}
+		case manualDownloadConnextLicenseLabel:
+			licensePath := internalconnext.LicenseFilePath(install)
+			_, _ = fmt.Fprint(runtime.Out, gateway.RenderKeyValuePanel("• Manually download Connext license:", []gateway.KeyValueRow{
+				{Key: "Step 1", Value: "Open the evaluation license page:"},
+				{Value: tui.StyleLink(evaluationLicenseURL)},
+				{Key: "Step 2", Value: "Download the license file."},
+				{Key: "Step 3", Value: fmt.Sprintf("Copy the license file to %s", licensePath)},
+			}))
+			return common.UserError{Message: fmt.Sprintf("Copy the license file to %s, then rerun this command.", licensePath)}
+		case downloadConnextLicenseLabel:
+			if runtime.License == nil {
+				return fmt.Errorf("Connext license download is not configured")
+			}
+			licenseContent, err := runtime.License.DownloadLicense(nil)
+			if err != nil {
+				return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
+			}
+			if err := internalconnext.WriteLicenseFile(install, licenseContent, confirm); err != nil {
+				if errors.Is(err, errChooseAnotherConnextLicense) {
+					continue
+				}
+				return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)
+			}
 			_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
 			return nil
+		default:
+			return common.UserError{Message: "Connext license download cancelled."}
 		}
 	}
-	if selected == manualDownloadConnextLicenseLabel {
-		licensePath := internalconnext.LicenseFilePath(install)
-		_, _ = fmt.Fprint(runtime.Out, gateway.RenderKeyValuePanel("• Manually download Connext license:", []gateway.KeyValueRow{
-			{Key: "Step 1", Value: "Open the evaluation license page:"},
-			{Value: tui.StyleLink(evaluationLicenseURL)},
-			{Key: "Step 2", Value: "Download the license file."},
-			{Key: "Step 3", Value: fmt.Sprintf("Copy the license file to %s", licensePath)},
-		}))
-		return common.UserError{Message: fmt.Sprintf("Copy the license file to %s, then rerun this command.", licensePath)}
-	}
-	if selected != downloadConnextLicenseLabel {
-		return common.UserError{Message: "Connext license download cancelled."}
-	}
-	if runtime.License == nil {
-		return fmt.Errorf("Connext license download is not configured")
-	}
-	licenseContent, err := runtime.License.DownloadLicense(nil)
-	if err != nil {
-		return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
-	}
-	if err := internalconnext.WriteLicenseFile(install, licenseContent, confirm); err != nil {
-		return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)
-	}
-	_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
-	return nil
 }

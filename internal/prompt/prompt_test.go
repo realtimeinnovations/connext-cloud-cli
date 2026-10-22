@@ -73,6 +73,16 @@ func TestSelectorUsesDefaultForBlankSelection(t *testing.T) {
 	}
 }
 
+func TestSelectorDoesNotApproveDefaultAtEOF(t *testing.T) {
+	for _, input := range []string{"", "  "} {
+		selector := Selector{In: strings.NewReader(input), Out: &bytes.Buffer{}, DefaultChoice: "Copy"}
+		selected, err := selector.Select("Copy license?", []string{"Copy", "Cancel"})
+		if err == nil || selected != "" {
+			t.Fatalf("EOF approved default: choice=%q err=%v", selected, err)
+		}
+	}
+}
+
 func TestInputUsesLineFallback(t *testing.T) {
 	var out bytes.Buffer
 	input := Input{In: strings.NewReader("/tmp/connext\n"), Out: &out}
