@@ -294,8 +294,7 @@ func (manager *Manager) ConfigureRegion(region string, getRegion bool, in io.Rea
 			In:            promptInput,
 			Out:           out,
 			CancelMessage: "Configuration cancelled.",
-			DefaultChoice: defaultRegion,
-		}.Select("Select region:", interactiveRegionChoices())
+		}.Select("Select region:", interactiveRegionChoices(), defaultRegion)
 		if err != nil {
 			return false, err
 		}

@@ -8,6 +8,7 @@ package connext
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,15 @@ func readCopyableLicense(path string) ([]byte, error) {
 		return nil, fmt.Errorf("license must be a readable regular file: %s", path)
 	}
 	return os.ReadFile(path)
+}
+
+// Environment overrides are read directly by Connext and may be symlinks.
+func readEnvironmentLicense(path string) ([]byte, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	return readCopyableLicense(resolved)
 }
 
 func managedLicensePath() (string, error) {
@@ -70,6 +80,11 @@ func writeVerifiedLicense(path string, contents []byte) error {
 	if err := fileoutput.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	return writeAtomicLicense(path, contents)
+}
+
+// Publish a verified temporary file without writing through the destination entry.
+func writeAtomicLicense(path string, contents []byte) error {
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".rti-license-*")
 	if err != nil {
 		return err
@@ -103,23 +118,17 @@ func writeVerifiedLicense(path string, contents []byte) error {
 	return os.Rename(temporary.Name(), path)
 }
 
-func seedManagedLicense(contents []byte) error {
-	path, err := managedLicensePath()
-	if err != nil {
-		return err
-	}
-	if err := safeManagedPath(filepath.Dir(filepath.Dir(filepath.Dir(path))), filepath.Dir(path)); err != nil {
-		return err
-	}
-	if _, err := readCopyableLicense(path); err == nil {
-		return nil
-	}
-	return writeVerifiedLicense(path, contents)
-}
+const (
+	ImportManagedLicenseLabel  = "Copy and use this license"
+	DeclineManagedLicenseLabel = "Choose another license"
+)
+
+var ErrLicenseSourceUnreadable = errors.New("license file cannot be read")
 
 // ProvisionManagedLicense repairs the per-version copy from product-owned
-// storage. A declared installation's invalid license blocks environment fallback.
-func ProvisionManagedLicense(install Install) (bool, error) {
+// storage. Importing any other source into that storage requires confirmation.
+// An explicit RTI_LICENSE_FILE is used directly without provisioning.
+func ProvisionManagedLicense(install Install, confirm Confirmer) (bool, error) {
 	inspection, err := InspectManagedLicense(install)
 	if err != nil {
 		return false, err
@@ -127,10 +136,11 @@ func ProvisionManagedLicense(install Install) (bool, error) {
 	if inspection.Contents == nil {
 		return false, nil
 	}
+	if os.Getenv("RTI_LICENSE_FILE") != "" {
+		return true, nil
+	}
 	if inspection.Source != inspection.CanonicalPath {
-		if err := writeVerifiedLicense(inspection.CanonicalPath, inspection.Contents); err != nil {
-			return false, err
-		}
+		return writeLicenseFile(install, inspection.Contents, confirm, inspection.Source)
 	}
 	if !inspection.CopyMatches {
 		if err := writeVerifiedLicense(LicenseFilePath(install), inspection.Contents); err != nil {
@@ -140,8 +150,36 @@ func ProvisionManagedLicense(install Install) (bool, error) {
 	return true, nil
 }
 
-// LicenseInspection describes the source provisioning would choose, without
-// copying or downloading anything. Contents must never be emitted in a report.
+// ImportLicenseFile imports a user-supplied readable regular file only after
+// confirming the source and destination. Feature checks run when contents change.
+func ImportLicenseFile(install Install, source string, confirm Confirmer) (bool, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false, fmt.Errorf("%w: path cannot be empty", ErrLicenseSourceUnreadable)
+	}
+	if source == "~" || strings.HasPrefix(source, "~/") {
+		home, err := UserHomeDir()
+		if err != nil {
+			return false, err
+		}
+		if home == "" {
+			return false, fmt.Errorf("cannot determine user home directory")
+		}
+		source = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(source, "~"), "/"))
+	}
+	source, err := filepath.Abs(source)
+	if err != nil {
+		return false, err
+	}
+	contents, err := readCopyableLicense(source)
+	if err != nil {
+		return false, fmt.Errorf("%w (%s): %w", ErrLicenseSourceUnreadable, source, err)
+	}
+	return writeLicenseFile(install, contents, confirm, source)
+}
+
+// LicenseInspection describes the shared license or an import candidate requiring
+// confirmation, without copying or downloading. Never emit Contents in a report.
 type LicenseInspection struct {
 	Source        string
 	CanonicalPath string
@@ -153,6 +191,12 @@ func InspectManagedLicense(install Install) (LicenseInspection, error) {
 	result := LicenseInspection{}
 	if !IsManagedInstallation(install) {
 		return result, fmt.Errorf("not an rticloud-managed installation: %s", install.Path)
+	}
+	if env := os.Getenv("RTI_LICENSE_FILE"); env != "" {
+		result.Source = environmentLicensePath()
+		var err error
+		result.Contents, err = readEnvironmentLicense(result.Source)
+		return result, err
 	}
 	canonical, err := managedLicensePath()
 	if err != nil {
@@ -182,15 +226,7 @@ func InspectManagedLicense(install Install) (LicenseInspection, error) {
 				}
 			}
 			if contents == nil {
-				if env := os.Getenv("RTI_LICENSE_FILE"); env != "" {
-					result.Source = env
-					contents, err = readCopyableLicense(env)
-					if err != nil {
-						return result, fmt.Errorf("invalid RTI_LICENSE_FILE: %w", err)
-					}
-				} else {
-					result.Source, contents = previousManagedLicenseSource(install)
-				}
+				result.Source, contents = previousManagedLicenseSource(install)
 			}
 		}
 	}
@@ -231,11 +267,14 @@ func previousManagedLicenseSource(current Install) (string, []byte) {
 	return "", nil
 }
 
-// EnvironmentOverrides keeps subprocesses on the selected installation and its
-// provisioned license, even when the invoking shell selects another installation.
+// EnvironmentOverrides keeps subprocesses on the selected installation. An
+// explicit RTI_LICENSE_FILE retains its selected file across working directories;
+// otherwise managed Connext uses its copy.
 func (install Install) EnvironmentOverrides() []string {
 	overrides := []string{"NDDSHOME=" + install.Path, "CONNEXTDDS_DIR=" + install.Path}
-	if IsManagedInstallation(install) {
+	if os.Getenv("RTI_LICENSE_FILE") != "" {
+		overrides = append(overrides, "RTI_LICENSE_FILE="+environmentLicensePath())
+	} else if IsManagedInstallation(install) {
 		overrides = append(overrides, "RTI_LICENSE_FILE="+LicenseFilePath(install))
 	}
 	return overrides

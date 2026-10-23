@@ -28,8 +28,8 @@ response before saving it.
 
 Specialized operations retain their publication contracts: installer locking
 keeps its inode, migration uses no-clobber publication, downloads verify their
-digest, license repair replaces invalid entries, and the updater uses exclusive
-staging plus rollback. They use shared path validation for their destinations or,
+digest, license import and repair retain verified atomic replacement, and the
+updater uses exclusive staging plus rollback. They use shared path validation for their destinations or,
 for explicit license repair, their parent directories.
 
 These checks are path-based, not a sandbox against concurrent ancestor swaps.

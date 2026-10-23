@@ -12,22 +12,26 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 )
 
 func TestWithoutInteractionBlocksAndRestoresAllInteractiveCallbacks(t *testing.T) {
 	runtime := NewRuntime(t.TempDir(), io.Discard)
-	selectFn := func(string, []string) (string, error) { return "selected", nil }
+	selectFn := func(string, []string, string) (string, error) { return "selected", nil }
 	inputFn := func(string) (string, error) { return "entered", nil }
 	confirmFn := func(string) (bool, error) { return true, nil }
-	runtime.Gateway.SelectFunc, runtime.Spy.SelectFunc, runtime.EdgeSyncAgent.SelectFunc = selectFn, selectFn, selectFn
+	runtime.Gateway.SelectFunc, runtime.Spy.SelectFunc = selectFn, selectFn
+	runtime.EdgeSyncAgent.SelectFunc = func(message string, choices []string) (string, error) { return selectFn(message, choices, "") }
 	runtime.Gateway.InputFunc, runtime.Spy.InputFunc, runtime.EdgeSyncAgent.InputFunc = inputFn, inputFn, inputFn
 	runtime.Gateway.ConfirmReloadFunc, runtime.Spy.ConfirmReloadFunc = confirmFn, confirmFn
 	browserOpened := false
 	runtime.Gateway.OpenBrowserFunc = func(string) error { browserOpened = true; return nil }
 
 	restore := runtime.WithoutInteraction()
-	for _, selectFn := range []func(string, []string) (string, error){runtime.Gateway.SelectFunc, runtime.Spy.SelectFunc, runtime.EdgeSyncAgent.SelectFunc} {
-		_, err := selectFn("Choose resource", []string{"only choice"})
+	for _, selectFn := range []prompt.SelectFunc{runtime.Gateway.SelectFunc, runtime.Spy.SelectFunc, func(message string, choices []string, _ string) (string, error) {
+		return runtime.EdgeSyncAgent.SelectFunc(message, choices)
+	}} {
+		_, err := selectFn("Choose resource", []string{"only choice"}, "")
 		var typed *clierror.Error
 		if !errors.As(err, &typed) || typed.Code != "INPUT_REQUIRED" {
 			t.Fatalf("selection was not blocked: %v", err)
@@ -53,7 +57,7 @@ func TestWithoutInteractionBlocksAndRestoresAllInteractiveCallbacks(t *testing.T
 	if runtime.NonInteractive || runtime.Auth.NonInteractive || runtime.WorkAuth.NonInteractive || runtime.Config.NonInteractive || runtime.EdgeSyncAgent.NonInteractive {
 		t.Fatal("non-interactive policy leaked into a later invocation")
 	}
-	if value, err := runtime.Gateway.SelectFunc("Choose", nil); err != nil || value != "selected" {
+	if value, err := runtime.Gateway.SelectFunc("Choose", nil, ""); err != nil || value != "selected" {
 		t.Fatalf("selection was not restored: %q %v", value, err)
 	}
 	if err := runtime.Gateway.OpenBrowserFunc("https://example.test"); err != nil || !browserOpened {

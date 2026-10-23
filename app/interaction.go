@@ -24,7 +24,7 @@ func (runtime *Runtime) WithoutInteraction() func() {
 	blockInput := func(message string) (string, error) {
 		return "", clierror.InputRequired("Interactive input is disabled: "+message, "configure_interactively_or_provide_explicit_inputs")
 	}
-	blockSelect := func(message string, _ []string) (string, error) {
+	blockSelect := func(message string, _ []string, _ string) (string, error) {
 		return blockInput(message)
 	}
 	blockConfirm := func(message string) (bool, error) {
@@ -60,7 +60,8 @@ func (runtime *Runtime) WithoutInteraction() func() {
 	}
 	if agent := runtime.EdgeSyncAgent; agent != nil {
 		selectFn, inputFn, previous := agent.SelectFunc, agent.InputFunc, agent.NonInteractive
-		agent.SelectFunc, agent.InputFunc, agent.NonInteractive = blockSelect, blockInput, true
+		agent.SelectFunc = func(message string, choices []string) (string, error) { return blockSelect(message, choices, "") }
+		agent.InputFunc, agent.NonInteractive = blockInput, true
 		restore = append(restore, func() { agent.SelectFunc, agent.InputFunc, agent.NonInteractive = selectFn, inputFn, previous })
 	}
 	return func() {
