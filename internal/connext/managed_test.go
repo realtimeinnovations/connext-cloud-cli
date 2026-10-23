@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -90,7 +91,9 @@ func TestManagedRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { return AcceptManagedDownloadLabel, nil })}); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+		return AcceptManagedDownloadLabel, nil
+	})}); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -101,7 +104,7 @@ func TestManagedReusesValidInstallWithoutNetwork(t *testing.T) {
 	oldGet := HTTPGet
 	HTTPGet = func(string) (*http.Response, error) { t.Fatal("unexpected download"); return nil, nil }
 	t.Cleanup(func() { HTTPGet = oldGet })
-	install, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) {
+	install, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
 		t.Fatal("unexpected confirmation for a valid installation")
 		return "", nil
 	})})
@@ -114,7 +117,7 @@ func TestManagedInstallVerifiedDownloadAndFailures(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX test installer")
 	}
-	for _, scenario := range []string{"success", "repair", "checksum", "exit", "metadata"} {
+	for _, scenario := range []string{"success", "repair", "repair-exit", "checksum", "exit", "metadata"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := managedTestEnvironment(t)
 			script := `#!/bin/sh
@@ -130,7 +133,7 @@ cp "$prefix/rti_connext_dds-7.7.0/bin/rtiroutingservice" "$prefix/rti_connext_dd
 printf '<rti><host><base_version>7.7.0.1</base_version><install_dirname>rti_connext_dds-7.7.0</install_dirname></host></rti>' > "$prefix/rti_connext_dds-7.7.0/rti_versions.xml"
 echo installed
 `
-			if scenario == "exit" {
+			if scenario == "exit" || scenario == "repair-exit" {
 				script = "#!/bin/sh\nexit 1\n"
 			}
 			if scenario == "metadata" {
@@ -148,7 +151,7 @@ echo installed
 				return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
 			}
 			var repairedDirectory, sibling string
-			if scenario == "repair" {
+			if scenario == "repair" || scenario == "repair-exit" {
 				prefix := filepath.Join(root, installerVersion, platformDirectory())
 				repairedDirectory = writeManagedFixture(t, prefix, installerVersion)
 				if err := os.Remove(Executable(repairedDirectory, "rtiddsspy")); err != nil {
@@ -172,7 +175,9 @@ echo installed
 					t.Fatal(err)
 				}
 			}
-			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { return AcceptManagedDownloadLabel, nil })}, artifact)
+			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+				return AcceptManagedDownloadLabel, nil
+			})}, artifact)
 			if scenario == "success" || scenario == "repair" {
 				if err != nil || result.Version != installerVersion {
 					t.Fatalf("%#v %v", result, err)
@@ -194,7 +199,7 @@ echo installed
 			} else if err == nil {
 				t.Fatal("expected failure")
 			}
-			if scenario == "repair" {
+			if scenario == "repair" || scenario == "repair-exit" {
 				if _, err := os.Stat(filepath.Join(repairedDirectory, "incomplete")); !os.IsNotExist(err) {
 					t.Fatal("incomplete tree was not replaced")
 				}
@@ -202,7 +207,10 @@ echo installed
 					t.Fatal("repair removed sibling")
 				}
 				canonical, _ := managedLicensePath()
-				data, err := os.ReadFile(canonical)
+				if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
+					t.Fatalf("repair silently imported a license into the shared store: %v", err)
+				}
+				data, err := os.ReadFile(filepath.Join(repairedDirectory, LicenseFileName))
 				if err != nil || string(data) != "preserved license" {
 					t.Fatalf("license lost during repair: %q %v", data, err)
 				}
@@ -322,7 +330,7 @@ func TestMissingManagedInstallRequiresConsentBeforeDownload(t *testing.T) {
 			HTTPGet = func(string) (*http.Response, error) { t.Fatal("download occurred without consent"); return nil, nil }
 			options := DiscoveryOptions{AcceptExternalNDDSHome: true}
 			if mode != "no-prompt" {
-				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string) (string, error) {
+				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
 					if len(choices) != 2 || choices[0] != CancelManagedDownloadLabel || choices[1] != AcceptManagedDownloadLabel {
 						t.Fatal(choices)
 					}
@@ -370,3 +378,222 @@ func TestAlternativeInstallationHintUsesHostScript(t *testing.T) {
 type testRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f testRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
+	const childHome = "RTICLOUD_TEST_REPAIR_HOME"
+	if home := os.Getenv(childHome); home != "" {
+		UserHomeDir = func() (string, error) { return home, nil }
+		Platform = func() (string, string) { return "linux", "amd64" }
+	} else {
+		managedTestEnvironment(t)
+	}
+	root, err := managedRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Join(root, installerVersion, platformDirectory())
+	script := "#!/bin/sh\nexit 1\n"
+	artifact, err := bundledInstaller("linux", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.sha256 = fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+	options := DiscoveryOptions{
+		HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
+		})},
+		Confirmations: ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }),
+		Output:        io.Discard,
+	}
+	oldRun := runInstallerCommand
+	t.Cleanup(func() { runInstallerCommand = oldRun })
+	if os.Getenv(childHome) != "" {
+		runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+			os.Exit(23) // Abrupt exit bypasses every restoration defer.
+			return nil
+		}
+		_, err := installManagedArtifact(options, artifact)
+		t.Fatalf("expected abrupt exit, got %v", err)
+	}
+	directory := writeManagedFixture(t, prefix, installerVersion)
+	license := filepath.Join(directory, LicenseFileName)
+	if err := os.WriteFile(license, []byte("installation-only license"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(Executable(directory, "rtiddsspy")); err != nil {
+		t.Fatal(err)
+	}
+	home, _ := UserHomeDir()
+	child := exec.Command(os.Args[0], "-test.run=^TestManagedRepairRecoversLicenseAfterAbruptExit$")
+	child.Env = append(os.Environ(), childHome+"="+home)
+	if output, err := child.CombinedOutput(); err == nil {
+		t.Fatal("expected abrupt exit")
+	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 23 {
+		t.Fatalf("child: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(license); !os.IsNotExist(err) {
+		t.Fatalf("installer had not removed the old license: %v", err)
+	}
+	recovery := installationLicenseRecoveryPath(directory)
+	if data, err := os.ReadFile(recovery); err != nil || string(data) != "installation-only license" {
+		t.Fatalf("recovery copy: %q %v", data, err)
+	}
+	runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+		writeManagedFixture(t, prefix, installerVersion)
+		return nil
+	}
+	if _, err := installManagedArtifact(options, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(license); err != nil || string(data) != "installation-only license" {
+		t.Fatalf("restored license: %q %v", data, err)
+	}
+	if _, err := os.Stat(recovery); !os.IsNotExist(err) {
+		t.Fatalf("recovery copy was not cleaned up: %v", err)
+	}
+	canonical, _ := managedLicensePath()
+	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
+		t.Fatalf("repair silently imported license: %v", err)
+	}
+}
+
+func TestManagedDiscoveryRecoversLicenseBeforeReusingInstall(t *testing.T) {
+	root := managedTestEnvironment(t)
+	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
+	recovery := installationLicenseRecoveryPath(directory)
+	if err := writeVerifiedLicense(recovery, []byte("recover me")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverInstall(map[string]string{}, DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("recovery must not download an installer")
+		return nil, nil
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(directory, LicenseFileName)); err != nil || string(data) != "recover me" {
+		t.Fatalf("restored license: %q %v", data, err)
+	}
+	if _, err := os.Stat(recovery); !os.IsNotExist(err) {
+		t.Fatalf("recovery copy was not cleaned up: %v", err)
+	}
+}
+
+func TestManagedHealthyInstallBypassesInstallerLock(t *testing.T) {
+	root := managedTestEnvironment(t)
+	artifact, err := bundledInstaller("linux", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := writeManagedFixture(t, filepath.Dir(artifact.installationPath(root)), installerVersion)
+	lock, err := os.OpenFile(filepath.Join(root, ".installer-"+artifact.version+"-"+artifact.platform+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := lockInstallerFile(lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"", filepath.Join(filepath.Dir(directory), installationPendingFile), installationLicenseRecoveryPath(directory)} {
+		if marker != "" {
+			if err := os.WriteFile(marker, []byte("pending recovery"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		install, err := installManagedArtifact(DiscoveryOptions{Output: io.Discard}, artifact)
+		if marker == "" {
+			if err != nil || install.Path != directory {
+				t.Fatalf("healthy installation: %+v %v", install, err)
+			}
+		} else {
+			if err == nil || !strings.Contains(err.Error(), "another Connext setup is running") {
+				t.Fatalf("marker %s bypassed lock: %v", marker, err)
+			}
+			if err := os.Remove(marker); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestManagedRepairUsesSavedLicenseForLocalSymlink(t *testing.T) {
+	for _, scenario := range []string{"readable-target", "dangling-target", "missing-saved", "symlinked-saved"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := managedTestEnvironment(t)
+			artifact, err := bundledInstaller("linux", "amd64")
+			if err != nil {
+				t.Fatal(err)
+			}
+			prefix := filepath.Dir(artifact.installationPath(root))
+			directory := writeManagedFixture(t, prefix, installerVersion)
+			if err := os.Remove(Executable(directory, "rtiddsspy")); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside.dat")
+			if scenario != "dangling-target" {
+				if err := os.WriteFile(outside, []byte("unrelated"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			license := filepath.Join(directory, LicenseFileName)
+			if err := os.Symlink(outside, license); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			saved, _ := managedLicensePath()
+			if scenario != "missing-saved" {
+				if err := writeVerifiedLicense(saved, []byte(validTestConnextLicense)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "symlinked-saved" {
+				if err := os.Remove(saved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := "#!/bin/sh\nexit 1\n"
+			artifact.sha256 = fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+			oldRun := runInstallerCommand
+			t.Cleanup(func() { runInstallerCommand = oldRun })
+			ran := false
+			runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+				ran = true
+				writeManagedFixture(t, prefix, installerVersion)
+				return nil
+			}
+			_, err = installManagedArtifact(DiscoveryOptions{
+				Output:        io.Discard,
+				Confirmations: ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }),
+				HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
+				})},
+			}, artifact)
+			if scenario == "missing-saved" || scenario == "symlinked-saved" {
+				if err == nil || ran {
+					t.Fatalf("unsafe repair proceeded: ran=%v err=%v", ran, err)
+				}
+				if target, err := os.Readlink(license); err != nil || target != outside {
+					t.Fatalf("local symlink changed: %q %v", target, err)
+				}
+			} else {
+				if err != nil || !ran {
+					t.Fatalf("repair failed: ran=%v err=%v", ran, err)
+				}
+				if data, err := readCopyableLicense(license); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("local license: %q %v", data, err)
+				}
+				if data, err := readCopyableLicense(saved); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("saved license changed: %q %v", data, err)
+				}
+			}
+			if scenario == "dangling-target" {
+				if _, err := os.Lstat(outside); !os.IsNotExist(err) {
+					t.Fatalf("dangling target created: %v", err)
+				}
+			} else if data, err := os.ReadFile(outside); err != nil || string(data) != "unrelated" {
+				t.Fatalf("external target changed: %q %v", data, err)
+			}
+		})
+	}
+}

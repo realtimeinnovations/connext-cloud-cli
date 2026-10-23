@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 )
 
 type CheckStatus string
@@ -33,18 +34,18 @@ type Detail struct {
 }
 
 type Check struct {
-	ID             string           `json:"id"`
-	Label          string           `json:"label"`
-	Status         CheckStatus      `json:"status"`
-	Message        string           `json:"message"`
-	Code           string           `json:"code,omitempty"`
-	RequiredAction string           `json:"required_action,omitempty"`
-	NextStep       string           `json:"next_step,omitempty"`
-	BlockedBy      []string         `json:"blocked_by,omitempty"`
-	Details        []Detail         `json:"details,omitempty"`
-	HTTPStatus     int              `json:"http_status,omitempty"`
-	DurationMS     int64            `json:"duration_ms,omitempty"`
-	Features       []LicenseFeature `json:"features,omitempty"`
+	ID             string                   `json:"id"`
+	Label          string                   `json:"label"`
+	Status         CheckStatus              `json:"status"`
+	Message        string                   `json:"message"`
+	Code           string                   `json:"code,omitempty"`
+	RequiredAction string                   `json:"required_action,omitempty"`
+	NextStep       string                   `json:"next_step,omitempty"`
+	BlockedBy      []string                 `json:"blocked_by,omitempty"`
+	Details        []Detail                 `json:"details,omitempty"`
+	HTTPStatus     int                      `json:"http_status,omitempty"`
+	DurationMS     int64                    `json:"duration_ms,omitempty"`
+	Features       []connext.LicenseFeature `json:"features,omitempty"`
 }
 
 type Summary struct {
@@ -107,7 +108,7 @@ func (r Report) Write(out io.Writer, format string) error {
 			fmt.Fprintf(&b, "  %-14s %d ms\n", "Elapsed", c.DurationMS)
 		}
 		for _, f := range c.Features {
-			fmt.Fprintf(&b, "  %-14s %s\n", safeText(f.Feature), f.description())
+			fmt.Fprintf(&b, "  %-14s %s\n", safeText(f.Feature), licenseFeatureDescription(f))
 		}
 		b.WriteByte('\n')
 	}

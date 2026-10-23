@@ -6,13 +6,23 @@
 
 package connext
 
-import "fmt"
+import (
+	"fmt"
 
-// Confirmation is a binary decision. Decline is always the default.
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
+)
+
+type ConfirmationKind uint8
+
+const ConfirmLicenseFeatures ConfirmationKind = 1
+
+// Confirmation is a binary decision. Decline is the default unless explicitly changed.
 type Confirmation struct {
-	Message      string
-	AcceptLabel  string
-	DeclineLabel string
+	Kind          ConfirmationKind
+	Message       string
+	AcceptLabel   string
+	DeclineLabel  string
+	DefaultAccept bool
 }
 
 type Confirmer interface {
@@ -25,20 +35,30 @@ func (f ConfirmFunc) Confirm(request Confirmation) (bool, error) { return f(requ
 
 // ConfirmationFromSelector adapts the application's existing menu UI at its boundary.
 // Discovery and installation consume boolean decisions, never menu selections.
-func ConfirmationFromSelector(selectChoice func(string, []string) (string, error)) Confirmer {
+func ConfirmationFromSelector(selectChoice prompt.SelectFunc) Confirmer {
 	if selectChoice == nil {
 		return nil
 	}
 	return selectionConfirmer(selectChoice)
 }
 
-type selectionConfirmer func(string, []string) (string, error)
+type selectionConfirmer prompt.SelectFunc
+
+// Choices puts the default first in both terminal and numbered menus.
+func (request Confirmation) Choices() []string {
+	choices := []string{request.DeclineLabel, request.AcceptLabel}
+	if request.DefaultAccept {
+		choices[0], choices[1] = choices[1], choices[0]
+	}
+	return choices
+}
 
 func (selectChoice selectionConfirmer) Confirm(request Confirmation) (bool, error) {
 	if selectChoice == nil {
 		return false, fmt.Errorf("confirmation is unavailable")
 	}
-	choice, err := selectChoice(request.Message, []string{request.DeclineLabel, request.AcceptLabel})
+	choices := request.Choices()
+	choice, err := selectChoice(request.Message, choices, choices[0])
 	if err != nil {
 		return false, err
 	}

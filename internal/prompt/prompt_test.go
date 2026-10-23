@@ -15,7 +15,7 @@ import (
 func TestSelectorUsesNumberedFallback(t *testing.T) {
 	var out bytes.Buffer
 	selector := Selector{In: strings.NewReader("2\n"), Out: &out}
-	selected, err := selector.Select("Select item:", []string{"one", "two"})
+	selected, err := selector.Select("Select item:", []string{"one", "two"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestSelectorUsesNumberedFallback(t *testing.T) {
 func TestSelectorUsesNumberedFallbackWithDetails(t *testing.T) {
 	var out bytes.Buffer
 	selector := Selector{In: strings.NewReader("1\n"), Out: &out}
-	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("one", "one\nfirst.example.com"), ChoiceWithLabel("two", "two\nsecond.example.com")})
+	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("one", "one\nfirst.example.com"), ChoiceWithLabel("two", "two\nsecond.example.com")}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestSelectorUsesNumberedFallbackWithDetails(t *testing.T) {
 
 func TestSelectorReturnsValueForLabeledSingleChoice(t *testing.T) {
 	selector := Selector{SpecialLabels: map[string]string{"create": "Create new..."}}
-	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("create", "Create new...")})
+	selected, err := selector.Select("Select item:", []string{ChoiceWithLabel("create", "Create new...")}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,8 @@ func TestSelectorReturnsValueForLabeledSingleChoice(t *testing.T) {
 
 func TestSelectorUsesDefaultForBlankSelection(t *testing.T) {
 	var out bytes.Buffer
-	selector := Selector{In: strings.NewReader("\n"), Out: &out, DefaultChoice: "two"}
-	selected, err := selector.Select("Select item:", []string{"one", "two"})
+	selector := Selector{In: strings.NewReader("\n"), Out: &out}
+	selected, err := selector.Select("Select item:", []string{"one", "two"}, "two")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +70,16 @@ func TestSelectorUsesDefaultForBlankSelection(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Select an option [two]:") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestSelectorDoesNotApproveDefaultAtEOF(t *testing.T) {
+	for _, input := range []string{"", "  "} {
+		selector := Selector{In: strings.NewReader(input), Out: &bytes.Buffer{}}
+		selected, err := selector.Select("Copy license?", []string{"Copy", "Cancel"}, "Copy")
+		if err == nil || selected != "" {
+			t.Fatalf("EOF approved default: choice=%q err=%v", selected, err)
+		}
 	}
 }
 
@@ -154,8 +164,8 @@ func TestFitItemsToWidth_NonPositiveWidthNoOp(t *testing.T) {
 
 func TestNumberedConfirmationStripsANSI(t *testing.T) {
 	var out bytes.Buffer
-	selector := Selector{In: strings.NewReader("2\n"), Out: &out, DefaultChoice: "Cancel"}
-	selected, err := selector.Select("Install?\n\x1b[2mSet $env:NDDSHOME to the installation directory.\x1b[0m", []string{"Cancel", "Accept license and install"})
+	selector := Selector{In: strings.NewReader("2\n"), Out: &out}
+	selected, err := selector.Select("Install?\n\x1b[2mSet $env:NDDSHOME to the installation directory.\x1b[0m", []string{"Cancel", "Accept license and install"}, "Cancel")
 	if err != nil || selected != "Accept license and install" {
 		t.Fatalf("%s %v", selected, err)
 	}

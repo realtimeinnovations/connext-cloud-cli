@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,8 +81,10 @@ func safeManagedPath(root, target string) error {
 }
 
 func validateManagedMetadata(directory, version string) (Install, error) {
-	if _, err := os.Lstat(filepath.Join(filepath.Dir(directory), installationPendingFile)); !os.IsNotExist(err) {
-		return Install{}, fmt.Errorf("Connext installation is incomplete at %s", directory)
+	for _, marker := range []string{filepath.Join(filepath.Dir(directory), installationPendingFile), installationLicenseRecoveryPath(directory)} {
+		if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+			return Install{}, fmt.Errorf("Connext installation is incomplete at %s", directory)
+		}
 	}
 	metadata := filepath.Join(directory, "rti_versions.xml")
 	if err := safeManagedPath(directory, metadata); err != nil {
@@ -150,7 +153,7 @@ func installManaged(options DiscoveryOptions) (Install, error) {
 	return installManagedArtifact(options, artifact)
 }
 
-func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact) (Install, error) {
+func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact) (result Install, resultErr error) {
 	options = normalizeOptions(options)
 	parent := options.Context
 	if parent == nil {
@@ -175,6 +178,8 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if err := safeManagedPath(rti, directory); err != nil {
 		return Install{}, err
 	}
+	// Healthy installations need no mutation or exclusive installer lock.
+	// Pending and recovery markers keep interrupted repairs on the locked path.
 	if install, err := validateManaged(directory, artifact.version, options); err == nil {
 		return install, nil
 	}
@@ -194,6 +199,9 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		return Install{}, fmt.Errorf("another Connext setup is running: %w", err)
 	}
 	defer lock.Close() // OS releases this lock on cancellation or process exit too.
+	if err := restoreInstallationLicense(directory); err != nil {
+		return Install{}, fmt.Errorf("recovering installation license: %w", err)
+	}
 	if install, err := validateManaged(directory, artifact.version, options); err == nil {
 		return install, nil
 	}
@@ -236,11 +244,20 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		if !info.IsDir() {
 			return Install{}, fmt.Errorf("managed installation is not a directory: %s", directory)
 		}
-		// Preserve a readable license before replacing invalid binaries.
-		if data, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
-			if err := seedManagedLicense(data); err != nil {
-				return Install{}, err
+		// Save outside the replaced tree, without importing into the license store.
+		// The next repair can recover this copy if the process exits abruptly.
+		if contents, err := installationLicenseForRepair(directory); err == nil {
+			if err := writeVerifiedLicense(installationLicenseRecoveryPath(directory), contents); err != nil {
+				return Install{}, fmt.Errorf("preserving installation license: %w", err)
 			}
+			defer func() {
+				if err := restoreInstallationLicense(directory); err != nil {
+					result = Install{}
+					resultErr = errors.Join(resultErr, fmt.Errorf("restoring installation license: %w", err))
+				}
+			}()
+		} else if !os.IsNotExist(err) {
+			return Install{}, fmt.Errorf("preserving installation license: %w", err)
 		}
 		if err := os.RemoveAll(directory); err != nil {
 			return Install{}, err
@@ -268,6 +285,9 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	}
 	if err := safeManagedPath(rti, filepath.Join(directory, "bin", options.ExecutableName)); err != nil {
 		return Install{}, err
+	}
+	if err := restoreInstallationLicense(directory); err != nil {
+		return Install{}, fmt.Errorf("restoring installation license: %w", err)
 	}
 	if err := os.Remove(pending); err != nil {
 		return Install{}, err
@@ -313,4 +333,62 @@ func alternativeInstallationHint() string {
 		extension = shell
 	}
 	return "To use another installation, set NDDSHOME or source its environment script:\n  source \"<installation-dir>/resource/scripts/rtisetenv_" + bundle + "." + extension + "\""
+}
+
+func installationLicenseRecoveryPath(directory string) string {
+	return filepath.Join(filepath.Dir(directory), ".rticloud-license-recovery.dat")
+}
+
+// Called under the installer lock before reusing or replacing an installation.
+// Keep the recovery copy until the restored file has been written and verified.
+func restoreInstallationLicense(directory string) error {
+	path := installationLicenseRecoveryPath(directory)
+	root, err := managedRoot()
+	if err != nil {
+		return err
+	}
+	if err := safeManagedPath(filepath.Dir(filepath.Dir(root)), path); err != nil {
+		return err
+	}
+	contents, err := readCopyableLicense(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := writeVerifiedLicense(filepath.Join(directory, LicenseFileName), contents); err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
+// Never follow a local symlink during repair. The saved license can replace it,
+// but a failed read of a regular local file must still stop destructive repair.
+func installationLicenseForRepair(directory string) ([]byte, error) {
+	local := filepath.Join(directory, LicenseFileName)
+	contents, err := readCopyableLicense(local)
+	if err == nil {
+		return contents, nil
+	}
+	info, statErr := os.Lstat(local)
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil, err
+	}
+	saved, savedErr := managedLicensePath()
+	if savedErr != nil {
+		return nil, savedErr
+	}
+	root, savedErr := managedRoot()
+	if savedErr != nil {
+		return nil, savedErr
+	}
+	if savedErr := safeManagedPath(filepath.Dir(filepath.Dir(root)), saved); savedErr != nil {
+		return nil, savedErr
+	}
+	contents, savedErr = readCopyableLicense(saved)
+	if savedErr != nil {
+		return nil, fmt.Errorf("%w; no readable saved license to replace the local symlink: %v", err, savedErr)
+	}
+	return contents, nil
 }

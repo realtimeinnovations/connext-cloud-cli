@@ -491,7 +491,7 @@ func TestDiscoverConnextUsesManagedWithoutSelector(t *testing.T) {
 		}
 		return connext.Install{Path: "managed", Version: "7.7.0.1"}, nil
 	}
-	result, err := DiscoverConnextInstallWithConfirmation(map[string]string{}, connext.ConfirmationFromSelector(func(string, []string) (string, error) {
+	result, err := DiscoverConnextInstallWithConfirmation(map[string]string{}, connext.ConfirmationFromSelector(func(string, []string, string) (string, error) {
 		t.Fatal("unexpected installation selector")
 		return "", nil
 	}))

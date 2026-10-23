@@ -22,6 +22,10 @@ import (
 	"time"
 )
 
+const validTestConnextLicense = "FEATURE RTIPRO RTI 4. permanent 0 SIGN=TEST_ONLY\n" +
+	"FEATURE RTISECURITY RTI 5. permanent 0 SIGN=TEST_ONLY\n" +
+	"FEATURE RTIRWT RTI 6. permanent 0 SIGN=TEST_ONLY\n"
+
 func TestInstallerCacheReuseReplacementAndCancellation(t *testing.T) {
 	managedTestEnvironment(t)
 	body := "verified installer"
@@ -82,35 +86,36 @@ func TestDownloadCancellationCleansPartial(t *testing.T) {
 	}
 }
 
-func TestManagedLicensePersistsRepairsAndOverridesEnvironment(t *testing.T) {
+func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 	root := managedTestEnvironment(t)
 	t.Setenv("NDDSHOME", "")
 	t.Setenv("RTI_LICENSE_FILE", "")
 	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	install := Install{Path: directory, Version: installerVersion}
-	if ok, err := ProvisionManagedLicense(install); err != nil || ok {
+	if ok, err := ProvisionManagedLicense(install, nil); err != nil || ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	old := filepath.Join(root, "7.6.0.1", platformDirectory(), "rti_connext_dds-7.6.0")
 	if err := os.MkdirAll(old, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(old, LicenseFileName), []byte("legacy license"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(old, LicenseFileName), []byte(validTestConnextLicense+"# legacy\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, ConfirmFunc(func(request Confirmation) (bool, error) {
+		return true, nil
+	})); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	canonical, _ := managedLicensePath()
 	data, err := os.ReadFile(canonical)
-	if err != nil || string(data) != "legacy license" {
+	if err != nil || string(data) != validTestConnextLicense+"# legacy\n" {
 		t.Fatalf("%q %v", data, err)
 	}
 	external := filepath.Join(t.TempDir(), LicenseFileName)
 	if err := os.WriteFile(external, []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("RTI_LICENSE_FILE", external)
 	if err := os.Remove(LicenseFilePath(install)); err != nil {
 		t.Fatal(err)
 	}
@@ -119,17 +124,25 @@ func TestManagedLicensePersistsRepairsAndOverridesEnvironment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if ok, err := ProvisionManagedLicense(install); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, ConfirmFunc(func(Confirmation) (bool, error) {
+		t.Fatal("existing shared license required another import confirmation")
+		return false, nil
+	})); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	data, _ = os.ReadFile(LicenseFilePath(install))
-	if string(data) != "legacy license" {
+	if string(data) != validTestConnextLicense+"# legacy\n" {
 		t.Fatal(string(data))
 	}
 	data, _ = os.ReadFile(external)
 	if string(data) != "external" {
 		t.Fatal("modified external license")
 	}
+	t.Setenv("RTI_LICENSE_FILE", external)
+	if available, err := ProvisionManagedLicense(install, nil); err != nil || !available || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+external) {
+		t.Fatalf("environment license must be used without importing: available=%v err=%v", available, err)
+	}
+	t.Setenv("RTI_LICENSE_FILE", "")
 	if !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+LicenseFilePath(install)) {
 		t.Fatal("managed license not used by subprocess")
 	}
@@ -138,7 +151,95 @@ func TestManagedLicensePersistsRepairsAndOverridesEnvironment(t *testing.T) {
 	}
 }
 
-func TestInvalidSelectedLicenseBlocksFallback(t *testing.T) {
+func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
+	for _, source := range []string{"installation", "NDDSHOME", "previous-version"} {
+		t.Run(source, func(t *testing.T) {
+			root := managedTestEnvironment(t)
+			t.Setenv("NDDSHOME", "")
+			t.Setenv("RTI_LICENSE_FILE", "")
+			install := Install{Path: writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion), Version: installerVersion}
+			path := LicenseFilePath(install)
+			switch source {
+			case "NDDSHOME":
+				external := t.TempDir()
+				t.Setenv("NDDSHOME", external)
+				path = filepath.Join(external, LicenseFileName)
+			case "previous-version":
+				path = filepath.Join(root, "7.6.0.1", platformDirectory(), "rti_connext_dds-7.6.0", LicenseFileName)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(validTestConnextLicense), 0600); err != nil {
+				t.Fatal(err)
+			}
+			canonical, _ := managedLicensePath()
+			if available, err := ProvisionManagedLicense(install, nil); available || err == nil {
+				t.Fatalf("noninteractive import proceeded: available=%v err=%v", available, err)
+			}
+			if available, err := ProvisionManagedLicense(install, ConfirmFunc(func(Confirmation) (bool, error) { return false, nil })); available || err != nil {
+				t.Fatalf("declined import proceeded: available=%v err=%v", available, err)
+			}
+			if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
+				t.Fatalf("shared license written without approval: %v", err)
+			}
+			available, err := ProvisionManagedLicense(install, ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
+				if !strings.Contains(message, path) || !strings.Contains(message, canonical) || !strings.Contains(message, "License feature check passed:") || choices[0] != ImportManagedLicenseLabel {
+					t.Fatalf("unexpected import confirmation: %s %#v", message, choices)
+				}
+				return ImportManagedLicenseLabel, nil
+			}))
+			if err != nil || !available {
+				t.Fatalf("approved import failed: available=%v err=%v", available, err)
+			}
+			for _, target := range []string{canonical, LicenseFilePath(install), path} {
+				if data, err := os.ReadFile(target); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("unexpected license at %s: %v", target, err)
+				}
+			}
+		})
+	}
+}
+
+func TestExternalLicenseImportDoesNotWriteThroughLinks(t *testing.T) {
+	managedTestEnvironment(t)
+	for _, kind := range []string{"symlink", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			install := Install{Path: t.TempDir()}
+			outside := filepath.Join(t.TempDir(), "unrelated.dat")
+			if err := os.WriteFile(outside, []byte("unrelated contents"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			target := LicenseFilePath(install)
+			link := os.Link
+			if kind == "symlink" {
+				link = os.Symlink
+			}
+			if err := link(outside, target); err != nil {
+				t.Skipf("link unavailable: %v", err)
+			}
+			source := filepath.Join(t.TempDir(), LicenseFileName)
+			if err := os.WriteFile(source, []byte(validTestConnextLicense), 0600); err != nil {
+				t.Fatal(err)
+			}
+			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }))
+			if kind == "symlink" {
+				if err == nil || imported {
+					t.Fatal("symlink destination was accepted")
+				}
+			} else if err != nil || !imported {
+				t.Fatalf("hardlinked destination was not safely replaced: %v", err)
+			} else if data, err := os.ReadFile(target); err != nil || string(data) != validTestConnextLicense {
+				t.Fatalf("license contents not saved: %v", err)
+			}
+			if data, err := os.ReadFile(outside); err != nil || string(data) != "unrelated contents" {
+				t.Fatalf("unrelated file changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnvironmentLicensePrecedesInvalidNDDSHOME(t *testing.T) {
 	root := managedTestEnvironment(t)
 	dir := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	external := t.TempDir()
@@ -147,12 +248,12 @@ func TestInvalidSelectedLicenseBlocksFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := filepath.Join(t.TempDir(), LicenseFileName)
-	if err := os.WriteFile(env, []byte("fallback"), 0600); err != nil {
+	if err := os.WriteFile(env, []byte(validTestConnextLicense), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", env)
-	if _, err := ProvisionManagedLicense(Install{Path: dir}); err == nil || !strings.Contains(err.Error(), "fallback is disabled") {
-		t.Fatal(err)
+	if available, err := ProvisionManagedLicense(Install{Path: dir}, nil); err != nil || !available {
+		t.Fatalf("environment license must precede NDDSHOME: available=%v err=%v", available, err)
 	}
 }
 
@@ -300,7 +401,7 @@ func TestLicenseRepairRefusesSymlinkedStoreParent(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Dir(canonical)); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedManagedLicense([]byte("private")); err == nil {
+	if err := WriteLicenseFile(Install{Path: filepath.Join(root, installerVersion, platformDirectory(), "rti_connext_dds-7.7.0")}, []byte(validTestConnextLicense), nil); err == nil {
 		t.Fatal("followed symlinked license directory")
 	}
 	entries, _ := os.ReadDir(outside)

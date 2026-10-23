@@ -72,7 +72,7 @@ func fixture(t *testing.T) (Options, string, connext.Install) {
 	for _, tool := range []string{"rtiroutingservice", "rticollectorservicelite", "rtiddsspy"} {
 		writeFile(t, connext.Executable(path, tool), "launcher")
 	}
-	license := "FEATURE RTIPRO RTI 4. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. 12-oct-2026 0 SIGN=SECRET_LICENSE"
+	license := "FEATURE RTIPRO RTI 4. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTIRWT RTI 6. 12-oct-2026 0 SIGN=SECRET_LICENSE"
 	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), license)
 	writeFile(t, filepath.Join(path, "rti_license.dat"), license)
 	project := filepath.Join(home, "project")
@@ -141,7 +141,7 @@ func TestDoctorHealthyReadOnlyAndLicenseDays(t *testing.T) {
 	if r.ExitCode != 0 || !r.Healthy {
 		t.Fatalf("%+v", r)
 	}
-	if c := check(t, r, "license"); c.Status != "warn" || len(c.Features) != 2 || *c.Features[0].DaysRemaining != 9 {
+	if c := check(t, r, "license"); c.Status != "warn" || len(c.Features) != 3 || *c.Features[0].DaysRemaining != 9 {
 		t.Fatalf("%+v", c)
 	}
 	if c := check(t, r, "cloud_access"); c.HTTPStatus != 200 || c.Status != "pass" {
@@ -416,13 +416,15 @@ func TestPathScanDeduplicatesLinks(t *testing.T) {
 	}
 }
 
-func TestLicenseInspectionDoesNotProvisionFallback(t *testing.T) {
-	o, home, install := fixture(t)
-	canonical := filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")
-	os.Remove(canonical)
-	os.Remove(filepath.Join(install.Path, "rti_license.dat"))
+func TestLicenseInspectionUsesSymlinkedEnvironmentWithoutCopying(t *testing.T) {
+	o, home, _ := fixture(t)
 	source := filepath.Join(home, "external-license.dat")
 	writeFile(t, source, "FEATURE RTIPRO RTI 4. 12-oct-2026 SECRET_LICENSE")
+	alias := filepath.Join(home, "current-license.dat")
+	if err := os.Symlink(source, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	source = alias
 	t.Setenv("RTI_LICENSE_FILE", source)
 	before := snapshot(t, home)
 	r := Run(context.Background(), o)
@@ -436,6 +438,45 @@ func TestLicenseInspectionDoesNotProvisionFallback(t *testing.T) {
 	if c.Details[0].Value != source {
 		t.Fatal("wrong license provenance")
 	}
+	if c.RequiredAction != "review_connext_license" || !strings.Contains(c.Details[2].Value, "Unset RTI_LICENSE_FILE") {
+		t.Fatalf("missing environment override guidance: %+v", c)
+	}
+}
+
+func TestLicenseInspectionRequiresImportEvenWhenLocalCopyMatches(t *testing.T) {
+	o, home, install := fixture(t)
+	if err := os.Remove(filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE\nFEATURE RTIRWT RTI 6. permanent SECRET_LICENSE")
+	before := snapshot(t, home)
+	c := check(t, Run(context.Background(), o), "license")
+	if c.Status != "warn" || c.Code != "LICENSE_IMPORT_CONFIRMATION_REQUIRED" || c.RequiredAction != "confirm_license_import" {
+		t.Fatalf("unexpected import status: %+v", c)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, home)) {
+		t.Fatal("inspection imported the license")
+	}
+}
+
+func TestDoctorReportsRequiredLicenseFeatureProblems(t *testing.T) {
+	o, home, install := fixture(t)
+	contents := "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE"
+	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), contents)
+	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), contents)
+	before := snapshot(t, home)
+	r := Run(context.Background(), o)
+	c := check(t, r, "license")
+	if c.Status != "warn" || c.Code != "LICENSE_REQUIRED_FEATURES_UNAVAILABLE" || c.RequiredAction != "review_connext_license" {
+		t.Fatalf("unexpected feature status: %+v", c)
+	}
+	if !strings.Contains(c.Details[len(c.Details)-1].Value, "RTIRWT") {
+		t.Fatalf("missing feature diagnostic: %+v", c)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, home)) {
+		t.Fatal("precheck changed license files")
+	}
+	assertNoSecrets(t, r)
 }
 
 func TestUnsupportedManagedPlatformIsWarning(t *testing.T) {
