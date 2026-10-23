@@ -249,7 +249,10 @@ func TestEnsureConnextLicenseDownloadsMissingLMInstallLicense(t *testing.T) {
 
 func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, string) {
 	t.Helper()
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	oldHome, oldPlatform := internalconnext.UserHomeDir, internalconnext.Platform
 	internalconnext.UserHomeDir = func() (string, error) { return home, nil }
 	internalconnext.Platform = func() (string, string) { return "linux", "amd64" }
