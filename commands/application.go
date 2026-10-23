@@ -9,7 +9,6 @@ package commands
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -102,7 +101,8 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 	if err := artifacts.validateComplete(); err != nil {
 		return nil, err
 	}
-	if err := common.ValidateSecureFileNames(secureFiles); err != nil {
+	decoded, err := common.DecodeSecureFiles(secureFiles, privateKey)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateApplicationNames(databusName, appName, clientID); err != nil {
@@ -144,30 +144,17 @@ func applicationBundle(databusName string, appName string, clientID string, arti
 		return nil, err
 	}
 	secureDir := "generated/security"
-	secureFileNames := make([]string, 0, len(secureFiles))
-	for name := range secureFiles {
+	secureFileNames := make([]string, 0, len(decoded))
+	for name := range decoded {
 		secureFileNames = append(secureFileNames, name)
 	}
 	sort.Strings(secureFileNames)
 	for _, name := range secureFileNames {
-		if name == "client.key" && len(privateKey) > 0 {
-			continue
-		}
-		encoded := secureFiles[name]
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil, err
-		}
 		mode := os.FileMode(0o644)
 		if strings.HasSuffix(name, ".key") {
 			mode = 0o600
 		}
-		if err := addFile(filepath.Join(secureDir, name), decoded, mode); err != nil {
-			return nil, err
-		}
-	}
-	if len(privateKey) > 0 {
-		if err := addFile(filepath.Join(secureDir, "client.key"), privateKey, 0o600); err != nil {
+		if err := addFile(filepath.Join(secureDir, name), decoded[name], mode); err != nil {
 			return nil, err
 		}
 	}

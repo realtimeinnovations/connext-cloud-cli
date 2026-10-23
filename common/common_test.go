@@ -49,9 +49,19 @@ func TestSecureFilesPreferLocalKeyAndPreserveExistingPermissions(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old key"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	files := map[string]string{"client.key": "ignored-invalid-server-copy", "psk.key": base64.StdEncoding.EncodeToString([]byte("PSK")), "client.crt": base64.StdEncoding.EncodeToString([]byte("certificate"))}
+	files := map[string]string{
+		"client.key": "ignored-invalid-server-copy",
+		"CLIENT.KEY": "ignored-invalid-uppercase-copy",
+		"Client.Key": "ignored-invalid-mixed-case-copy",
+		"psk.key":    base64.StdEncoding.EncodeToString([]byte("PSK")),
+		"client.crt": base64.StdEncoding.EncodeToString([]byte("certificate")),
+	}
 	if err := SaveSecureFiles(files, []byte("local private key"), root); err != nil {
 		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("unexpected credential entries: %v, %v", entries, err)
 	}
 	for name, want := range map[string]string{"client.key": "local private key", "psk.key": "PSK", "client.crt": "certificate"} {
 		data, err := os.ReadFile(filepath.Join(root, name))
@@ -69,5 +79,17 @@ func TestSecureFilesPreferLocalKeyAndPreserveExistingPermissions(t *testing.T) {
 		if runtime.GOOS != "windows" && info.Mode().Perm() != mode {
 			t.Errorf("%s mode=%04o, want=%04o", name, info.Mode().Perm(), mode)
 		}
+	}
+}
+
+func TestSecureFilesKeepServerKeyWhenNoLocalKeySupplied(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{"CLIENT.KEY": base64.StdEncoding.EncodeToString([]byte("server key"))}
+	if err := SaveSecureFiles(files, nil, root); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "CLIENT.KEY"))
+	if err != nil || string(data) != "server key" {
+		t.Fatalf("server key=%q, %v", data, err)
 	}
 }

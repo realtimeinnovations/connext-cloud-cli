@@ -325,7 +325,7 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 	bundle, err := applicationBundle("demo", "shapes", "client-1", applicationArtifacts{
 		Bundle:   testApplicationBundle(`<dds path="./generated/security/identity.pem"/>`, "# example\n"),
 		Manifest: json.RawMessage(`{"version":1,"topics":[]}`),
-	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate"))}, []byte("private key"))
+	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")), "CLIENT.KEY": "ignored-invalid-server-copy"}, []byte("private key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,12 +338,24 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 		files[file.Name] = file
 	}
 	root := "demo-shapes-client-1/"
+	if files[root+"generated/security/CLIENT.KEY"] != nil {
+		t.Fatal("archive contains the conflicting server key")
+	}
 	if files[root+"shapes.xml"] == nil || files[root+"manifest.json"] == nil || files[root+"generated/security/identity.pem"] == nil {
 		t.Fatalf("unexpected secure bundle: %#v", files)
 	}
 	key := files[root+"generated/security/client.key"]
 	if key == nil || key.Mode().Perm() != 0o600 {
 		t.Fatalf("private key mode = %v, want 0600", key)
+	}
+	reader, err := key.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil || string(data) != "private key" {
+		t.Fatalf("archived key=%q, %v", data, err)
 	}
 }
 
