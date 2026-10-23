@@ -404,7 +404,7 @@ func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
 	}
 	prefix := filepath.Join(root, installerVersion, platformDirectory())
 	script := "#!/bin/sh\nexit 1\n"
-	artifact, err := bundledInstaller("linux", "amd64")
+	artifact, err := bundledInstaller(Platform())
 	if err != nil {
 		t.Fatal(err)
 	}
