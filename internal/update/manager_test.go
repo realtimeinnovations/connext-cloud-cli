@@ -259,6 +259,13 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 
 	var out bytes.Buffer
 	manager := newTestManager(t, server.URL)
+	storage := t.TempDir()
+	selectedTemp := filepath.Join(t.TempDir(), "temporary")
+	if err := os.Symlink(storage, selectedTemp); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	manager.MkdirTemp = func(_ string, pattern string) (string, error) { return os.MkdirTemp(selectedTemp, pattern) }
+
 	manager.DownloadURL = server.URL
 	manager.Out = &out
 	manager.CurrentVersion = func() string { return "1.2.3" }
@@ -275,6 +282,11 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	if err := manager.Run(context.Background(), Options{}); err != nil {
 		t.Fatal(err)
 	}
+	entries, err := os.ReadDir(storage)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("update staging not cleaned: %v, %v", entries, err)
+	}
+
 	data, err := os.ReadFile(binaryPath)
 	if err != nil {
 		t.Fatal(err)

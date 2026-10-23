@@ -9,6 +9,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -44,7 +46,10 @@ func TestRunUpdateRequiresManager(t *testing.T) {
 }
 
 func TestConfigureConnextDirCreatesAndSelectsDirectory(t *testing.T) {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime := &Runtime{EdgeStore: edgestore.New(base)}
 	path := filepath.Join(base, "artifacts")
 	for attempt := 0; attempt < 2; attempt++ {
@@ -73,6 +78,28 @@ func TestConfigureConnextDirClassifiesErrors(t *testing.T) {
 	if !errors.As(err, &cause) || !strings.Contains(err.Error(), "--connext-dir") || clierror.From(err).Code != clierror.CodeCommandFailed {
 		t.Fatalf("expected wrapped filesystem failure, got %v", err)
 	}
+}
+
+func TestConfigureConnextDirAcceptsSelectedDirectorySymlink(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	link := filepath.Join(base, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	runtime := &Runtime{EdgeStore: edgestore.New(base)}
+	for _, path := range []string{link, filepath.Join(link, "new")} {
+		if err := runtime.ConfigureConnextDir(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.EdgeStore.WriteFile(filepath.Join(runtime.EdgeStore.ConnextDir, "artifact"), []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(path, "artifact"))
+		if err != nil || string(data) != "test" {
+			t.Fatalf("selected directory output=%q, %v", data, err)
+		}
+	}
+
 }
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
@@ -224,7 +251,10 @@ func TestEnsureConnextLicenseDownloadsMissingLMInstallLicense(t *testing.T) {
 
 func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, string) {
 	t.Helper()
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	oldHome, oldPlatform := internalconnext.UserHomeDir, internalconnext.Platform
 	internalconnext.UserHomeDir = func() (string, error) { return home, nil }
 	internalconnext.Platform = func() (string, string) { return "linux", "amd64" }
@@ -340,14 +370,8 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				}
 				source = environmentPath
 			} else if scenario == "relative-file" {
-				cwd, err := os.Getwd()
-				if err != nil {
-					t.Fatal(err)
-				}
-				environmentPath, err = filepath.Rel(cwd, source)
-				if err != nil {
-					t.Fatal(err)
-				}
+				t.Chdir(filepath.Dir(source))
+				environmentPath = filepath.Base(source)
 			} else if scenario == "quoted-file" {
 				environmentPath = "\"" + source + "\""
 			}
@@ -776,7 +800,11 @@ func TestReturningProjectIgnoresSavedConnextPath(t *testing.T) {
 }
 
 func TestRuntimeNDDSHOMEConfirmationAndSkipPreflight(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(base, "rti_connext_dds-7.7.0")
 	if err := os.MkdirAll(filepath.Join(directory, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -798,7 +826,11 @@ func TestRuntimeNDDSHOMEConfirmationAndSkipPreflight(t *testing.T) {
 		}
 	}
 	// Initial setup has already asked, so do not ask again before launch.
-	values := map[string]any{"runtime": map[string]any{"connext_home": directory}}
+	selected := filepath.Join(t.TempDir(), "selected-install")
+	if err := os.Symlink(directory, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	values := map[string]any{"runtime": map[string]any{"connext_home": selected}}
 	result, err := resolveRuntimeConnext(values, false, false, internalconnext.ConfirmationFromSelector(func(string, []string, string) (string, error) {
 		t.Fatal("duplicate confirmation")
 		return "", nil
@@ -859,5 +891,56 @@ func TestAPIAdaptersAndPresentationPreserveErrorCategories(t *testing.T) {
 		if !errors.Is(err, authErr) || clierror.From(err).ExitCode() != 3 {
 			t.Fatalf("%s presentation lost authentication: %v", command, err)
 		}
+	}
+}
+
+func TestAgentIdentityGenerationAndRenewalThroughTemporaryBaseSymlink(t *testing.T) {
+	base := t.TempDir()
+	selected := filepath.Join(t.TempDir(), "temporary")
+	if err := os.Symlink(base, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	keyPath, csrPath, err := generateAgentKeyAndCSR("initial", "org", selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCSR := func(path string) *x509.CertificateRequest {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			t.Fatal("missing CSR PEM")
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := csr.CheckSignature(); err != nil {
+			t.Fatal(err)
+		}
+		return csr
+	}
+	initial := readCSR(csrPath)
+	if initial.Subject.CommonName != "initial" {
+		t.Fatal("wrong initial subject")
+	}
+	csrPath, err = generateAgentCSRFromKey("renewed", "org", key, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed := readCSR(csrPath)
+	if renewed.Subject.CommonName != "renewed" || !bytes.Equal(initial.RawSubjectPublicKeyInfo, renewed.RawSubjectPublicKeyInfo) {
+		t.Fatal("renewal changed key or used wrong subject")
+	}
+	stored, err := os.ReadFile(filepath.Join(base, "identity.key"))
+	if err != nil || !bytes.Equal(stored, key) {
+		t.Fatal("key did not reach selected base or was changed")
 	}
 }

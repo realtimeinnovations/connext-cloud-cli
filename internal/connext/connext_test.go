@@ -137,11 +137,16 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 	install := createConnextInstall(t, tmpDir, "7.7.0", "rtiroutingservice", "rtipkginstall")
 	writeVersions(t, install, `<rti></rti>`)
 
+	selectedDir := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(tmpDir, selectedDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
 	previousGetwd := CurrentWorkDir
 	previousPlatform := Platform
 	previousHTTPGet := HTTPGet
 	previousInstaller := PackageInstaller
-	CurrentWorkDir = func() (string, error) { return tmpDir, nil }
+	CurrentWorkDir = func() (string, error) { return selectedDir, nil }
 	Platform = func() (string, string) { return "darwin", "arm64" }
 	HTTPGet = func(url string) (*http.Response, error) {
 		if !strings.HasSuffix(url, "arm64Darwin-cloud-extras.rtipkg") {
@@ -153,7 +158,12 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 		if !strings.HasSuffix(packagePath, "arm64Darwin-cloud-extras.rtipkg") {
 			t.Fatalf("unexpected package path: %s", packagePath)
 		}
-		if err := os.WriteFile(filepath.Join(install.Path, "bin", "rticollectorservicelite"), []byte(""), 0o755); err != nil {
+		data, err := os.ReadFile(packagePath)
+		if err != nil || string(data) != "package" {
+			t.Fatalf("downloaded package=%q, %v", data, err)
+		}
+
+		if err := os.WriteFile(Executable(install.Path, "rticollectorservicelite"), []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return nil
@@ -237,11 +247,18 @@ func createConnextInstall(t *testing.T, root string, version string, executables
 		t.Fatal(err)
 	}
 	for _, executable := range executables {
+		if runtime.GOOS == "windows" {
+			executable += ".bat"
+		}
 		if err := os.WriteFile(filepath.Join(binDir, executable), []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return install
+	canonical, err := filepath.EvalSymlinks(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func writeVersions(t *testing.T, install string, content string) {

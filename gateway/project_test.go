@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -151,7 +152,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 	if !strings.Contains(out.String(), "Connext Cloud Gateway setup") || !strings.Contains(out.String(), "Databuses available: 1") {
 		t.Fatalf("missing setup intro: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "Using Connext Pro 7.7.0 at "+install) || !strings.Contains(out.String(), "Configuration saved to "+filepath.Join(tmpDir, ".connext", "gateway.yaml")) {
+	if !strings.Contains(out.String(), "Using Connext Pro 7.7.0 at "+install) || !strings.Contains(out.String(), "Configuration saved to "+filepath.Join(app.WorkDir, ".connext", "gateway.yaml")) {
 		t.Fatalf("missing setup status output: %s", out.String())
 	}
 	if strings.Index(out.String(), "Connext Cloud Gateway setup") > strings.Index(out.String(), "Using Connext Pro 7.7.0 at "+install) {
@@ -596,7 +597,7 @@ func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
 	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); string(got) != "private-key" {
 		t.Fatalf("unexpected client.key: %s", string(got))
 	}
-	if info, err := os.Stat(filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("client.key permissions = %v, %v; want 0600", info.Mode().Perm(), err)
 	}
 	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.crt")); string(got) != "cert" {
@@ -605,6 +606,9 @@ func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
 }
 
 func TestStartCollectorLaunchesProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
@@ -663,7 +667,7 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
 		!strings.Contains(logLines[0], "-locationTag coll1") ||
 		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
@@ -705,6 +709,9 @@ func TestCollectorDiscoveryQueueRetainsLatestStateForEachEventType(t *testing.T)
 }
 
 func TestRoutingShutdownStopsCollectorBeforeFinalSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
@@ -762,6 +769,9 @@ func TestRoutingShutdownStopsCollectorBeforeFinalSnapshot(t *testing.T) {
 }
 
 func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
@@ -793,13 +803,13 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
 		!strings.Contains(logLines[0], "-locationTag coll1") ||
 		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
@@ -878,7 +888,7 @@ wait "$child"
 	if !strings.Contains(out.String(), "Collector interrupted.") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 }
@@ -893,6 +903,9 @@ func TestCollectorCommandOmitsUnsupportedDiscoveryOption(t *testing.T) {
 }
 
 func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	executable := filepath.Join(t.TempDir(), "collector")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho '  -logEvent <event>'\necho '  * ENTITY_DISCOVERY'\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -909,6 +922,9 @@ func TestCollectorSupportsDiscoveryEventsFromHelp(t *testing.T) {
 }
 
 func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	t.Setenv("RTI_MONITORING2_ENABLE", "true")
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
@@ -943,7 +959,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiroutingservice")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "routing", "my-gw.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "routing", "my-gw.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName my_gw_gateway") ||
 		!strings.Contains(logLines[0], "-verbosity LOCAL:WARN") {
 		t.Fatalf("unexpected first routing log line: %q", logLines[0])
@@ -957,7 +973,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	if !strings.Contains(out.String(), "(⚠ not secure)") {
 		t.Fatalf("missing dashboard warning: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
@@ -966,6 +982,9 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 }
 
 func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
@@ -1008,6 +1027,9 @@ func TestRunRoutingServiceConsumesCollectorDiscoveryStatus(t *testing.T) {
 }
 
 func TestRunRoutingServiceWithTextOutputPrintsPlainEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
@@ -1055,6 +1077,9 @@ echo "ERROR NDDS_Transport_UDP_assertUnisocket:FAILED TO CREATE | default unicas
 }
 
 func TestRunRoutingServiceInterruptRendersStoppedScreen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
@@ -1089,7 +1114,7 @@ func TestRunRoutingServiceInterruptRendersStoppedScreen(t *testing.T) {
 	if rc != 0 && rc != 130 {
 		t.Fatalf("unexpected rc: %d", rc)
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "Gateway interrupted.") || !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {

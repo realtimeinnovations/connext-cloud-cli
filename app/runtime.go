@@ -36,6 +36,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
@@ -70,6 +71,15 @@ type Runtime struct {
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
+	if workDir == "" {
+		workDir = "."
+	}
+	// Resolve the project base before appending managed .connext paths.
+	// Invalid inputs remain intact for output preflight to reject.
+	if resolved, err := fileoutput.ResolveDirectory(workDir); err == nil {
+		workDir = resolved
+	}
+
 	configManager := config.New("")
 	authManager := auth.New(configManager, "")
 	authManager.Stdout = out
@@ -178,19 +188,18 @@ func (runtime *Runtime) RunUpdate(ctx context.Context, out, errOut io.Writer, op
 }
 
 func (runtime *Runtime) ConfigureConnextDir(path string) error {
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.IsDir() {
-			return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("--connext-dir %q exists but is not a directory", path)}
-		}
-	} else {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("--connext-dir %q: %w", path, err)
-		}
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
-		}
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("--connext-dir %q exists but is not a directory", path)}
 	}
+	resolved, err := fileoutput.ResolveDirectory(path)
+	if err != nil {
+		return fmt.Errorf("--connext-dir %q: %w", path, err)
+	}
+	if err := fileoutput.MkdirAll(resolved, 0o755); err != nil {
+		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
+	}
+	path = resolved
+
 	if runtime != nil && runtime.EdgeStore != nil {
 		runtime.EdgeStore.ConnextDir = path
 	}
@@ -211,6 +220,10 @@ func (runtime *Runtime) Logout() error {
 // generateAgentKeyAndCSR generates a fresh ECDSA P-256 private key and a CSR
 // for the given common name and organisation, writing both PEM files to tmpDir.
 func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath string, err error) {
+	tmpDir, err = fileoutput.ResolveDirectory(tmpDir)
+	if err != nil {
+		return "", "", err
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
@@ -221,7 +234,7 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	keyPath = filepath.Join(tmpDir, "identity.key")
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := fileoutput.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return "", "", err
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
@@ -232,7 +245,7 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	csrPath = filepath.Join(tmpDir, "identity.csr")
-	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+	if err := fileoutput.WriteFile(csrPath, csrPEM, 0o644); err != nil {
 		return "", "", err
 	}
 	return keyPath, csrPath, nil
@@ -242,6 +255,10 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 // key, writing the CSR PEM file to tmpDir.  Used for identity renewal so the
 // device key is never rotated.
 func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir string) (csrPath string, err error) {
+	tmpDir, err = fileoutput.ResolveDirectory(tmpDir)
+	if err != nil {
+		return "", err
+	}
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
 		return "", fmt.Errorf("no PEM block found in key data")
@@ -276,7 +293,7 @@ func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir strin
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	csrPath = filepath.Join(tmpDir, "identity.csr")
-	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+	if err := fileoutput.WriteFile(csrPath, csrPEM, 0o644); err != nil {
 		return "", err
 	}
 	return csrPath, nil
@@ -529,7 +546,11 @@ func gatewayPreflightError(config map[string]any, existingConfig bool, err error
 func resolveRuntimeConnext(values map[string]any, existingConfig, skipPreflight bool, confirm internalconnext.Confirmer, options internalconnext.DiscoveryOptions) (internalconnext.Install, error) {
 	if !existingConfig {
 		if home := common.NestedString(values, "runtime", "connext_home"); home != "" {
-			return internalconnext.ValidateInstall(home, options)
+			resolved, err := fileoutput.ResolveDirectory(home)
+			if err != nil {
+				return internalconnext.Install{}, err
+			}
+			return internalconnext.ValidateInstall(resolved, options)
 		}
 	}
 	options.AcceptExternalNDDSHome = skipPreflight

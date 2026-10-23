@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 // File validity matches Studio provisioning: readable, regular, and not a
@@ -75,7 +77,7 @@ func writeVerifiedLicense(path string, contents []byte) error {
 	if err := safeManagedPath(filepath.Dir(filepath.Dir(root)), filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return writeAtomicLicense(path, contents)

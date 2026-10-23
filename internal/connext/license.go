@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 const LicenseFileName = "rti_license.dat"
@@ -85,9 +87,7 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 		if err := safeManagedPath(filepath.Dir(filepath.Dir(filepath.Dir(target))), filepath.Dir(target)); err != nil {
 			return false, err
 		}
-	} else if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
-		return false, fmt.Errorf("license destination must be a regular file: %s", target)
-	} else if err != nil && !os.IsNotExist(err) {
+	} else if err := fileoutput.Validate(target, fileoutput.File); err != nil {
 		return false, err
 	}
 	current, err := readCopyableLicense(target)

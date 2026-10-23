@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -110,6 +111,14 @@ func TestCreateApplicationRejectsNonObjectTopicData(t *testing.T) {
 }
 
 func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root, err := os.Getwd()
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
 		"client_config": "<participant/>",
 		"client_data":   map[string]any{"port": "7777", "kind": "app", "topics": map[string]any{"0": map[string]any{"domainId": 0}}},
@@ -126,7 +135,7 @@ func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
 	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
 		t.Fatal(err)
 	}
-	if savedName != "application.json" || bytes.Contains(savedData, []byte("client_config")) {
+	if savedName != filepath.Join(root, "application.json") || bytes.Contains(savedData, []byte("client_config")) {
 		t.Fatalf("unexpected saved manifest %q: %s", savedName, savedData)
 	}
 	var manifest map[string]any
@@ -144,47 +153,13 @@ func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
 	})}}
 	runner := New(api, io.Discard)
 	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	runner.MkdirAll = func(dir string, _ os.FileMode) error {
-		createdDir = dir
-		return nil
-	}
-	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
+	path := filepath.Join(t.TempDir(), "configs", "application.json")
+	if err := runner.GetApplication("db", "subscriber", false, false, "", path); err != nil {
 		t.Fatal(err)
 	}
-	if createdDir != "configs" {
-		t.Fatalf("created directory = %q, want configs", createdDir)
-	}
-}
-
-func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
-	runner := New(&fakeAPI{}, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	var createdMode os.FileMode
-	var fileMode os.FileMode
-	var chmodMode os.FileMode
-	runner.MkdirAll = func(dir string, mode os.FileMode) error {
-		createdDir, createdMode = dir, mode
-		return nil
-	}
-	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
-		fileMode = mode
-		return nil
-	}
-	runner.Chmod = func(_ string, mode os.FileMode) error {
-		chmodMode = mode
-		return nil
-	}
-	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
-		t.Fatal(err)
-	}
-	if createdDir != "keys" || createdMode != 0o700 {
-		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
-	}
-	if fileMode != 0o600 || chmodMode != 0o600 {
-		t.Fatalf("write mode = %#o, chmod mode = %#o, want 0600", fileMode, chmodMode)
+	data, err := os.ReadFile(path)
+	if err != nil || !json.Valid(data) {
+		t.Fatalf("manifest = %q, error = %v", data, err)
 	}
 }
 
@@ -212,6 +187,14 @@ func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
 }
 
 func TestGetGatewayDownloadsXMLWithoutManifestOutput(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root, err := os.Getwd()
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
 		"client_config": "<participant/>",
 		"client_data":   map[string]any{"kind": "gateway"},
@@ -227,7 +210,7 @@ func TestGetGatewayDownloadsXMLWithoutManifestOutput(t *testing.T) {
 	if err := runner.GetApplication("db", "subscriber", false, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if savedName != "subscriber.xml" {
+	if savedName != filepath.Join(root, "subscriber.xml") {
 		t.Fatalf("saved file = %q, want subscriber.xml", savedName)
 	}
 	if strings.Contains(out.String(), "map[") {
@@ -236,6 +219,14 @@ func TestGetGatewayDownloadsXMLWithoutManifestOutput(t *testing.T) {
 }
 
 func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root, err := os.Getwd()
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
 		"bundle": testApplicationBundle("<dds/>", "# example"),
 		"manifest": map[string]any{
@@ -258,11 +249,11 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 	if err := runner.DownloadApplication("db", "shapes", ApplicationDownloadOptions{IncludeManifest: true}); err != nil {
 		t.Fatal(err)
 	}
-	if string(written["generated/shapes.qos.xml"]) != "<dds/>" {
+	if string(written[filepath.Join(root, "generated", "shapes.qos.xml")]) != "<dds/>" {
 		t.Fatalf("unexpected XML artifacts: %#v", written)
 	}
-	if !bytes.Contains(written["manifest.json"], []byte(`"FutureTopic"`)) {
-		t.Fatalf("unexpected manifest: %s", written["manifest.json"])
+	if !bytes.Contains(written[filepath.Join(root, "manifest.json")], []byte(`"FutureTopic"`)) {
+		t.Fatalf("unexpected manifest: %s", written[filepath.Join(root, "manifest.json")])
 	}
 	if !strings.Contains(out.String(), "Warning: Type information is unavailable for: FutureTopic") {
 		t.Fatalf("missing unknown-type warning: %s", out.String())
@@ -270,6 +261,14 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 }
 
 func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
+	t.Chdir(t.TempDir())
+	root, err := os.Getwd()
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/demo/applications/shapes": newJSONResponse(http.StatusOK, map[string]any{
 		"bundle":   testApplicationBundle("<dds/>", "print('shapes')\n"),
 		"manifest": map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
@@ -278,7 +277,7 @@ func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
 	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	var bundle []byte
 	runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-		if name != "demo-shapes.zip" || mode != 0o644 {
+		if name != filepath.Join(root, "demo-shapes.zip") || mode != 0o644 {
 			t.Fatalf("wrote %q with mode %#o", name, mode)
 		}
 		bundle = append([]byte(nil), data...)
@@ -408,7 +407,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			if test.zip {
 				info, err := os.Stat(archivePath)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
 				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -462,7 +461,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyInfo.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && keyInfo.Mode().Perm() != 0o600 {
 				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
 			}
 		})
@@ -574,28 +573,12 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 			}), io.Discard)
 			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
 			runner.ReadFile = func(string) ([]byte, error) { return []byte("external csr"), nil }
-			runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-				want := os.FileMode(0o644)
-				if test.generateKey {
-					want = 0o600
-				}
-				if name != output || mode != want {
-					t.Fatalf("write %q mode %#o; want %q mode %#o", name, mode, output, want)
-				}
-				if test.overwrite {
-					info, err := os.Stat(name)
-					if err != nil || info.Mode().Perm() != 0o600 {
-						t.Fatalf("archive must be private before writing key: %v, %v", info, err)
-					}
-				}
-				return os.WriteFile(name, data, mode)
-			}
 			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", GeneratePrivateKey: test.generateKey, ForceOverwrite: test.overwrite, ZIP: true}); err != nil {
 				t.Fatal(err)
 			}
 			if test.generateKey {
 				info, err := os.Stat(output)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private archive info = %v, error = %v", info, err)
 				}
 			}

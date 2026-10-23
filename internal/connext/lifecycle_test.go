@@ -28,6 +28,12 @@ const validTestConnextLicense = "FEATURE RTIPRO RTI 4. permanent 0 SIGN=TEST_ONL
 
 func TestInstallerCacheReuseReplacementAndCancellation(t *testing.T) {
 	managedTestEnvironment(t)
+	home, _ := UserHomeDir()
+	storage := t.TempDir()
+	if err := os.Symlink(storage, filepath.Join(home, "Downloads")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
 	body := "verified installer"
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 	calls := 0
@@ -40,6 +46,10 @@ func TestInstallerCacheReuseReplacementAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if data, err := os.ReadFile(filepath.Join(storage, "installer.run")); err != nil || string(data) != body {
+		t.Fatalf("download did not use selected cache: %q, %v", data, err)
+	}
+
 	if _, err := cachedInstaller(context.Background(), url, digest, client, io.Discard); err != nil || calls != 1 {
 		t.Fatalf("cache reuse: calls=%d err=%v", calls, err)
 	}
@@ -203,29 +213,46 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 
 func TestExternalLicenseImportDoesNotWriteThroughLinks(t *testing.T) {
 	managedTestEnvironment(t)
-	for _, kind := range []string{"symlink", "hardlink"} {
+	for _, kind := range []string{"symlink", "parent symlink", "hardlink"} {
 		t.Run(kind, func(t *testing.T) {
 			install := Install{Path: t.TempDir()}
 			outside := filepath.Join(t.TempDir(), "unrelated.dat")
 			if err := os.WriteFile(outside, []byte("unrelated contents"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			if kind == "parent symlink" {
+				parent := filepath.Dir(outside)
+				license := filepath.Join(parent, LicenseFileName)
+				if err := os.Rename(outside, license); err != nil {
+					t.Fatal(err)
+				}
+				outside = license
+				install.Path = filepath.Join(install.Path, "linked-install")
+				if err := os.Symlink(parent, install.Path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			} else {
+				link := os.Link
+				if kind == "symlink" {
+					link = os.Symlink
+				}
+				if err := link(outside, LicenseFilePath(install)); err != nil {
+					t.Skipf("link unavailable: %v", err)
+				}
+			}
 			target := LicenseFilePath(install)
-			link := os.Link
-			if kind == "symlink" {
-				link = os.Symlink
-			}
-			if err := link(outside, target); err != nil {
-				t.Skipf("link unavailable: %v", err)
-			}
 			source := filepath.Join(t.TempDir(), LicenseFileName)
 			if err := os.WriteFile(source, []byte(validTestConnextLicense), 0600); err != nil {
 				t.Fatal(err)
 			}
-			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }))
-			if kind == "symlink" {
-				if err == nil || imported {
-					t.Fatal("symlink destination was accepted")
+			confirmed := false
+			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) {
+				confirmed = true
+				return true, nil
+			}))
+			if kind != "hardlink" {
+				if !errors.Is(err, os.ErrInvalid) || imported || confirmed {
+					t.Fatalf("expected rejection before import confirmation: imported=%v confirmed=%v err=%v", imported, confirmed, err)
 				}
 			} else if err != nil || !imported {
 				t.Fatalf("hardlinked destination was not safely replaced: %v", err)
@@ -432,9 +459,16 @@ func TestInstallerCacheFallsBackWhenDownloadsUnavailable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "Downloads"), []byte("unrelated file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	temporary := t.TempDir()
+	temporary, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedTemp := filepath.Join(t.TempDir(), "temporary")
+	if err := os.Symlink(temporary, selectedTemp); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(key, temporary)
+		t.Setenv(key, selectedTemp)
 	}
 	body := "installer fixture"
 	client := &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {

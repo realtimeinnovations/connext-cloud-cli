@@ -23,6 +23,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/buildinfo"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/rtipaths"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
@@ -84,6 +85,8 @@ func New(path string) *Manager {
 	var pathErr error
 	if path == "" {
 		path, pathErr = DefaultConfigPath()
+	} else if resolved, err := fileoutput.ResolveFile(path); err == nil {
+		path = resolved
 	}
 	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}, pathErr: pathErr, defaultPath: defaultPath}
 }
@@ -150,10 +153,10 @@ func (manager *Manager) WriteConfig(config map[string]string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(manager.Path), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(manager.Path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(manager.Path, data, 0o600); err != nil {
+	if err := fileoutput.WriteFile(manager.Path, data, 0o600); err != nil {
 		return err
 	}
 	manager.cache = copyMap(config)
