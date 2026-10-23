@@ -114,6 +114,10 @@ func cachedInstaller(ctx context.Context, url, digest string, client *http.Clien
 }
 
 func writableDownloadDirectory(directory string) (string, error) {
+	directory, err := fileoutput.ResolveDirectory(directory)
+	if err != nil {
+		return "", err
+	}
 	if err := fileoutput.MkdirAll(directory, 0o700); err != nil {
 		return "", err
 	}

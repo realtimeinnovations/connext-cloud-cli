@@ -375,3 +375,37 @@ func TestResolvedBaseStillRejectsGeneratedSymlinks(t *testing.T) {
 		t.Fatalf("file link accepted: %v", err)
 	}
 }
+
+func TestResolveFileDoesNotDuplicateTrailingDirectoryName(t *testing.T) {
+	root := t.TempDir()
+	for _, suffix := range []string{"existing", "new"} {
+		directory := filepath.Join(root, suffix)
+		if suffix == "existing" {
+			if err := os.Mkdir(directory, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		resolved, err := ResolveFile(directory + string(filepath.Separator))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = WriteFile(resolved, []byte("file"), 0600)
+		if suffix == "existing" {
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("accepted existing directory: %v", err)
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("nested file created: %v, %v", entries, err)
+			}
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(directory)
+			if err != nil || string(data) != "file" {
+				t.Fatalf("wrong output: %q, %v", data, err)
+			}
+		}
+	}
+}

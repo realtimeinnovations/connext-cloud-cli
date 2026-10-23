@@ -220,6 +220,10 @@ func (runtime *Runtime) Logout() error {
 // generateAgentKeyAndCSR generates a fresh ECDSA P-256 private key and a CSR
 // for the given common name and organisation, writing both PEM files to tmpDir.
 func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath string, err error) {
+	tmpDir, err = fileoutput.ResolveDirectory(tmpDir)
+	if err != nil {
+		return "", "", err
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
@@ -251,6 +255,10 @@ func generateAgentKeyAndCSR(commonName, org, tmpDir string) (keyPath, csrPath st
 // key, writing the CSR PEM file to tmpDir.  Used for identity renewal so the
 // device key is never rotated.
 func generateAgentCSRFromKey(commonName, org string, keyPEM []byte, tmpDir string) (csrPath string, err error) {
+	tmpDir, err = fileoutput.ResolveDirectory(tmpDir)
+	if err != nil {
+		return "", err
+	}
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
 		return "", fmt.Errorf("no PEM block found in key data")

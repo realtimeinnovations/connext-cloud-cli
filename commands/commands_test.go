@@ -992,24 +992,21 @@ func TestEnrollDeviceDirect_GenKeyRejected_LeavesKeyFileIntact(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return nil, fmt.Errorf("ReadFile should not be called with --gen-key, got %q", path)
 	}
-	var writes []string
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		writes = append(writes, path)
-		return nil
+	keyFile := filepath.Join(t.TempDir(), "existing.key")
+	if err := os.WriteFile(keyFile, []byte("existing key"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	runner.CSRGenerator = func(_, _, _ string) ([]byte, string, error) {
 		return []byte("GENERATED-KEY"), "GENERATED-CSR", nil
 	}
 
-	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", "existing.key", true)
+	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", keyFile, true)
 	if err == nil {
 		t.Fatal("expected an error when the server rejects the enrollment")
 	}
-	for _, path := range writes {
-		if path == "existing.key" {
-			t.Fatal("generated key was written to --key-file despite the enrollment being rejected; " +
-				"the operator's existing private key would be destroyed")
-		}
+	data, err := os.ReadFile(keyFile)
+	if err != nil || string(data) != "existing key" {
+		t.Fatal("rejected enrollment changed existing key")
 	}
 }
 
@@ -1064,5 +1061,18 @@ func TestListAppClientsPreservesCollectionTextOutput(t *testing.T) {
 		if out.String() != string(expected)+"\n" {
 			t.Fatalf("client text output changed: %q", out.String())
 		}
+	}
+}
+
+func TestGeneratedKeyDestinationIsCheckedBeforeEnrollment(t *testing.T) {
+	api := &fakeAPI{}
+	runner := New(api, io.Discard)
+	runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
+		t.Fatal("invalid output generated a key")
+		return nil, "", nil
+	}
+	_, _, err := runner.EnrollDeviceDirect("service", "domain", "participant", "node", nil, "", "", t.TempDir(), true)
+	if !errors.Is(err, os.ErrInvalid) || api.lastPath != "" {
+		t.Fatalf("error=%v request=%s", err, api.lastPath)
 	}
 }

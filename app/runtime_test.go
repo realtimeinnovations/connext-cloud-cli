@@ -9,6 +9,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -889,5 +891,56 @@ func TestAPIAdaptersAndPresentationPreserveErrorCategories(t *testing.T) {
 		if !errors.Is(err, authErr) || clierror.From(err).ExitCode() != 3 {
 			t.Fatalf("%s presentation lost authentication: %v", command, err)
 		}
+	}
+}
+
+func TestAgentIdentityGenerationAndRenewalThroughTemporaryBaseSymlink(t *testing.T) {
+	base := t.TempDir()
+	selected := filepath.Join(t.TempDir(), "temporary")
+	if err := os.Symlink(base, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	keyPath, csrPath, err := generateAgentKeyAndCSR("initial", "org", selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCSR := func(path string) *x509.CertificateRequest {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			t.Fatal("missing CSR PEM")
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := csr.CheckSignature(); err != nil {
+			t.Fatal(err)
+		}
+		return csr
+	}
+	initial := readCSR(csrPath)
+	if initial.Subject.CommonName != "initial" {
+		t.Fatal("wrong initial subject")
+	}
+	csrPath, err = generateAgentCSRFromKey("renewed", "org", key, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed := readCSR(csrPath)
+	if renewed.Subject.CommonName != "renewed" || !bytes.Equal(initial.RawSubjectPublicKeyInfo, renewed.RawSubjectPublicKeyInfo) {
+		t.Fatal("renewal changed key or used wrong subject")
+	}
+	stored, err := os.ReadFile(filepath.Join(base, "identity.key"))
+	if err != nil || !bytes.Equal(stored, key) {
+		t.Fatal("key did not reach selected base or was changed")
 	}
 }

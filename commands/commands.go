@@ -992,6 +992,9 @@ func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, partici
 		if err != nil {
 			return "", "", err
 		}
+		if err := fileoutput.Validate(resolved, fileoutput.File); err != nil {
+			return "", "", err
+		}
 		keyFile = resolved
 	}
 	var csrPEM string

@@ -100,15 +100,15 @@ func ResolveDirectory(path string) (string, error) {
 // ResolveFile resolves the parent of an explicitly selected output file, while
 // leaving the file itself subject to strict validation (including link rejection).
 func ResolveFile(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("output path is empty")
+	path, err := absolutePath(path)
+	if err != nil {
+		return "", err
 	}
 	parent, err := ResolveDirectory(filepath.Dir(path))
 	if err != nil {
 		return "", err
 	}
-	resolved := filepath.Join(parent, filepath.Base(path))
-	return resolved, nil
+	return filepath.Join(parent, filepath.Base(path)), nil
 }
 
 // Inspect returns the destination's metadata after checking all ancestors.

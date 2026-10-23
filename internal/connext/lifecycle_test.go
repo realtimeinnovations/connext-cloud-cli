@@ -28,6 +28,12 @@ const validTestConnextLicense = "FEATURE RTIPRO RTI 4. permanent 0 SIGN=TEST_ONL
 
 func TestInstallerCacheReuseReplacementAndCancellation(t *testing.T) {
 	managedTestEnvironment(t)
+	home, _ := UserHomeDir()
+	storage := t.TempDir()
+	if err := os.Symlink(storage, filepath.Join(home, "Downloads")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
 	body := "verified installer"
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 	calls := 0
@@ -40,6 +46,10 @@ func TestInstallerCacheReuseReplacementAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if data, err := os.ReadFile(filepath.Join(storage, "installer.run")); err != nil || string(data) != body {
+		t.Fatalf("download did not use selected cache: %q, %v", data, err)
+	}
+
 	if _, err := cachedInstaller(context.Background(), url, digest, client, io.Discard); err != nil || calls != 1 {
 		t.Fatalf("cache reuse: calls=%d err=%v", calls, err)
 	}
@@ -449,9 +459,16 @@ func TestInstallerCacheFallsBackWhenDownloadsUnavailable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "Downloads"), []byte("unrelated file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	temporary := t.TempDir()
+	temporary, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedTemp := filepath.Join(t.TempDir(), "temporary")
+	if err := os.Symlink(temporary, selectedTemp); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(key, temporary)
+		t.Setenv(key, selectedTemp)
 	}
 	body := "installer fixture"
 	client := &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {

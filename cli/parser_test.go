@@ -10,6 +10,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -797,6 +798,42 @@ func TestEdgeSyncOutputSelectionKeepsStoreBoundary(t *testing.T) {
 				if err != nil || string(data) != "test certificate" {
 					t.Fatalf("certificate=%q, %v", data, err)
 				}
+			}
+		})
+	}
+}
+
+func TestAgentDefaultLogUsesSelectedProjectBase(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			base := t.TempDir()
+			selected := filepath.Join(t.TempDir(), "project")
+			if err := os.Symlink(base, selected); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			t.Chdir(selected)
+			t.Setenv("PWD", selected)
+			rt := app.NewRuntime(selected, io.Discard)
+			rt.EdgeSyncAgent.NonInteractive = true
+			cmd := newEdgeSyncCommand(rt)
+			args := []string{"agent"}
+			if disabled {
+				args = append(args, "--log-file", "")
+			}
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "Unattended enrollment requires") {
+				t.Fatalf("startup did not reach enrollment prompt: %v", err)
+			}
+			info, err := os.Stat(filepath.Join(base, ".connext", "agent", "rticloud-edge-agent.log"))
+			if disabled {
+				if !os.IsNotExist(err) {
+					t.Fatalf("disabled log created: %v", err)
+				}
+			} else if err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("default log missing: %v", err)
 			}
 		})
 	}

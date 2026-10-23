@@ -255,6 +255,10 @@ func (manager *Manager) install(ctx context.Context, status Status) error {
 		return err
 	}
 	defer manager.removeAll(tmpDir)
+	tmpDir, err = fileoutput.ResolveDirectory(tmpDir)
+	if err != nil {
+		return err
+	}
 	archivePath := filepath.Join(tmpDir, archiveName)
 	checksumsPath := filepath.Join(tmpDir, "checksums.txt")
 	tag := "v" + normalizeTag(status.LatestVersion)

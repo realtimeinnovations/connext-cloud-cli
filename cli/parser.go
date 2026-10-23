@@ -2345,7 +2345,9 @@ your container runtime for supervision.`,
 				if crlInterval > 0 {
 					runtime.EdgeSyncAgent.CRLInterval = crlInterval
 				}
-				if cmd.Flags().Changed("log-file") && logFile != "" {
+				if !cmd.Flags().Changed("log-file") && runtime.EdgeStore != nil {
+					logFile = runtime.EdgeStore.LogPath()
+				} else if logFile != "" {
 					resolved, err := fileoutput.ResolveFile(logFile)
 					if err != nil {
 						return err
