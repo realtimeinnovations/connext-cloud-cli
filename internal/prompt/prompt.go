@@ -137,7 +137,7 @@ func (selector Selector) cursorSelect(message string, choices []string, inputFil
 		Size:      minInt(len(items), 10),
 		CursorPos: selector.defaultCursorPos(choices),
 		HideHelp:  true,
-		Stdin:     inputFile,
+		Stdin:     &selectionInput{ReadCloser: inputFile},
 		Stdout:    outputFile,
 		Templates: templates,
 	}
@@ -146,6 +146,30 @@ func (selector Selector) cursorSelect(message string, choices []string, inputFil
 		return "", err
 	}
 	return SelectionValue(choices[index]), nil
+}
+
+// promptui's interrupt path redraws its screen buffer after reporting the
+// interrupt to the caller, racing its own cleanup. Actual EOF stops that reader
+// before cleanup. Both errors mean cancellation to Selector.Select, so translate
+// Ctrl+C here. Read one byte at a time to leave later input for the next prompt.
+type selectionInput struct {
+	io.ReadCloser
+	interrupted bool
+}
+
+func (input *selectionInput) Read(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	if input.interrupted {
+		return 0, io.EOF
+	}
+	n, err := input.ReadCloser.Read(data[:1])
+	if n == 1 && data[0] == '\x03' {
+		input.interrupted = true
+		return 0, io.EOF
+	}
+	return n, err
 }
 
 func (selector Selector) printNumberedChoice(index int, label string) {

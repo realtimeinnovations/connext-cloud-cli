@@ -7,6 +7,7 @@
 package connext
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -101,15 +102,10 @@ func TestManagedRejectsSymlink(t *testing.T) {
 func TestManagedReusesValidInstallWithoutNetwork(t *testing.T) {
 	root := managedTestEnvironment(t)
 	expected := writeManagedFixture(t, filepath.Join(root, installerVersion, "linux_x64"), installerVersion)
-	oldGet := HTTPGet
-	HTTPGet = func(string) (*http.Response, error) { t.Fatal("unexpected download"); return nil, nil }
-	t.Cleanup(func() { HTTPGet = oldGet })
-	install, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
-		t.Fatal("unexpected confirmation for a valid installation")
-		return "", nil
-	})})
-	if err != nil || install.Path != expected {
-		t.Fatalf("%#v %v", install, err)
+	var out bytes.Buffer
+	install, err := installManaged(DiscoveryOptions{HTTPClient: rejectDownloadClient(t), Confirmations: scriptedConfirmation("", &out)})
+	if err != nil || install.Path != expected || out.Len() != 0 {
+		t.Fatalf("install=%#v err=%v unexpected prompt=%q", install, err, out.String())
 	}
 }
 
@@ -175,9 +171,7 @@ echo installed
 					t.Fatal(err)
 				}
 			}
-			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
-				return AcceptManagedDownloadLabel, nil
-			})}, artifact)
+			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: scriptedConfirmation("2\n", io.Discard)}, artifact)
 			if scenario == "success" || scenario == "repair" {
 				if err != nil || result.Version != installerVersion {
 					t.Fatalf("%#v %v", result, err)
@@ -322,23 +316,20 @@ func TestPendingInstallationNeedsConfirmationBeforeRepair(t *testing.T) {
 }
 
 func TestMissingManagedInstallRequiresConsentBeforeDownload(t *testing.T) {
-	for _, mode := range []string{"cancel", "no-prompt", "prompt-error"} {
+	for _, mode := range []string{"enter", "cancel", "eof", "no-prompt"} {
 		t.Run(mode, func(t *testing.T) {
 			root := managedTestEnvironment(t)
-			oldGet := HTTPGet
-			t.Cleanup(func() { HTTPGet = oldGet })
-			HTTPGet = func(string) (*http.Response, error) { t.Fatal("download occurred without consent"); return nil, nil }
-			options := DiscoveryOptions{AcceptExternalNDDSHome: true}
+			var out bytes.Buffer
+			options := DiscoveryOptions{AcceptExternalNDDSHome: true, HTTPClient: rejectDownloadClient(t)}
 			if mode != "no-prompt" {
-				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
-					if len(choices) != 2 || choices[0] != CancelManagedDownloadLabel || choices[1] != AcceptManagedDownloadLabel {
-						t.Fatal(choices)
-					}
-					if mode == "prompt-error" {
-						return "", fmt.Errorf("input closed")
-					}
-					return CancelManagedDownloadLabel, nil
-				})
+				input := ""
+				if mode == "enter" {
+					input = "\n"
+				}
+				if mode == "cancel" {
+					input = "1\n"
+				}
+				options.Confirmations = scriptedConfirmation(input, &out)
 			}
 			if _, err := installManaged(options); err == nil {
 				t.Fatal("expected cancellation or missing consent")

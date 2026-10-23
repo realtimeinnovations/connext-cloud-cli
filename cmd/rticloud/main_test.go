@@ -11,11 +11,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -41,6 +43,22 @@ func TestCLIProcess(t *testing.T) {
 		os.Exit(0)
 	}
 
+	type requestExpectation struct{ method, uri, body string }
+	databusList := []requestExpectation{{"GET", "/databuses?extra_fields=true", ""}}
+	databusQuery := []requestExpectation{{"GET", "/databuses/demo", ""}}
+	databusCreate := []requestExpectation{{"POST", "/databuses", `{"name":"demo","replicas":2,"network_name":"","secure":true}`}, {"GET", "/databuses/demo", ""}}
+	databusDelete := []requestExpectation{{"DELETE", "/databuses/demo", ""}, {"GET", "/databuses/demo", ""}}
+	databusDisable := []requestExpectation{{"PATCH", "/databuses/demo", `{"running_status":"disable"}`}}
+	databusResume := []requestExpectation{{"PATCH", "/databuses/demo", `{"running_status":"resume"}`}}
+	appCreate := []requestExpectation{{"POST", "/databuses/demo/applications", `{"port":7777,"kind":"app","client_name":"subscriber"}`}}
+	appDelete := []requestExpectation{{"DELETE", "/databuses/demo/applications/subscriber", ""}}
+	appClients := []requestExpectation{{"GET", "/databuses/demo/applications/subscriber/clients", ""}}
+	appRevoke := []requestExpectation{{"DELETE", "/databuses/demo/applications/subscriber/clients/device-1", ""}}
+	networkList := []requestExpectation{{"GET", "/networks", ""}}
+	networkDelete := []requestExpectation{{"DELETE", "/networks/demo", ""}}
+	obsCreate := []requestExpectation{{"POST", "/databuses", `{"name":"demo","replicas":0,"enable_edge_observability":true,"secure":true}`}, {"GET", "/databuses/demo", ""}}
+	apiKeyList := append([]requestExpectation{{"POST", "/service-accounts/auth/token", ""}}, databusList...)
+
 	for _, tc := range []struct {
 		name          string
 		args          []string
@@ -60,69 +78,70 @@ func TestCLIProcess(t *testing.T) {
 		jsonOnly      bool
 		code          string
 		exit          int
-		calls         int32
+		requests      []requestExpectation
 	}{
-		{name: "list", args: []string{"databus", "list"}, calls: 1},
-		{name: "query", args: []string{"databus", "query", "--name", "demo"}, calls: 1},
-		{name: "create active", args: []string{"databus", "create", "--name", "demo"}, calls: 2},
-		{name: "delete confirmed", args: []string{"databus", "delete", "--name", "demo"}, status: 404, calls: 2},
-		{name: "disable", args: []string{"databus", "disable", "--name", "demo"}, calls: 1},
-		{name: "resume", args: []string{"databus", "resume", "--name", "demo"}, calls: 1},
-		{name: "link obs", args: []string{"databus", "set-observability", "--name", "demo", "--service", "obs"}, calls: 1},
-		{name: "unlink obs", args: []string{"databus", "set-observability", "--name", "demo", "--unlink"}, calls: 1},
-		{name: "add user", args: []string{"databus", "add-user", "--name", "demo", "--email", "user@example.com"}, calls: 1},
-		{name: "remove user", args: []string{"databus", "remove-user", "--name", "demo", "--email", "user@example.com"}, calls: 1},
-		{name: "app create", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, calls: 1},
-		{name: "app delete", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, calls: 1},
-		{name: "app client list", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":{"device-1":{"id":"device-1"}}}`, calls: 1},
-		{name: "app client revoke", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, calls: 1},
-		{name: "app create conflict", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutation: 409, code: "CONFLICT", exit: 5, calls: 1},
-		{name: "app delete denied", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "app client list denied", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, status: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "app client revoke missing", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, mutation: 404, code: "NOT_FOUND", exit: 4, calls: 1},
+		{name: "list", args: []string{"databus", "list"}, requests: databusList},
+		{name: "query", args: []string{"databus", "query", "--name", "demo"}, requests: databusQuery},
+		{name: "query escaped name", args: []string{"databus", "query", "--name", "demo/one"}, requests: []requestExpectation{{"GET", "/databuses/demo%2Fone", ""}}},
+		{name: "create active", args: []string{"databus", "create", "--name", "demo"}, requests: databusCreate},
+		{name: "delete confirmed", args: []string{"databus", "delete", "--name", "demo"}, status: 404, requests: databusDelete},
+		{name: "disable", args: []string{"databus", "disable", "--name", "demo"}, requests: databusDisable},
+		{name: "resume", args: []string{"databus", "resume", "--name", "demo"}, requests: databusResume},
+		{name: "link obs", args: []string{"databus", "set-observability", "--name", "demo", "--service", "obs"}, requests: []requestExpectation{{"PATCH", "/databuses/demo", `{"observability_service_name":"obs"}`}}},
+		{name: "unlink obs", args: []string{"databus", "set-observability", "--name", "demo", "--unlink"}, requests: []requestExpectation{{"PATCH", "/databuses/demo", `{"observability_service_name":null}`}}},
+		{name: "add user", args: []string{"databus", "add-user", "--name", "demo", "--email", "user@example.com"}, requests: []requestExpectation{{"POST", "/databuses/demo/users/user@example.com/", ""}}},
+		{name: "remove user", args: []string{"databus", "remove-user", "--name", "demo", "--email", "user@example.com"}, requests: []requestExpectation{{"DELETE", "/databuses/demo/users/user@example.com/", ""}}},
+		{name: "app create", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, requests: appCreate},
+		{name: "app delete", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, requests: appDelete},
+		{name: "app client list", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":{"device-1":{"id":"device-1"}}}`, requests: appClients},
+		{name: "app client revoke", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, requests: appRevoke},
+		{name: "app create conflict", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutation: 409, code: "CONFLICT", exit: 5, requests: appCreate},
+		{name: "app delete denied", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, requests: appDelete},
+		{name: "app client list denied", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, status: 403, code: "PERMISSION_DENIED", exit: 3, requests: appClients},
+		{name: "app client revoke missing", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, mutation: 404, code: "NOT_FOUND", exit: 4, requests: appRevoke},
 		{name: "app create missing name", args: []string{"databus", "app", "create"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "app create invalid kind", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber", "--kind", "unknown"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "app create missing config", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber", "--config", "/no-such-rticloud-input/app.json"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "app delete missing app", args: []string{"databus", "app", "delete", "--name", "demo"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "app client list missing app", args: []string{"databus", "app", "client", "list", "--name", "demo"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "app client revoke missing ID", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber"}, code: "INVALID_ARGUMENT", exit: 2},
-		{name: "app create invalid response", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutationBody: `{broken`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "app create null response", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutationBody: `null`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "app client list missing collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{}`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "app client list null collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":null}`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "app client list invalid collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":"bad"}`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
+		{name: "app create invalid response", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutationBody: `{broken`, code: "INVALID_RESPONSE", exit: 1, requests: appCreate},
+		{name: "app create null response", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, mutationBody: `null`, code: "INVALID_RESPONSE", exit: 1, requests: appCreate},
+		{name: "app client list missing collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{}`, code: "INVALID_RESPONSE", exit: 1, requests: appClients},
+		{name: "app client list null collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":null}`, code: "INVALID_RESPONSE", exit: 1, requests: appClients},
+		{name: "app client list invalid collection", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":"bad"}`, code: "INVALID_RESPONSE", exit: 1, requests: appClients},
 		{name: "app JSON prevents login", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
 		{name: "app client JSON prevents login", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
-		{name: "app create text", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, text: true, textWant: `"message": "mutation response"`, calls: 1},
-		{name: "app delete text", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, text: true, textWant: "Application 'subscriber' successfully deleted", calls: 1},
-		{name: "app client list text", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":{"device-1":{"id":"device-1"}}}`, text: true, textWant: `"device-1"`, calls: 1},
-		{name: "app client revoke text", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, text: true, textWant: "Client 'device-1' revoked successfully.", calls: 1},
-		{name: "app delete text error", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, mutation: 404, text: true, exit: 4, calls: 1},
+		{name: "app create text", args: []string{"databus", "app", "create", "--name", "demo", "--app-name", "subscriber"}, text: true, textWant: `"message": "mutation response"`, requests: appCreate},
+		{name: "app delete text", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, text: true, textWant: "Application 'subscriber' successfully deleted", requests: appDelete},
+		{name: "app client list text", args: []string{"databus", "app", "client", "list", "--name", "demo", "--app-name", "subscriber"}, resource: `{"clients":{"device-1":{"id":"device-1"}}}`, text: true, textWant: `"device-1"`, requests: appClients},
+		{name: "app client revoke text", args: []string{"databus", "app", "client", "revoke", "--name", "demo", "--app-name", "subscriber", "--client-id", "device-1"}, text: true, textWant: "Client 'device-1' revoked successfully.", requests: appRevoke},
+		{name: "app delete text error", args: []string{"databus", "app", "delete", "--name", "demo", "--app-name", "subscriber"}, mutation: 404, text: true, exit: 4, requests: appDelete},
 		{name: "client register JSON remains unsupported", args: []string{"databus", "app", "client", "register"}, code: "FORMAT_UNSUPPORTED", exit: 2},
-		{name: "network list", args: []string{"network", "list"}, calls: 1},
-		{name: "network delete", args: []string{"network", "delete", "--name", "demo"}, calls: 1},
-		{name: "network forbidden", args: []string{"network", "list"}, status: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "network delete rejected", args: []string{"network", "delete", "--name", "demo"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "network invalid response", args: []string{"network", "list"}, resource: `{broken`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "obs create active", args: []string{"observability", "create", "--name", "demo"}, calls: 2},
-		{name: "obs list", args: []string{"observability", "list"}, list: `{"databuses":{"obs":{"kind":"telemetry"},"demo":{"kind":"databus"}}}`, calls: 1},
-		{name: "obs query", args: []string{"observability", "query", "--name", "demo"}, calls: 1},
-		{name: "obs delete confirmed", args: []string{"observability", "delete", "--name", "demo"}, status: 404, calls: 2},
-		{name: "obs disable", args: []string{"observability", "disable", "--name", "demo"}, calls: 1},
-		{name: "obs resume", args: []string{"observability", "resume", "--name", "demo"}, calls: 1},
-		{name: "obs create rejected", args: []string{"observability", "create", "--name", "demo"}, mutation: 409, code: "CONFLICT", exit: 5, calls: 1},
-		{name: "obs create terminal error", args: []string{"observability", "create", "--name", "demo"}, resource: `{"status":"error"}`, code: "OPERATION_FAILED", exit: 1, calls: 2},
-		{name: "obs delete remains active", args: []string{"observability", "delete", "--name", "demo"}, code: "OPERATION_FAILED", exit: 1, calls: 2},
-		{name: "obs delete polling denied", args: []string{"observability", "delete", "--name", "demo"}, status: 401, code: "AUTH_REQUIRED", exit: 3, calls: 2},
+		{name: "network list", args: []string{"network", "list"}, requests: networkList},
+		{name: "network delete", args: []string{"network", "delete", "--name", "demo"}, requests: networkDelete},
+		{name: "network forbidden", args: []string{"network", "list"}, status: 403, code: "PERMISSION_DENIED", exit: 3, requests: networkList},
+		{name: "network delete rejected", args: []string{"network", "delete", "--name", "demo"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, requests: networkDelete},
+		{name: "network invalid response", args: []string{"network", "list"}, resource: `{broken`, code: "INVALID_RESPONSE", exit: 1, requests: networkList},
+		{name: "obs create active", args: []string{"observability", "create", "--name", "demo"}, requests: obsCreate},
+		{name: "obs list", args: []string{"observability", "list"}, list: `{"databuses":{"obs":{"kind":"telemetry"},"demo":{"kind":"databus"}}}`, requests: databusList},
+		{name: "obs query", args: []string{"observability", "query", "--name", "demo"}, requests: databusQuery},
+		{name: "obs delete confirmed", args: []string{"observability", "delete", "--name", "demo"}, status: 404, requests: databusDelete},
+		{name: "obs disable", args: []string{"observability", "disable", "--name", "demo"}, requests: databusDisable},
+		{name: "obs resume", args: []string{"observability", "resume", "--name", "demo"}, requests: databusResume},
+		{name: "obs create rejected", args: []string{"observability", "create", "--name", "demo"}, mutation: 409, code: "CONFLICT", exit: 5, requests: obsCreate[:1]},
+		{name: "obs create terminal error", args: []string{"observability", "create", "--name", "demo"}, resource: `{"status":"error"}`, code: "OPERATION_FAILED", exit: 1, requests: obsCreate},
+		{name: "obs delete remains active", args: []string{"observability", "delete", "--name", "demo"}, code: "OPERATION_FAILED", exit: 1, requests: databusDelete},
+		{name: "obs delete polling denied", args: []string{"observability", "delete", "--name", "demo"}, status: 401, code: "AUTH_REQUIRED", exit: 3, requests: databusDelete},
 		{name: "obs short JSON", args: []string{"observability", "list", "--short"}, code: "INVALID_ARGUMENT", exit: 2},
-		{name: "service accepted", args: []string{"edge-provisioning", "service", "create", "--name", "demo"}, mutation: 202, calls: 1},
-		{name: "service list", args: []string{"edge-provisioning", "service", "list"}, calls: 1},
-		{name: "service query", args: []string{"edge-provisioning", "service", "query", "--name", "demo"}, calls: 1},
-		{name: "service delete", args: []string{"edge-provisioning", "service", "delete", "--name", "demo"}, calls: 1},
-		{name: "template list", args: []string{"edge-provisioning", "governance-template", "list", "--service", "demo"}, calls: 1},
-		{name: "template rejected", args: []string{"edge-provisioning", "permissions-template", "get", "--service", "demo", "--name", "tpl"}, status: 404, code: "NOT_FOUND", exit: 4, calls: 1},
-		{name: "campaign list", args: []string{"edge-provisioning", "campaign", "list", "--service", "demo"}, calls: 1},
-		{name: "participant revoke", args: []string{"edge-provisioning", "participant", "revoke", "--service", "demo", "--participant-id", "tpl", "--campaign-id", "camp", "--deployment-name", "SN1"}, calls: 1},
+		{name: "service accepted", args: []string{"edge-provisioning", "service", "create", "--name", "demo"}, mutation: 202, requests: []requestExpectation{{"POST", "/edge-systems", `{"name":"demo"}`}}},
+		{name: "service list", args: []string{"edge-provisioning", "service", "list"}, requests: []requestExpectation{{"GET", "/edge-systems", ""}}},
+		{name: "service query", args: []string{"edge-provisioning", "service", "query", "--name", "demo"}, requests: []requestExpectation{{"GET", "/edge-systems/demo", ""}}},
+		{name: "service delete", args: []string{"edge-provisioning", "service", "delete", "--name", "demo"}, requests: []requestExpectation{{"DELETE", "/edge-systems/demo", ""}}},
+		{name: "template list", args: []string{"edge-provisioning", "governance-template", "list", "--service", "demo"}, requests: []requestExpectation{{"GET", "/edge-systems/demo/governance-templates", ""}}},
+		{name: "template rejected", args: []string{"edge-provisioning", "permissions-template", "get", "--service", "demo", "--name", "tpl"}, status: 404, code: "NOT_FOUND", exit: 4, requests: []requestExpectation{{"GET", "/edge-systems/demo/permissions-templates/tpl", ""}}},
+		{name: "campaign list", args: []string{"edge-provisioning", "campaign", "list", "--service", "demo"}, requests: []requestExpectation{{"GET", "/edge-systems/demo/campaigns", ""}}},
+		{name: "participant revoke", args: []string{"edge-provisioning", "participant", "revoke", "--service", "demo", "--participant-id", "tpl", "--campaign-id", "camp", "--deployment-name", "SN1"}, requests: []requestExpectation{{"DELETE", "/edge-systems/demo/participants/tpl/campaigns/camp/devices/SN1", ""}}},
 		{name: "network missing name", args: []string{"network", "delete"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "obs missing name", args: []string{"observability", "create"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "template missing service", args: []string{"edge-provisioning", "governance-template", "list"}, code: "INVALID_ARGUMENT", exit: 2},
@@ -133,23 +152,23 @@ func TestCLIProcess(t *testing.T) {
 		{name: "network JSON prevents login", args: []string{"network", "list"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
 		{name: "obs JSON prevents login", args: []string{"observability", "list"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
 		{name: "service JSON prevents login", args: []string{"edge-provisioning", "service", "list"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
-		{name: "API key", args: []string{"databus", "list"}, noCredentials: true, apiKey: true, calls: 2},
-		{name: "expired credentials with API key", args: []string{"databus", "list"}, expired: true, apiKey: true, calls: 2},
-		{name: "unauthorized", args: []string{"databus", "list"}, status: 401, code: "AUTH_REQUIRED", exit: 3, calls: 1},
-		{name: "forbidden", args: []string{"databus", "query", "--name", "demo"}, status: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "not found", args: []string{"databus", "query", "--name", "demo"}, status: 404, code: "NOT_FOUND", exit: 4, calls: 1},
-		{name: "create conflict", args: []string{"databus", "create", "--name", "demo"}, mutation: 409, code: "CONFLICT", exit: 5, calls: 1},
-		{name: "delete rejected", args: []string{"databus", "delete", "--name", "demo"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, calls: 1},
-		{name: "rate limit", args: []string{"databus", "list"}, status: 429, code: "RATE_LIMITED", exit: 1, calls: 1},
-		{name: "server failure", args: []string{"databus", "list"}, status: 503, code: "API_ERROR", exit: 1, calls: 1},
-		{name: "create terminal error", args: []string{"databus", "create", "--name", "demo"}, resource: `{"status":"error"}`, code: "OPERATION_FAILED", exit: 1, calls: 2},
-		{name: "create disappeared", args: []string{"databus", "create", "--name", "demo"}, status: 404, code: "OPERATION_FAILED", exit: 1, calls: 2},
-		{name: "delete remains active", args: []string{"databus", "delete", "--name", "demo"}, code: "OPERATION_FAILED", exit: 1, calls: 2},
-		{name: "delete polling denied", args: []string{"databus", "delete", "--name", "demo"}, status: 401, code: "AUTH_REQUIRED", exit: 3, calls: 2},
-		{name: "delete polling unavailable", args: []string{"databus", "delete", "--name", "demo"}, status: 503, code: "API_ERROR", exit: 1, calls: 2},
-		{name: "invalid JSON", args: []string{"databus", "query", "--name", "demo"}, resource: `{broken`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "null JSON", args: []string{"databus", "query", "--name", "demo"}, resource: `null`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
-		{name: "missing list", args: []string{"databus", "list"}, list: `{}`, code: "INVALID_RESPONSE", exit: 1, calls: 1},
+		{name: "API key", args: []string{"databus", "list"}, noCredentials: true, apiKey: true, requests: apiKeyList},
+		{name: "expired credentials with API key", args: []string{"databus", "list"}, expired: true, apiKey: true, requests: apiKeyList},
+		{name: "unauthorized", args: []string{"databus", "list"}, status: 401, code: "AUTH_REQUIRED", exit: 3, requests: databusList},
+		{name: "forbidden", args: []string{"databus", "query", "--name", "demo"}, status: 403, code: "PERMISSION_DENIED", exit: 3, requests: databusQuery},
+		{name: "not found", args: []string{"databus", "query", "--name", "demo"}, status: 404, code: "NOT_FOUND", exit: 4, requests: databusQuery},
+		{name: "create conflict", args: []string{"databus", "create", "--name", "demo"}, mutation: 409, code: "CONFLICT", exit: 5, requests: databusCreate[:1]},
+		{name: "delete rejected", args: []string{"databus", "delete", "--name", "demo"}, mutation: 403, code: "PERMISSION_DENIED", exit: 3, requests: databusDelete[:1]},
+		{name: "rate limit", args: []string{"databus", "list"}, status: 429, code: "RATE_LIMITED", exit: 1, requests: databusList},
+		{name: "server failure", args: []string{"databus", "list"}, status: 503, code: "API_ERROR", exit: 1, requests: databusList},
+		{name: "create terminal error", args: []string{"databus", "create", "--name", "demo"}, resource: `{"status":"error"}`, code: "OPERATION_FAILED", exit: 1, requests: databusCreate},
+		{name: "create disappeared", args: []string{"databus", "create", "--name", "demo"}, status: 404, code: "OPERATION_FAILED", exit: 1, requests: databusCreate},
+		{name: "delete remains active", args: []string{"databus", "delete", "--name", "demo"}, code: "OPERATION_FAILED", exit: 1, requests: databusDelete},
+		{name: "delete polling denied", args: []string{"databus", "delete", "--name", "demo"}, status: 401, code: "AUTH_REQUIRED", exit: 3, requests: databusDelete},
+		{name: "delete polling unavailable", args: []string{"databus", "delete", "--name", "demo"}, status: 503, code: "API_ERROR", exit: 1, requests: databusDelete},
+		{name: "invalid JSON", args: []string{"databus", "query", "--name", "demo"}, resource: `{broken`, code: "INVALID_RESPONSE", exit: 1, requests: databusQuery},
+		{name: "null JSON", args: []string{"databus", "query", "--name", "demo"}, resource: `null`, code: "INVALID_RESPONSE", exit: 1, requests: databusQuery},
+		{name: "missing list", args: []string{"databus", "list"}, list: `{}`, code: "INVALID_RESPONSE", exit: 1, requests: databusList},
 		{name: "missing name", args: []string{"databus", "create"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "invalid replicas", args: []string{"databus", "create", "--name", "demo", "--replicas", "0"}, code: "INVALID_ARGUMENT", exit: 2},
 		{name: "unknown flag", args: []string{"databus", "list", "--bogus"}, code: "INVALID_ARGUMENT", exit: 2},
@@ -160,8 +179,8 @@ func TestCLIProcess(t *testing.T) {
 		{name: "JSON alone disables login", args: []string{"databus", "list"}, jsonOnly: true, noCredentials: true, code: "AUTH_REQUIRED", exit: 3},
 		{name: "expired credentials", args: []string{"databus", "list"}, expired: true, code: "AUTH_REQUIRED", exit: 3},
 		{name: "missing configuration", args: []string{"databus", "list"}, noConfig: true, code: "CONFIG_REQUIRED", exit: 1},
-		{name: "default list output", args: []string{"databus", "list"}, text: true, calls: 1},
-		{name: "text error on stderr", args: []string{"databus", "query", "--name", "demo"}, status: 404, text: true, exit: 4, calls: 1},
+		{name: "default list output", args: []string{"databus", "list"}, text: true, requests: databusList},
+		{name: "text error on stderr", args: []string{"databus", "query", "--name", "demo"}, status: 404, text: true, exit: 4, requests: databusQuery},
 		{name: "text missing credentials", args: []string{"databus", "list"}, text: true, noCredentials: true, exit: 3},
 		{name: "configure mutually exclusive", args: []string{"configure", "--region", "us-east-2", "--get-region"}, text: true, exit: 2, stderrWant: "exactly one"},
 		{name: "configure invalid region", args: []string{"configure", "--region", "invalid"}, text: true, exit: 2, stderrWant: "Invalid region 'invalid'. Available regions:"},
@@ -175,10 +194,10 @@ func TestCLIProcess(t *testing.T) {
 		{name: "spy configured missing credentials", args: []string{"spy"}, project: "spy", noCredentials: true, text: true, exit: 3, stderrWant: "No usable credentials"},
 		{name: "gateway configured expired credentials", args: []string{"gateway"}, project: "gateway", expired: true, text: true, exit: 3, stderrWant: "No usable credentials"},
 		{name: "spy configured expired credentials", args: []string{"spy"}, project: "spy", expired: true, text: true, exit: 3, stderrWant: "No usable credentials"},
-		{name: "gateway configured unauthorized", args: []string{"gateway"}, project: "gateway", status: 401, text: true, exit: 3, calls: 1},
-		{name: "spy configured unauthorized", args: []string{"spy"}, project: "spy", status: 401, text: true, exit: 3, calls: 1},
-		{name: "gateway configured forbidden", args: []string{"gateway"}, project: "gateway", status: 403, text: true, exit: 3, calls: 1},
-		{name: "spy configured forbidden", args: []string{"spy"}, project: "spy", status: 403, text: true, exit: 3, calls: 1},
+		{name: "gateway configured unauthorized", args: []string{"gateway"}, project: "gateway", status: 401, text: true, exit: 3, requests: databusQuery},
+		{name: "spy configured unauthorized", args: []string{"spy"}, project: "spy", status: 401, text: true, exit: 3, requests: databusQuery},
+		{name: "gateway configured forbidden", args: []string{"gateway"}, project: "gateway", status: 403, text: true, exit: 3, requests: databusQuery},
+		{name: "spy configured forbidden", args: []string{"spy"}, project: "spy", status: 403, text: true, exit: 3, requests: databusQuery},
 		{name: "configure needs region", args: []string{"configure"}, text: true, exit: 2},
 		{name: "login cannot open browser", args: []string{"login"}, text: true, exit: 2},
 		{name: "device login cannot open browser", args: []string{"login", "--device"}, text: true, exit: 2},
@@ -189,7 +208,37 @@ func TestCLIProcess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
+				index := int(calls.Add(1)) - 1
+				if index >= len(tc.requests) {
+					t.Errorf("unexpected request: %s %s", r.Method, r.RequestURI)
+					http.Error(w, "unexpected request", http.StatusBadRequest)
+					return
+				}
+				want := tc.requests[index]
+				if r.Method != want.method || r.RequestURI != want.uri {
+					t.Errorf("request %d = %s %s; want %s %s", index+1, r.Method, r.RequestURI, want.method, want.uri)
+					http.Error(w, "wrong request", http.StatusBadRequest)
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					http.Error(w, "unreadable body", http.StatusBadRequest)
+					return
+				}
+				if want.body == "" {
+					if len(body) != 0 || r.Header.Get("Content-Type") != "" {
+						t.Errorf("unexpected request body %q or content type %q", body, r.Header.Get("Content-Type"))
+					}
+				} else {
+					var gotJSON, wantJSON any
+					if err := json.Unmarshal([]byte(want.body), &wantJSON); err != nil {
+						t.Error(err)
+					}
+					if err := json.Unmarshal(body, &gotJSON); err != nil || !reflect.DeepEqual(gotJSON, wantJSON) || r.Header.Get("Content-Type") != "application/json" {
+						t.Errorf("request body = %s, content type=%q, error=%v; want %s", body, r.Header.Get("Content-Type"), err, want.body)
+					}
+				}
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/service-accounts/auth/token" {
 					if !tc.apiKey || r.Header.Get("X-API-Key") != "test-api-key" {
@@ -224,19 +273,19 @@ func TestCLIProcess(t *testing.T) {
 					status = http.StatusOK
 				}
 				w.WriteHeader(status)
-				body := tc.resource
-				if body == "" {
-					body = `{"name":"demo","status":"active"}`
+				responseBody := tc.resource
+				if responseBody == "" {
+					responseBody = `{"name":"demo","status":"active"}`
 				}
 				if status != http.StatusOK {
-					body = `{"message":"API rejected request"}`
+					responseBody = `{"message":"API rejected request"}`
 				} else if r.URL.Path == "/databuses" {
-					body = tc.list
-					if body == "" {
-						body = `{"databuses":{"demo":{"status":"active","kind":"databus"}}}`
+					responseBody = tc.list
+					if responseBody == "" {
+						responseBody = `{"databuses":{"demo":{"status":"active","kind":"databus"}}}`
 					}
 				}
-				_, _ = w.Write([]byte(body))
+				_, _ = w.Write([]byte(responseBody))
 			}))
 			defer server.Close()
 			home := t.TempDir()
@@ -313,8 +362,8 @@ func TestCLIProcess(t *testing.T) {
 				}
 				exit = exitErr.ExitCode()
 			}
-			if exit != tc.exit || calls.Load() != tc.calls {
-				t.Fatalf("exit=%d calls=%d; want exit=%d calls=%d; stdout=%q stderr=%q", exit, calls.Load(), tc.exit, tc.calls, stdout.String(), stderr.String())
+			if exit != tc.exit || calls.Load() != int32(len(tc.requests)) {
+				t.Fatalf("exit=%d calls=%d; want exit=%d calls=%d; stdout=%q stderr=%q", exit, calls.Load(), tc.exit, len(tc.requests), stdout.String(), stderr.String())
 			}
 			if tc.text {
 				if tc.stderrWant != "" && !strings.Contains(stderr.String(), tc.stderrWant) {

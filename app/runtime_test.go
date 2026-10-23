@@ -178,50 +178,6 @@ func TestRuntimeLogoutRemovesCloudAndWorkspacesCredentials(t *testing.T) {
 	}
 }
 
-func TestEnsureConnextLicenseDownloadsMissingLMInstallLicense(t *testing.T) {
-	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(install, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(install, "rti_versions.xml"), []byte(`
-<rti>
-  <host>
-    <installation_type>LM</installation_type>
-  </host>
-</rti>`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, runtimeValidConnextLicense)}}
-	var out bytes.Buffer
-	runtime := &Runtime{Out: &out, License: commands.New(api, &out)}
-	prompted := false
-	if err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
-		prompted = true
-		if !strings.Contains(message, install) || len(choices) != 4 || choices[0] != downloadConnextLicenseLabel || choices[1] != enterConnextLicensePathLabel || choices[2] != manualDownloadConnextLicenseLabel {
-			t.Fatalf("unexpected prompt: %q %#v", message, choices)
-		}
-		return downloadConnextLicenseLabel, nil
-	}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !prompted {
-		t.Fatal("expected license download prompt")
-	}
-	data, err := os.ReadFile(filepath.Join(install, "rti_license.dat"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != runtimeValidConnextLicense {
-		t.Fatalf("unexpected license content: %s", data)
-	}
-	if api.calls != 1 {
-		t.Fatalf("expected one API call, got %d", api.calls)
-	}
-	if !strings.Contains(out.String(), "Connext license saved to "+filepath.Join(install, "rti_license.dat")) {
-		t.Fatalf("unexpected output: %s", out.String())
-	}
-}
-
 func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, string) {
 	t.Helper()
 	home := t.TempDir()
@@ -241,63 +197,157 @@ func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, str
 	return &Runtime{Out: io.Discard}, internalconnext.Install{Path: path, Version: "7.7.0.1"}, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")
 }
 
+// licensePrompts uses each application's real adapters, including the shared
+// buffered reader that carries piped answers from selection to text input.
+func licensePrompts(t *testing.T, command, answers string, out io.Writer) (prompt.SelectFunc, func(string) (string, error)) {
+	t.Helper()
+	if command == "gateway" {
+		application := gateway.NewGatewayApp(t.TempDir(), out)
+		application.In = strings.NewReader(answers)
+		return application.SelectFunc, application.InputFunc
+	}
+	application := spy.NewApp(t.TempDir(), out)
+	application.In = strings.NewReader(answers)
+	return application.SelectFunc, application.InputFunc
+}
+
 func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
+	const incomplete = "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\n"
+	const expired = "FEATURE RTIPRO RTI 4. 01-jan-2000 SECRET_LICENSE\n"
+	const entered = "2\n~/chosen license.dat\n"
 	for _, command := range []string{"gateway", "spy"} {
-		for _, scenario := range []string{"valid-enter", "valid-eof", "warnings-enter", "warnings-copy-default", "correct-and-replace"} {
-			t.Run(command+"/"+scenario, func(t *testing.T) {
+		for _, scenario := range []struct {
+			name, answers, source, installed, download, want, errorText string
+			order                                                       []string
+			external                                                    bool
+			status, calls                                               int
+		}{
+			{name: "valid-enter", answers: entered + "\n", want: runtimeValidConnextLicense, order: []string{"Path to Connext license file", "License feature check passed:", "Connext license saved to"}},
+			{name: "valid-eof", answers: entered, errorText: "cancelled"},
+			{name: "decline-copy", answers: entered + "2\n4\n", errorText: "cancelled", order: []string{"License feature check passed:", "Choose how to provide a Connext license:"}},
+			{name: "warnings-enter", source: incomplete, answers: entered + "\n", errorText: "precheck declined"},
+			{name: "warnings-eof", source: incomplete, answers: entered, errorText: "cancelled"},
+			{name: "warnings-copy-default", source: incomplete, answers: entered + "2\n\n4\n", errorText: "cancelled", order: []string{"Proceed anyway?", "License feature warnings were accepted.", "Choose how to provide a Connext license:"}},
+			{name: "warnings-copy-eof", source: incomplete, answers: entered + "2\n", errorText: "cancelled"},
+			{name: "warnings-approved", source: incomplete, answers: entered + "2\n2\n", want: incomplete, order: []string{"Proceed anyway?", "License feature warnings were accepted.", "Connext license saved to"}},
+			{name: "correct-path", answers: "2\n~/missing.dat\n~/chosen license.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Path to Connext license file", "License feature check passed:", "Connext license saved to"}},
+			{name: "correct-and-replace", source: incomplete, answers: "2\n~/missing.dat\n~/chosen license.dat\n3\n2\n~/replacement.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
+			{name: "discovered-replace-path", installed: expired, answers: "3\n" + entered + "\n", want: runtimeValidConnextLicense, order: []string{"Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
+			{name: "discovered-replace-download", installed: expired, answers: "3\n1\n", want: runtimeValidConnextLicense, calls: 1},
+			{name: "discovered-decline", installed: expired, answers: "\n", errorText: "precheck declined"},
+			{name: "discovered-replacement-eof", installed: expired, answers: "3\n" + entered, errorText: "cancelled"},
+			{name: "download", answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
+			{name: "download-decline-warnings", download: incomplete, answers: "1\n\n", errorText: "precheck declined", calls: 1},
+			{name: "download-replaces-only-after-approval", installed: expired, download: incomplete, answers: "3\n1\n\n", errorText: "precheck declined", calls: 1},
+			{name: "manual", answers: "3\n", errorText: "Copy the license file to", order: []string{"Manually download Connext license", "Step 1", evaluationLicenseURL, "Step 2", "Download the license file.", "Step 3"}},
+			{name: "cancel-before-login", answers: "4\n", errorText: "cancelled"},
+			{name: "external-lm-download", external: true, answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
+			{name: "external-lm-manual", external: true, answers: "3\n", errorText: "Copy the license file to", order: []string{evaluationLicenseURL, "Download the license file.", "Copy the license file to"}},
+			{name: "external-lm-cancel", external: true, answers: "4\n", errorText: "cancelled"},
+			{name: "download-error", answers: "1\n", status: http.StatusInternalServerError, download: `{"error":"Unexpected error"}`, errorText: "Connext license download failed", calls: 1},
+		} {
+			t.Run(command+"/"+scenario.name, func(t *testing.T) {
 				runtime, install, saved := managedLicenseRuntime(t)
-				var out bytes.Buffer
-				runtime.Out = &out
-				source := filepath.Join(t.TempDir(), "chosen.dat")
-				contents := runtimeValidConnextLicense
-				if strings.HasPrefix(scenario, "warnings") || scenario == "correct-and-replace" {
-					contents = "FEATURE RTIPRO RTI 4. permanent SIGN=TEST_ONLY\n"
-				}
-				if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
-					t.Fatal(err)
-				}
-				answers := "2\n" + source + "\n"
-				success := scenario == "valid-enter" || scenario == "correct-and-replace"
-				switch scenario {
-				case "valid-enter", "warnings-enter":
-					answers += "\n"
-				case "warnings-copy-default":
-					answers += "2\n\n4\n" // Approve warnings, Enter chooses another license, then skip.
-				case "correct-and-replace":
-					replacement := filepath.Join(t.TempDir(), "replacement.dat")
-					if err := os.WriteFile(replacement, []byte(runtimeValidConnextLicense), 0600); err != nil {
+				if scenario.external {
+					install = internalconnext.Install{Path: t.TempDir(), Version: "7.7.0"}
+					if err := os.WriteFile(filepath.Join(install.Path, "rti_versions.xml"), []byte("<rti><host><installation_type>LM</installation_type></host></rti>"), 0600); err != nil {
 						t.Fatal(err)
 					}
-					answers = "2\n" + source + ".missing\n" + source + "\n3\n2\n" + replacement + "\n\n"
 				}
-				var selectFunc prompt.SelectFunc
-				var inputFunc func(string) (string, error)
-				if command == "gateway" {
-					app := gateway.NewGatewayApp(t.TempDir(), &out)
-					app.In = strings.NewReader(answers)
-					selectFunc, inputFunc = app.SelectFunc, app.InputFunc
-				} else {
-					app := spy.NewApp(t.TempDir(), &out)
-					app.In = strings.NewReader(answers)
-					selectFunc, inputFunc = app.SelectFunc, app.InputFunc
+				var out bytes.Buffer
+				runtime.Out = &out
+				home, err := internalconnext.UserHomeDir()
+				if err != nil {
+					t.Fatal(err)
 				}
-				err := runtime.ensureConnextLicense(install, selectFunc, inputFunc)
-				if (err == nil) != success {
-					t.Fatalf("success=%v err=%v\n%s", success, err, out.String())
+				source := scenario.source
+				if source == "" {
+					source = runtimeValidConnextLicense
 				}
-				for _, path := range []string{saved, internalconnext.LicenseFilePath(install)} {
-					data, err := os.ReadFile(path)
-					if success {
-						if err != nil || string(data) != runtimeValidConnextLicense {
-							t.Fatalf("approved license missing at %s: %v", path, err)
-						}
-					} else if !os.IsNotExist(err) {
-						t.Fatalf("unapproved license saved at %s: %v", path, err)
+				for name, contents := range map[string]string{"chosen license.dat": source, "replacement.dat": runtimeValidConnextLicense} {
+					if err := os.WriteFile(filepath.Join(home, name), []byte(contents), 0600); err != nil {
+						t.Fatal(err)
 					}
 				}
-				if success {
-					if err := runtime.ensureConnextLicense(install, nil, nil); err != nil {
-						t.Fatalf("unchanged license prompted again: %v", err)
+				local := internalconnext.LicenseFilePath(install)
+				if scenario.installed != "" {
+					if err := os.WriteFile(local, []byte(scenario.installed), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				download := scenario.download
+				if download == "" {
+					download = runtimeValidConnextLicense
+				}
+				status := scenario.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(status, download)}}
+				runtime.License = commands.New(api, &out)
+				selectFunc, inputFunc := licensePrompts(t, command, scenario.answers, &out)
+				err = runtime.ensureConnextLicense(install, selectFunc, inputFunc)
+				if scenario.errorText == "" {
+					if err != nil {
+						t.Fatalf("unexpected failure: %v\n%s", err, out.String())
+					}
+				} else if err == nil || !strings.Contains(err.Error(), scenario.errorText) {
+					t.Fatalf("error=%v, want %q\n%s", err, scenario.errorText, out.String())
+				}
+				if scenario.status != 0 {
+					var cause *httputil.StatusError
+					if !errors.As(err, &cause) || cause.StatusCode != scenario.status || clierror.From(err).Code != clierror.CodeAPIError || !strings.Contains(err.Error(), "Unexpected error") {
+						t.Fatalf("download failure lost its HTTP cause: %v", err)
+					}
+				}
+				if api.calls != scenario.calls {
+					t.Fatalf("download calls=%d, want %d", api.calls, scenario.calls)
+				}
+				remaining := out.String()
+				for _, fragment := range scenario.order {
+					index := strings.Index(remaining, fragment)
+					if index < 0 {
+						t.Fatalf("missing or out-of-order %q\n%s", fragment, out.String())
+					}
+					remaining = remaining[index+len(fragment):]
+				}
+				if strings.Contains(out.String(), "SECRET_LICENSE") {
+					t.Fatal("license contents leaked into prompts")
+				}
+				if scenario.errorText == "Copy the license file to" && (!strings.Contains(err.Error(), local) || !strings.Contains(out.String(), local)) {
+					t.Fatalf("manual instructions omitted destination %s: %v\n%s", local, err, out.String())
+				}
+				for _, path := range []string{saved, local} {
+					want := scenario.want
+					if path == saved && scenario.external {
+						want = ""
+					} else if path == local && want == "" {
+						want = scenario.installed
+					}
+					data, readErr := os.ReadFile(path)
+					if want == "" {
+						if !os.IsNotExist(readErr) {
+							t.Fatalf("unapproved license saved at %s: %v", path, readErr)
+						}
+					} else if readErr != nil || string(data) != want {
+						t.Fatalf("license at %s changed unexpectedly: %v", path, readErr)
+					}
+				}
+				if strings.Contains(out.String(), "This license file will be copied to:") {
+					if !strings.Contains(out.String(), filepath.Join(home, "chosen license.dat")) || !strings.Contains(out.String(), saved) {
+						t.Fatalf("copy confirmation omitted source or destination: %s", out.String())
+					}
+				}
+				if data, err := os.ReadFile(filepath.Join(home, "chosen license.dat")); err != nil || string(data) != source {
+					t.Fatalf("source license changed: %v", err)
+				}
+				if scenario.want != "" {
+					if !strings.Contains(out.String(), "Connext license saved to "+local) {
+						t.Fatalf("save result omitted destination: %s", out.String())
+					}
+					before := out.Len()
+					if err := runtime.ensureConnextLicense(install, nil, nil); err != nil || out.Len() != before || api.calls != scenario.calls {
+						t.Fatalf("unchanged license required more work: %v", err)
 					}
 				}
 			})
@@ -356,17 +406,11 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 			if scenario == "external-install" {
 				selected = internalconnext.Install{Path: t.TempDir()}
 			}
-			prompts := 0
-			selectFunc := func(message string, choices []string, _ string) (string, error) {
-				prompts++
-				if choices[0] != internalconnext.DeclineLicensePrecheckLabel || !strings.Contains(message, "RTI_LICENSE_FILE="+source) {
-					t.Fatalf("expected environment precheck, never copy or license selection: %s %#v", message, choices)
-				}
-				if scenario == "override-incomplete" {
-					return internalconnext.ProceedLicensePrecheckLabel, nil
-				}
-				return internalconnext.DeclineLicensePrecheckLabel, nil
+			answers := "\n\n"
+			if scenario == "override-incomplete" {
+				answers = "2\n2\n"
 			}
+			selectFunc, _ := licensePrompts(t, "gateway", answers, &out)
 			if scenario == "noninteractive-incomplete" {
 				selectFunc = nil
 			}
@@ -376,6 +420,9 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				if (err == nil) != wantSuccess {
 					t.Fatalf("unexpected environment precheck: %v", err)
 				}
+				if scenario == "noninteractive-incomplete" && clierror.From(err).Code != clierror.CodeInputRequired {
+					t.Fatalf("expected input-required error, got %v", err)
+				}
 				if err != nil && !strings.Contains(err.Error(), "Unset RTI_LICENSE_FILE") {
 					t.Fatalf("missing override guidance: %v", err)
 				}
@@ -384,8 +431,12 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 			if scenario == "decline-incomplete" || scenario == "override-incomplete" {
 				wantPrompts = 2
 			}
-			if prompts != wantPrompts || !strings.Contains(out.String(), "found via RTI_LICENSE_FILE") || !strings.Contains(out.String(), "Unset RTI_LICENSE_FILE") {
+			prompts := strings.Count(out.String(), "Proceed anyway?")
+			if prompts != wantPrompts || !strings.Contains(out.String(), "found via RTI_LICENSE_FILE") || !strings.Contains(out.String(), source) || !strings.Contains(out.String(), "Unset RTI_LICENSE_FILE") {
 				t.Fatalf("missing repeated precheck or source guidance: prompts=%d output=%s", prompts, out.String())
+			}
+			if strings.Contains(out.String(), "SECRET_LICENSE") || strings.Contains(out.String(), "This license file will be copied") || strings.Contains(out.String(), "Choose how to provide") {
+				t.Fatal("environment override leaked contents or offered license copying")
 			}
 			if !strings.Contains(strings.Join(selected.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+source) || os.Getenv("RTI_LICENSE_FILE") != environmentPath {
 				t.Fatal("child must use the checked absolute path without changing the parent environment")
@@ -397,226 +448,6 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestEnsureManagedConnextLicenseDownload(t *testing.T) {
-	for _, complete := range []bool{true, false} {
-		t.Run(map[bool]string{true: "complete", false: "decline-incomplete"}[complete], func(t *testing.T) {
-			runtime, install, shared := managedLicenseRuntime(t)
-			contents := runtimeValidConnextLicense
-			if !complete {
-				contents = "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE"
-			}
-			api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, contents)}}
-			runtime.License = commands.New(api, io.Discard)
-			err := runtime.ensureConnextLicense(install, func(_ string, choices []string, _ string) (string, error) {
-				if choices[0] == downloadConnextLicenseLabel {
-					return downloadConnextLicenseLabel, nil
-				}
-				return internalconnext.DeclineLicensePrecheckLabel, nil
-			}, nil)
-			if (err == nil) != complete || api.calls != 1 {
-				t.Fatalf("download result: err=%v calls=%d", err, api.calls)
-			}
-			for _, path := range []string{shared, internalconnext.LicenseFilePath(install)} {
-				data, err := os.ReadFile(path)
-				if complete {
-					if err != nil || string(data) != contents {
-						t.Fatalf("download not saved at %s: %v", path, err)
-					}
-				} else if !os.IsNotExist(err) {
-					t.Fatalf("declined license saved at %s: %v", path, err)
-				}
-			}
-		})
-	}
-}
-
-func TestEnsureConnextLicenseAcceptsEnteredPath(t *testing.T) {
-	for _, scenario := range []string{"complete", "decline-import", "decline-features", "override-features", "missing-file"} {
-		t.Run(scenario, func(t *testing.T) {
-			runtime, install, shared := managedLicenseRuntime(t)
-			home, _ := internalconnext.UserHomeDir()
-			source := filepath.Join(home, "chosen license.dat")
-			contents := runtimeValidConnextLicense
-			if strings.HasSuffix(scenario, "features") {
-				contents = "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE"
-			}
-			if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
-				t.Fatal(err)
-			}
-			menus, inputs := 0, 0
-			var steps []string
-			selectFunc := func(message string, choices []string, _ string) (string, error) {
-				if len(choices) == 4 {
-					menus++
-					if choices[0] != downloadConnextLicenseLabel || choices[1] != enterConnextLicensePathLabel {
-						t.Fatalf("path option must follow download: %#v", choices)
-					}
-					if menus > 1 {
-						return cancelConnextLicenseLabel, nil
-					}
-					return enterConnextLicensePathLabel, nil
-				}
-				if choices[0] == internalconnext.ImportManagedLicenseLabel || choices[1] == internalconnext.ImportManagedLicenseLabel {
-					steps = append(steps, "copy")
-					if !strings.Contains(message, source) || !strings.Contains(message, shared) {
-						t.Fatalf("import paths missing: %s", message)
-					}
-					if strings.HasSuffix(scenario, "features") {
-						if choices[0] != internalconnext.DeclineManagedLicenseLabel || !strings.Contains(message, "License feature warnings were accepted.") {
-							t.Fatalf("warning override must not default to copying: %s %#v", message, choices)
-						}
-					} else if choices[0] != internalconnext.ImportManagedLicenseLabel || !strings.Contains(message, "License feature check passed:") {
-						t.Fatalf("valid import must show check and default to copying: %s %#v", message, choices)
-					}
-					if scenario == "decline-import" {
-						return internalconnext.DeclineManagedLicenseLabel, nil
-					}
-					return internalconnext.ImportManagedLicenseLabel, nil
-				}
-				steps = append(steps, "features")
-				if choices[0] != internalconnext.DeclineLicensePrecheckLabel || strings.Contains(message, "SECRET_LICENSE") {
-					t.Fatalf("unsafe feature confirmation: %s %#v", message, choices)
-				}
-				if scenario == "override-features" {
-					return internalconnext.ProceedLicensePrecheckLabel, nil
-				}
-				return internalconnext.DeclineLicensePrecheckLabel, nil
-			}
-			err := runtime.ensureConnextLicense(install, selectFunc, func(string) (string, error) {
-				inputs++
-				if scenario == "missing-file" && inputs == 1 {
-					return "~/missing.dat", nil
-				}
-				return "~/chosen license.dat", nil
-			})
-			success := scenario == "complete" || scenario == "override-features" || scenario == "missing-file"
-			if success != (err == nil) {
-				t.Fatalf("unexpected import result: %v", err)
-			}
-			wantSteps := map[string]string{"complete": "copy", "decline-import": "copy", "decline-features": "features", "override-features": "features,copy", "missing-file": "copy"}[scenario]
-			if got := strings.Join(steps, ","); got != wantSteps {
-				t.Fatalf("prompt order = %q, want %q", got, wantSteps)
-			}
-			if scenario == "missing-file" && (inputs != 2 || menus != 1) {
-				t.Fatal("mistyped path must allow correction without restarting setup")
-			}
-			for _, path := range []string{shared, internalconnext.LicenseFilePath(install)} {
-				data, err := os.ReadFile(path)
-				if success {
-					if err != nil || string(data) != contents {
-						t.Fatalf("import not saved at %s: %v", path, err)
-					}
-				} else if !os.IsNotExist(err) {
-					t.Fatalf("unapproved import saved at %s: %v", path, err)
-				}
-			}
-			if success {
-				if err := runtime.ensureConnextLicense(install, nil, nil); err != nil {
-					t.Fatalf("unchanged license required another prompt: %v", err)
-				}
-			}
-		})
-	}
-}
-
-func TestEnsureConnextLicenseCanChooseAnotherAfterDiscoveredFeatureWarnings(t *testing.T) {
-	for _, next := range []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel} {
-		t.Run(next, func(t *testing.T) {
-			runtime, install, shared := managedLicenseRuntime(t)
-			if err := os.WriteFile(internalconnext.LicenseFilePath(install), []byte("FEATURE RTIPRO RTI 4. 01-jan-2000 SECRET_LICENSE"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			source := filepath.Join(t.TempDir(), "replacement.dat")
-			if err := os.WriteFile(source, []byte(runtimeValidConnextLicense), 0600); err != nil {
-				t.Fatal(err)
-			}
-			api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, runtimeValidConnextLicense)}}
-			runtime.License = commands.New(api, io.Discard)
-			var steps []string
-			err := runtime.ensureConnextLicense(install, func(_ string, choices []string, _ string) (string, error) {
-				if _, err := os.Lstat(shared); !os.IsNotExist(err) {
-					t.Fatal("license was copied before approval")
-				}
-				switch len(choices) {
-				case 3:
-					steps = append(steps, "features")
-					if choices[0] != internalconnext.DeclineLicensePrecheckLabel || choices[2] != internalconnext.DeclineManagedLicenseLabel {
-						t.Fatalf("missing default No or recovery option: %#v", choices)
-					}
-					return internalconnext.DeclineManagedLicenseLabel, nil
-				case 4:
-					steps = append(steps, "menu")
-					return next, nil
-				default:
-					steps = append(steps, "copy")
-					return internalconnext.ImportManagedLicenseLabel, nil
-				}
-			}, func(string) (string, error) { return source, nil })
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := "features,menu"
-			if next == enterConnextLicensePathLabel {
-				want += ",copy"
-			}
-			if strings.Join(steps, ",") != want {
-				t.Fatalf("unexpected recovery flow: %v", steps)
-			}
-			for _, path := range []string{shared, internalconnext.LicenseFilePath(install)} {
-				if data, err := os.ReadFile(path); err != nil || string(data) != runtimeValidConnextLicense {
-					t.Fatalf("replacement license not saved: %v", err)
-				}
-			}
-		})
-	}
-}
-
-func TestEnsureConnextLicenseShowsManualDownloadInstructions(t *testing.T) {
-	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(install, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(install, "rti_versions.xml"), []byte(`
-<rti>
-  <host>
-    <installation_type>LM</installation_type>
-  </host>
-</rti>`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, runtimeValidConnextLicense)}}
-	var out bytes.Buffer
-	runtime := &Runtime{Out: &out, License: commands.New(api, &out)}
-	licensePath := filepath.Join(install, "rti_license.dat")
-	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
-		if !strings.Contains(message, install) || len(choices) != 4 || choices[1] != enterConnextLicensePathLabel || choices[2] != manualDownloadConnextLicenseLabel {
-			t.Fatalf("unexpected prompt: %q %#v", message, choices)
-		}
-		return manualDownloadConnextLicenseLabel, nil
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "Copy the license file to "+licensePath) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if api.calls != 0 {
-		t.Fatalf("expected no API calls, got %d", api.calls)
-	}
-	rendered := out.String()
-	checks := []string{
-		"Manually download Connext license",
-		"Step 1",
-		evaluationLicenseURL,
-		"Step 2",
-		"Download the license file.",
-		"Step 3",
-		"Copy the license file to " + licensePath,
-	}
-	for _, check := range checks {
-		if !strings.Contains(rendered, check) {
-			t.Fatalf("missing %q in output: %s", check, rendered)
-		}
 	}
 }
 
@@ -646,35 +477,6 @@ func TestEnsureConnextLicenseSkipsNonLMInstall(t *testing.T) {
 	}
 }
 
-func TestEnsureConnextLicenseCanBeCancelledBeforeEvaluationLogin(t *testing.T) {
-	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(install, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(install, "rti_versions.xml"), []byte(`
-<rti>
-  <host>
-    <installation_type>LM</installation_type>
-  </host>
-</rti>`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusOK, runtimeValidConnextLicense)}}
-	runtime := &Runtime{License: commands.New(api, io.Discard)}
-	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
-		if !strings.Contains(message, install) || len(choices) != 4 || choices[3] != cancelConnextLicenseLabel {
-			t.Fatalf("unexpected prompt: %q %#v", message, choices)
-		}
-		return cancelConnextLicenseLabel, nil
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "cancelled") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if api.calls != 0 {
-		t.Fatalf("expected no API calls, got %d", api.calls)
-	}
-}
-
 func TestEnsureConnextLicenseRequiresInteractivePrompt(t *testing.T) {
 	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
 	if err := os.MkdirAll(install, 0o755); err != nil {
@@ -691,29 +493,6 @@ func TestEnsureConnextLicenseRequiresInteractivePrompt(t *testing.T) {
 	runtime := &Runtime{License: commands.New(&runtimeFakeAPI{}, io.Discard)}
 	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestEnsureConnextLicenseAddsContextToDownloadError(t *testing.T) {
-	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
-	if err := os.MkdirAll(install, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(install, "rti_versions.xml"), []byte(`
-<rti>
-  <host>
-    <installation_type>LM</installation_type>
-  </host>
-</rti>`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(http.StatusInternalServerError, `{"error":"Unexpected error"}`)}}
-	runtime := &Runtime{License: commands.New(api, io.Discard)}
-	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
-		return downloadConnextLicenseLabel, nil
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "Connext license download failed") || !strings.Contains(err.Error(), "Unexpected error") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -757,20 +536,26 @@ func runtimeTextResponse(statusCode int, body string) *http.Response {
 }
 
 func TestReturningProjectIgnoresSavedConnextPath(t *testing.T) {
-	t.Setenv("NDDSHOME", "")
-	old := internalconnext.ManagedInstaller
-	t.Cleanup(func() { internalconnext.ManagedInstaller = old })
-	internalconnext.ManagedInstaller = func(options internalconnext.DiscoveryOptions) (internalconnext.Install, error) {
-		return internalconnext.Install{Path: "current-managed", Version: "7.7.0.1"}, nil
+	_, install, _ := managedLicenseRuntime(t)
+	if err := os.MkdirAll(filepath.Join(install.Path, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"rtiroutingservice", "rtiddsspy", "rticollectorservicelite"} {
+		if err := os.WriteFile(internalconnext.Executable(install.Path, tool), []byte("test executable"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	metadata := `<rti><host><base_version>` + install.Version + `</base_version><install_dirname>` + filepath.Base(install.Path) + `</install_dirname></host></rti>`
+	if err := os.WriteFile(filepath.Join(install.Path, "rti_versions.xml"), []byte(metadata), 0600); err != nil {
+		t.Fatal(err)
 	}
 	values := map[string]any{"runtime": map[string]any{"connext_home": "obsolete-installation"}}
 	for _, skip := range []bool{false, true} {
-		result, err := resolveRuntimeConnext(values, true, skip, internalconnext.ConfirmationFromSelector(func(string, []string, string) (string, error) {
-			t.Fatal("unexpected selector")
-			return "", nil
-		}), internalconnext.DiscoveryOptions{})
-		if err != nil || result.Path != "current-managed" {
-			t.Fatalf("%#v %v", result, err)
+		var out bytes.Buffer
+		selectFunc, _ := licensePrompts(t, "gateway", "", &out)
+		result, err := resolveRuntimeConnext(values, true, skip, internalconnext.ConfirmationFromSelector(selectFunc), internalconnext.DiscoveryOptions{Output: &out})
+		if err != nil || result.Path != install.Path || result.Version != install.Version || out.Len() != 0 {
+			t.Fatalf("skip=%v install=%#v error=%v output=%s", skip, result, err, out.String())
 		}
 	}
 }

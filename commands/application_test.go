@@ -9,14 +9,19 @@ package commands
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
 )
 
 func TestCreateApplicationMapsObservabilityCollectorKind(t *testing.T) {
@@ -51,13 +56,8 @@ func TestCreateApplicationReadsManifest(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.ReadFile = func(fileName string) ([]byte, error) {
-		if fileName != "application.json" {
-			t.Fatalf("unexpected configuration file: %s", fileName)
-		}
-		return []byte(`{"port": 9000, "kind": "gateway", "topic_data": {"0": {"domainId": 0}}}`), nil
-	}
-	if err := runner.CreateApplication("db", "gateway", 8000, "", "application.json", true); err != nil {
+	manifestPath := applicationInputFile(t, "application.json", `{"port": 9000, "kind": "gateway", "topic_data": {"0": {"domainId": 0}}}`)
+	if err := runner.CreateApplication("db", "gateway", 8000, "", manifestPath, true); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -73,8 +73,8 @@ func TestCreateApplicationReadsManifest(t *testing.T) {
 func TestCreateApplicationAcceptsStringPort(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
 	runner := New(api, io.Discard)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"port": "9000"}`), nil }
-	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
+	manifestPath := applicationInputFile(t, "application.json", `{"port": "9000"}`)
+	if err := runner.CreateApplication("db", "application", 7777, "", manifestPath, false); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -87,8 +87,8 @@ func TestCreateApplicationDefaultsOptionalManifestFields(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"POST /databuses/db/applications": newTextResponse(http.StatusCreated, "ok")}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{}`), nil }
-	if err := runner.CreateApplication("db", "application", 7777, "", "application.json", false); err != nil {
+	manifestPath := applicationInputFile(t, "application.json", `{}`)
+	if err := runner.CreateApplication("db", "application", 7777, "", manifestPath, false); err != nil {
 		t.Fatal(err)
 	}
 	payload := api.lastPayload.(map[string]any)
@@ -102,8 +102,8 @@ func TestCreateApplicationDefaultsOptionalManifestFields(t *testing.T) {
 
 func TestCreateApplicationRejectsNonObjectTopicData(t *testing.T) {
 	runner := New(&fakeAPI{}, io.Discard)
-	runner.ReadFile = func(string) ([]byte, error) { return []byte(`{"topic_data": []}`), nil }
-	err := runner.CreateApplication("db", "application", 7777, "", "application.json", false)
+	manifestPath := applicationInputFile(t, "application.json", `{"topic_data": []}`)
+	err := runner.CreateApplication("db", "application", 7777, "", manifestPath, false)
 	if err == nil || !strings.Contains(err.Error(), "topic_data must be a JSON object") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,18 +116,13 @@ func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	var savedName string
-	var savedData []byte
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	runner.WriteFile = func(fileName string, data []byte, _ os.FileMode) error {
-		savedName, savedData = fileName, data
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
+	target := filepath.Join(t.TempDir(), "configs", "application.json")
+	if err := runner.GetApplication("db", "subscriber", false, false, "", target); err != nil {
 		t.Fatal(err)
 	}
-	if savedName != "application.json" || bytes.Contains(savedData, []byte("client_config")) {
-		t.Fatalf("unexpected saved manifest %q: %s", savedName, savedData)
+	savedData := readApplicationFile(t, target)
+	if bytes.Contains(savedData, []byte("client_config")) {
+		t.Fatalf("unexpected saved manifest: %s", savedData)
 	}
 	var manifest map[string]any
 	if err := json.Unmarshal(savedData, &manifest); err != nil {
@@ -138,53 +133,23 @@ func TestGetApplicationWritesManifestWithoutXML(t *testing.T) {
 	}
 }
 
-func TestGetApplicationCreatesManifestParentDirectory(t *testing.T) {
-	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/subscriber": newJSONResponse(http.StatusOK, map[string]any{
-		"client_data": map[string]any{"kind": "app"},
-	})}}
-	runner := New(api, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	runner.MkdirAll = func(dir string, _ os.FileMode) error {
-		createdDir = dir
-		return nil
-	}
-	runner.WriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "configs/application.json"); err != nil {
-		t.Fatal(err)
-	}
-	if createdDir != "configs" {
-		t.Fatalf("created directory = %q, want configs", createdDir)
-	}
-}
-
 func TestSaveClientFileCreatesPrivateParentDirectoryForKey(t *testing.T) {
 	runner := New(&fakeAPI{}, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var createdDir string
-	var createdMode os.FileMode
-	var fileMode os.FileMode
-	var chmodMode os.FileMode
-	runner.MkdirAll = func(dir string, mode os.FileMode) error {
-		createdDir, createdMode = dir, mode
-		return nil
-	}
-	runner.WriteFile = func(_ string, _ []byte, mode os.FileMode) error {
-		fileMode = mode
-		return nil
-	}
-	runner.Chmod = func(_ string, mode os.FileMode) error {
-		chmodMode = mode
-		return nil
-	}
-	if _, err := runner.SaveClientFile("", "keys/client.key", []byte("key"), false); err != nil {
+	target := filepath.Join(t.TempDir(), "keys", "client.key")
+	if _, err := runner.SaveClientFile("", target, []byte("key"), false); err != nil {
 		t.Fatal(err)
 	}
-	if createdDir != "keys" || createdMode != 0o700 {
-		t.Fatalf("created directory = %q with mode %#o, want keys with mode 0700", createdDir, createdMode)
+	if data := readApplicationFile(t, target); string(data) != "key" {
+		t.Fatalf("key = %q", data)
 	}
-	if fileMode != 0o600 || chmodMode != 0o600 {
-		t.Fatalf("write mode = %#o, chmod mode = %#o, want 0600", fileMode, chmodMode)
+	if runtime.GOOS == "windows" {
+		return // Windows does not expose Unix file permission bits.
+	}
+	for path, mode := range map[string]os.FileMode{filepath.Dir(target): 0700, target: 0600} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("%s mode: %v, error=%v; want %o", path, info, err, mode)
+		}
 	}
 }
 
@@ -193,15 +158,11 @@ func TestGetApplicationDefaultsMissingTopicsInManifest(t *testing.T) {
 		"client_data": map[string]any{"kind": "app"},
 	})}}
 	runner := New(api, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var savedData []byte
-	runner.WriteFile = func(_ string, data []byte, _ os.FileMode) error {
-		savedData = data
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", "application.json"); err != nil {
+	target := filepath.Join(t.TempDir(), "application.json")
+	if err := runner.GetApplication("db", "subscriber", false, false, "", target); err != nil {
 		t.Fatal(err)
 	}
+	savedData := readApplicationFile(t, target)
 	var manifest map[string]any
 	if err := json.Unmarshal(savedData, &manifest); err != nil {
 		t.Fatal(err)
@@ -218,17 +179,15 @@ func TestGetGatewayDownloadsXMLWithoutManifestOutput(t *testing.T) {
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var savedName string
-	runner.WriteFile = func(fileName string, _ []byte, _ os.FileMode) error {
-		savedName = fileName
-		return nil
-	}
-	if err := runner.GetApplication("db", "subscriber", false, false, "", ""); err != nil {
+	dir := t.TempDir()
+	if err := runner.GetApplication("db", "subscriber", false, false, dir, ""); err != nil {
 		t.Fatal(err)
 	}
-	if savedName != "subscriber.xml" {
-		t.Fatalf("saved file = %q, want subscriber.xml", savedName)
+	if data := readApplicationFile(t, filepath.Join(dir, "subscriber.xml")); string(data) != "<participant/>" {
+		t.Fatalf("XML = %q", data)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("unexpected output files: %v, error=%v", entries, err)
 	}
 	if strings.Contains(out.String(), "map[") {
 		t.Fatalf("unexpected application data output: %s", out.String())
@@ -248,21 +207,15 @@ func TestDownloadApplicationWritesManagerArtifactsAndWarnsForUnknownTypes(t *tes
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.MkdirAll = func(string, os.FileMode) error { return nil }
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	written := map[string][]byte{}
-	runner.WriteFile = func(name string, data []byte, _ os.FileMode) error {
-		written[name] = append([]byte(nil), data...)
-		return nil
-	}
-	if err := runner.DownloadApplication("db", "shapes", ApplicationDownloadOptions{IncludeManifest: true}); err != nil {
+	dir := t.TempDir()
+	if err := runner.DownloadApplication("db", "shapes", ApplicationDownloadOptions{TargetDir: dir, IncludeManifest: true}); err != nil {
 		t.Fatal(err)
 	}
-	if string(written["generated/shapes.qos.xml"]) != "<dds/>" {
-		t.Fatalf("unexpected XML artifacts: %#v", written)
+	if data := readApplicationFile(t, filepath.Join(dir, "generated", "shapes.qos.xml")); string(data) != "<dds/>" {
+		t.Fatalf("XML = %q", data)
 	}
-	if !bytes.Contains(written["manifest.json"], []byte(`"FutureTopic"`)) {
-		t.Fatalf("unexpected manifest: %s", written["manifest.json"])
+	if data := readApplicationFile(t, filepath.Join(dir, "manifest.json")); !bytes.Contains(data, []byte(`"FutureTopic"`)) {
+		t.Fatalf("manifest = %s", data)
 	}
 	if !strings.Contains(out.String(), "Warning: Type information is unavailable for: FutureTopic") {
 		t.Fatalf("missing unknown-type warning: %s", out.String())
@@ -275,22 +228,16 @@ func TestDownloadApplicationBundleMatchesWebLayout(t *testing.T) {
 		"manifest": map[string]any{"version": 1, "application": "shapes", "topics": []any{}},
 	})}}
 	runner := New(api, io.Discard)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	var bundle []byte
-	runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-		if name != "demo-shapes.zip" || mode != 0o644 {
-			t.Fatalf("wrote %q with mode %#o", name, mode)
-		}
-		bundle = append([]byte(nil), data...)
-		return nil
-	}
-	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err != nil {
+	dir := t.TempDir()
+	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{TargetDir: dir, ZIP: true}); err != nil {
 		t.Fatal(err)
 	}
-	archive, err := zip.NewReader(bytes.NewReader(bundle), int64(len(bundle)))
+	path := filepath.Join(dir, "demo-shapes.zip")
+	archive, err := zip.OpenReader(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer archive.Close()
 	files := map[string]*zip.File{}
 	for _, file := range archive.File {
 		files[file.Name] = file
@@ -309,13 +256,16 @@ func TestDownloadApplicationBundleHonorsExistingFile(t *testing.T) {
 	})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
-	runner.Stat = func(string) (os.FileInfo, error) { return nil, nil }
-	runner.WriteFile = func(string, []byte, os.FileMode) error {
-		t.Fatal("existing bundle must not be overwritten")
-		return nil
+	dir := t.TempDir()
+	path := filepath.Join(dir, "demo-shapes.zip")
+	if err := os.WriteFile(path, []byte("existing archive"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{ZIP: true}); err == nil {
+	if err := runner.DownloadApplication("demo", "shapes", ApplicationDownloadOptions{TargetDir: dir, ZIP: true}); err == nil {
 		t.Fatal("expected existing archive error")
+	}
+	if data := readApplicationFile(t, path); string(data) != "existing archive" {
+		t.Fatalf("existing archive changed: %q", data)
 	}
 	if !strings.Contains(out.String(), "demo-shapes.zip already exists. Use -f to overwrite.") {
 		t.Fatalf("unexpected output: %s", out.String())
@@ -379,9 +329,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				}),
 			}}
 			runner := New(api, io.Discard)
-			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
-				return []byte("private key"), "csr", nil
-			}
+			runner.CSRGenerator = mgcrypto.GeneratePrivateKeyAndCSR
 			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", ApplicationRegistrationOptions{TargetDir: targetDir, GeneratePrivateKey: true, ZIP: test.zip}); err != nil {
 				t.Fatal(err)
 			}
@@ -404,7 +352,6 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				"generated/shapes.types.xml":      "<types/>",
 				"README.md":                       "# Instructions",
 				"generated/security/identity.pem": "certificate",
-				"generated/security/client.key":   "private key",
 			}
 			if test.zip {
 				info, err := os.Stat(archivePath)
@@ -441,7 +388,21 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 				if files[root+"/manifest.json"] == nil {
 					t.Fatalf("unexpected ZIP contents: %#v", files)
 				}
-				if mode := files[root+"/generated/security/client.key"].Mode().Perm(); mode != 0o600 {
+				keyFile := files[root+"/generated/security/client.key"]
+				if keyFile == nil {
+					t.Fatal("archive missing generated private key")
+				}
+				keyReader, err := keyFile.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				keyData, err := io.ReadAll(keyReader)
+				keyReader.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertApplicationKeyMatchesCSR(t, keyData, api.lastPayload.(map[string]any)["csr"].(string), "demo.shapes.client-1")
+				if mode := keyFile.Mode().Perm(); mode != 0o600 {
 					t.Fatalf("private key mode = %#o, want 0600", mode)
 				}
 				return
@@ -458,6 +419,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, "manifest.json")); err != nil {
 				t.Fatal(err)
 			}
+			assertApplicationKeyMatchesCSR(t, readApplicationFile(t, filepath.Join(root, "generated/security/client.key")), api.lastPayload.(map[string]any)["csr"].(string), "demo.shapes.client-1")
 			keyInfo, err := os.Stat(filepath.Join(root, "generated/security/client.key"))
 			if err != nil {
 				t.Fatal(err)
@@ -600,5 +562,46 @@ func TestRegisterAppClientZIPPermissions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func applicationInputFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func readApplicationFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func assertApplicationKeyMatchesCSR(t *testing.T, keyPEM []byte, csrPEM, commonName string) {
+	t.Helper()
+	keyBlock, _ := pem.Decode(keyPEM)
+	csrBlock, _ := pem.Decode([]byte(csrPEM))
+	if keyBlock == nil || csrBlock == nil {
+		t.Fatal("missing PEM key or CSR")
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	if !key.PublicKey.Equal(csr.PublicKey) || csr.Subject.CommonName != commonName {
+		t.Fatalf("persisted key does not match CSR for %q: subject=%v", commonName, csr.Subject)
 	}
 }

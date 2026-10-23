@@ -102,9 +102,7 @@ func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(old, LicenseFileName), []byte(validTestConnextLicense+"# legacy\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, ConfirmFunc(func(request Confirmation) (bool, error) {
-		return true, nil
-	})); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", io.Discard)); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	canonical, _ := managedLicensePath()
@@ -177,18 +175,28 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 			if available, err := ProvisionManagedLicense(install, nil); available || err == nil {
 				t.Fatalf("noninteractive import proceeded: available=%v err=%v", available, err)
 			}
-			if available, err := ProvisionManagedLicense(install, ConfirmFunc(func(Confirmation) (bool, error) { return false, nil })); available || err != nil {
-				t.Fatalf("declined import proceeded: available=%v err=%v", available, err)
-			}
-			if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
-				t.Fatalf("shared license written without approval: %v", err)
-			}
-			available, err := ProvisionManagedLicense(install, ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
-				if !strings.Contains(message, path) || !strings.Contains(message, canonical) || !strings.Contains(message, "License feature check passed:") || choices[0] != ImportManagedLicenseLabel {
-					t.Fatalf("unexpected import confirmation: %s %#v", message, choices)
+			for _, input := range []string{"2\n", ""} {
+				available, err := ProvisionManagedLicense(install, scriptedConfirmation(input, io.Discard))
+				if available || (err != nil) != (input == "") {
+					t.Fatalf("decline/EOF import: input=%q available=%v err=%v", input, available, err)
 				}
-				return ImportManagedLicenseLabel, nil
-			}))
+				if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
+					t.Fatalf("shared license written without approval: %v", err)
+				}
+				if data, err := os.ReadFile(path); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("unapproved import changed source: %v", err)
+				}
+				if path != LicenseFilePath(install) {
+					if _, err := os.Stat(LicenseFilePath(install)); !os.IsNotExist(err) {
+						t.Fatalf("unapproved installation copy: %v", err)
+					}
+				}
+			}
+			var out bytes.Buffer
+			available, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", &out))
+			if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), canonical) || !strings.Contains(out.String(), "License feature check passed:") {
+				t.Fatalf("missing import guidance: %s", out.String())
+			}
 			if err != nil || !available {
 				t.Fatalf("approved import failed: available=%v err=%v", available, err)
 			}

@@ -16,6 +16,24 @@ The build script loads `.env` if it exists and injects the Auth0 client IDs at b
 go test ./...
 ```
 
+Flow tests run in the same suite. They use scripted input, the real runtime and
+temporary project files, with canned HTTP responses and small external-tool
+fixtures. They require no cloud account or installed Connext distribution.
+Unix prompt smoke tests use the existing PTY dependency to check keyboard input.
+
+For changes to prompts, setup or file handling, run the affected packages first,
+then the CI checks:
+
+```sh
+go vet ./...
+go test -race ./...
+```
+
+Keep parsing and filesystem safety tests focused. In broader flows, assert saved
+files, requests and useful output instead of replacing internal operations with
+success callbacks. Tests that change home-directory globals or environment
+variables must remain serial and restore them with cleanup.
+
 ## Release Automation
 
 Tagged releases are published by GitHub Actions with GoReleaser.

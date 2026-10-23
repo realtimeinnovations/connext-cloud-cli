@@ -60,12 +60,9 @@ type App struct {
 	Out                      io.Writer
 	APIGet                   func(path string) (map[string]any, error)
 	APIPost                  func(path string, payload map[string]any) (map[string]any, error)
-	ListResourcesFunc        func() (map[string]map[string]any, map[string]map[string]any, error)
-	GetResourceFunc          func(name string) (map[string]any, error)
 	CurrentZoneFunc          func() string
 	DiscoverConnextInstallFn func() (ConnextInstall, error)
 	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
-	DownloadArtifactsFunc    func(config map[string]any, force bool) error
 	PIDRunningFunc           func(pid int) bool
 	SelectFunc               prompt.SelectFunc
 	InputFunc                func(message string) (string, error)
@@ -261,9 +258,6 @@ func (app *App) ConfigureFirstRun() (map[string]any, error) {
 }
 
 func (app *App) DownloadArtifacts(config map[string]any, force bool) error {
-	if app.DownloadArtifactsFunc != nil {
-		return app.DownloadArtifactsFunc(config, force)
-	}
 	appName := common.NestedString(config, "templates", "app")
 	if appName == "" {
 		return nil
@@ -959,9 +953,6 @@ func (app *App) waitForAppCreation(databusName string) (map[string]any, []Templa
 }
 
 func (app *App) getResource(name string) (map[string]any, error) {
-	if app.GetResourceFunc != nil {
-		return app.GetResourceFunc(name)
-	}
 	if app.APIGet == nil {
 		return nil, fmt.Errorf("resource getter is not configured")
 	}
@@ -974,9 +965,6 @@ func (app *App) getResource(name string) (map[string]any, error) {
 }
 
 func (app *App) listResources() (map[string]map[string]any, map[string]map[string]any, error) {
-	if app.ListResourcesFunc != nil {
-		return app.ListResourcesFunc()
-	}
 	if app.APIGet == nil {
 		return nil, nil, fmt.Errorf("resource lister is not configured")
 	}

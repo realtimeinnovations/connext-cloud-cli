@@ -9,7 +9,9 @@ package cli
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	mgcrypto "github.com/realtimeinnovations/connext-cloud-cli/crypto"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
@@ -440,10 +443,11 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 		name            string
 		args            []string
 		participantFlag string
+		postPath        string
 	}{
-		{"campaign", []string{"edge-provisioning", "campaign", "create", "--service", "svc", "--domain-tpl-id", "0:dom", "--enrollment-list", "devices.json"}, "--participant-tpl-id"},
-		{"direct", []string{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "0:dom", "--deployment-name", "SN", "--csr-file", "device.csr"}, "--participant-template-id"},
-		{"agent", []string{"edge-sync", "agent", "enroll", "--service", "svc", "--domain-tpl-id", "0:dom", "--deployment-name", "SN", "--mac", "AA:BB:CC:DD:EE:FF"}, "--participant-tpl-id"},
+		{"campaign", []string{"edge-provisioning", "campaign", "create", "--service", "svc", "--domain-tpl-id", "0:dom", "--enrollment-list", "devices.json"}, "--participant-tpl-id", "/edge-systems/svc/campaigns"},
+		{"direct", []string{"edge-sync", "enroll-direct", "--service", "svc", "--domain-template-id", "0:dom", "--deployment-name", "SN", "--csr-file", "device.csr"}, "--participant-template-id", "/edge-systems/svc/enroll-node"},
+		{"agent", []string{"edge-sync", "agent", "enroll", "--service", "svc", "--domain-tpl-id", "0:dom", "--deployment-name", "SN", "--mac", "AA:BB:CC:DD:EE:FF"}, "--participant-tpl-id", ""},
 	} {
 		for _, test := range []struct {
 			name        string
@@ -465,6 +469,9 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 					func() (map[string]string, error) { return map[string]string{}, nil })
 				api.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
 					if request.Method == http.MethodGet {
+						if request.URL.RequestURI() != "/edge-systems/svc/domain-templates" {
+							t.Fatalf("unexpected catalog request: %s", request.URL.RequestURI())
+						}
 						lookups++
 						if test.mode == "unavailable" {
 							return stringResponse(http.StatusServiceUnavailable, "catalog unavailable"), nil
@@ -478,6 +485,9 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 							t.Fatal(err)
 						}
 						return stringResponse(http.StatusOK, string(body)), nil
+					}
+					if request.Method != http.MethodPost || request.URL.RequestURI() != route.postPath {
+						t.Fatalf("unexpected submission: %s %s", request.Method, request.URL.RequestURI())
 					}
 					posts++
 					var payload map[string]any
@@ -503,14 +513,23 @@ func TestParserEnrollmentDomainModeValidation(t *testing.T) {
 					return stringResponse(responseCode, `{"domain_template_id":"0:dom"}`), nil
 				})
 				runner := commands.New(api, io.Discard)
-				runner.ReadFile = func(string) ([]byte, error) { return []byte(`[]`), nil }
+				t.Chdir(t.TempDir())
+				_, csr, err := mgcrypto.GeneratePrivateKeyAndCSR("svc", "part", "SN")
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, content := range map[string]string{"devices.json": `[{"serial":"SN","macs":[]}]`, "device.csr": csr} {
+					if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				inbox := filepath.Join(t.TempDir(), "inbox")
 				runtime := &app.Runtime{Commands: runner, EdgeSyncAgent: &edgesyncagent.Agent{InboxDir: inbox}}
 				args := append([]string{}, route.args...)
 				if test.participant != "" {
 					args = append(args, route.participantFlag, test.participant)
 				}
-				err := Execute(args, io.Discard, io.Discard, runtime)
+				err = Execute(args, io.Discard, io.Discard, runtime)
 				if lookups != 1 {
 					t.Fatalf("mode lookups = %d, want 1", lookups)
 				}
@@ -704,24 +723,33 @@ func TestRegisterClientTargetDirectory(t *testing.T) {
 			t.Chdir(t.TempDir())
 			target := filepath.Join("nested", "custom bundle")
 			api := cloudapi.New(func() (string, error) { return "https://manager.test", nil }, func() (map[string]string, error) { return nil, nil })
+			var requestedCSR string
 			api.HTTPClient = roundTripClient(func(request *http.Request) (*http.Response, error) {
 				switch request.Method + " " + request.URL.Path {
 				case "GET /databuses/db/applications/app":
 					return stringResponse(http.StatusOK, `{"bundle":{"version":2,"qos":"<qos/>","types":"<types/>","application":"<app/>","example":"# example","readme":"# readme"},"manifest":{"topics":[]}}`), nil
 				case "POST /databuses/db/applications/app/clients":
+					var payload map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					if payload["client_id"] != "client" {
+						t.Fatalf("client ID = %q", payload["client_id"])
+					}
+					requestedCSR = payload["csr"]
 					return stringResponse(http.StatusCreated, `{"client_id":"client","secure_files":{}}`), nil
 				default:
 					t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
 					return stringResponse(http.StatusNotFound, `{}`), nil
 				}
 			})
-			runner := commands.New(api, io.Discard)
-			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
+			runtime := app.NewRuntime(t.TempDir(), io.Discard)
+			runtime.Commands.API = api
 			args := []string{"databus", "app", "client", "register", "--name", "db", "--app-name", "app", "--client-id", "client", "--gen-private-key", "--target-dir", target}
 			if zipOutput {
 				args = append(args, "--zip")
 			}
-			if err := Execute(args, io.Discard, io.Discard, &app.Runtime{Commands: runner}); err != nil {
+			if err := Execute(args, io.Discard, io.Discard, runtime); err != nil {
 				t.Fatal(err)
 			}
 			if zipOutput {
@@ -736,12 +764,40 @@ func TestRegisterClientTargetDirectory(t *testing.T) {
 				}
 				data, err := io.ReadAll(key)
 				key.Close()
-				if err != nil || string(data) != "private key" {
-					t.Fatalf("custom archive key = %q, error = %v", data, err)
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else if data, err := os.ReadFile(filepath.Join(target, "generated", "security", "client.key")); err != nil || string(data) != "private key" {
-				t.Fatalf("custom bundle key = %q, error = %v", data, err)
+				assertRegisteredKey(t, data, requestedCSR)
+			} else {
+				data, err := os.ReadFile(filepath.Join(target, "generated", "security", "client.key"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertRegisteredKey(t, data, requestedCSR)
 			}
 		})
+	}
+}
+
+func assertRegisteredKey(t *testing.T, keyPEM []byte, csrPEM string) {
+	t.Helper()
+	keyBlock, _ := pem.Decode(keyPEM)
+	csrBlock, _ := pem.Decode([]byte(csrPEM))
+	if keyBlock == nil || csrBlock == nil {
+		t.Fatal("missing PEM key or CSR")
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	if !key.PublicKey.Equal(csr.PublicKey) || csr.Subject.CommonName != "db.app.client" {
+		t.Fatalf("persisted key does not match client registration CSR: subject=%v", csr.Subject)
 	}
 }
