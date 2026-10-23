@@ -183,7 +183,7 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 			if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
 				t.Fatalf("shared license written without approval: %v", err)
 			}
-			available, err := ProvisionManagedLicense(install, ConfirmationFromSelector(func(message string, choices []string) (string, error) {
+			available, err := ProvisionManagedLicense(install, ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
 				if !strings.Contains(message, path) || !strings.Contains(message, canonical) || !strings.Contains(message, "License feature check passed:") || choices[0] != ImportManagedLicenseLabel {
 					t.Fatalf("unexpected import confirmation: %s %#v", message, choices)
 				}

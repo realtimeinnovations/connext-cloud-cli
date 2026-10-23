@@ -7,7 +7,6 @@
 package gateway
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,7 +23,6 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
-	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -70,7 +68,7 @@ type GatewayApp struct {
 	CreateApplicationFunc         func(databusName string, kind string, clientName string) error
 	DownloadArtifactsFunc         func(config map[string]any, force bool) error
 	PIDRunningFunc                func(pid int) bool
-	SelectFunc                    func(message string, choices []string) (string, error)
+	SelectFunc                    prompt.SelectFunc
 	InputFunc                     func(message string) (string, error)
 	ConfirmReloadFunc             func(message string) (bool, error)
 	InterruptSignalFunc           func() (<-chan os.Signal, func())
@@ -1556,7 +1554,7 @@ func (app *GatewayApp) choose(message string, choices []string) (string, error) 
 	if app.SelectFunc == nil {
 		return "", fmt.Errorf("interactive selection is not configured")
 	}
-	return app.SelectFunc(message, choices)
+	return app.SelectFunc(message, choices, "")
 }
 
 func (app *GatewayApp) confirmReload(message string) (bool, error) {
@@ -1566,20 +1564,8 @@ func (app *GatewayApp) confirmReload(message string) (bool, error) {
 	return app.ConfirmReloadFunc(message)
 }
 
-func (app *GatewayApp) defaultSelect(message string, choices []string) (string, error) {
-	selector := app.selector()
-	if len(choices) == 2 && choices[0] == internalconnext.UseManagedConnextLabel && choices[1] == internalconnext.UseNDDSHOMELabel {
-		selector.DefaultChoice = internalconnext.UseManagedConnextLabel
-	} else if len(choices) == 2 && choices[0] == internalconnext.CancelManagedDownloadLabel && choices[1] == internalconnext.AcceptManagedDownloadLabel {
-		selector.DefaultChoice = internalconnext.CancelManagedDownloadLabel
-	} else if len(choices) == 2 && choices[0] == internalconnext.ImportManagedLicenseLabel && choices[1] == internalconnext.DeclineManagedLicenseLabel {
-		selector.DefaultChoice = internalconnext.ImportManagedLicenseLabel
-	} else if len(choices) == 2 && choices[0] == internalconnext.DeclineManagedLicenseLabel && choices[1] == internalconnext.ImportManagedLicenseLabel {
-		selector.DefaultChoice = internalconnext.DeclineManagedLicenseLabel
-	} else if len(choices) >= 2 && choices[0] == internalconnext.DeclineLicensePrecheckLabel && choices[1] == internalconnext.ProceedLicensePrecheckLabel {
-		selector.DefaultChoice = internalconnext.DeclineLicensePrecheckLabel
-	}
-	return selector.Select(message, choices)
+func (app *GatewayApp) defaultSelect(message string, choices []string, defaultChoice string) (string, error) {
+	return app.selector().Select(message, choices, defaultChoice)
 }
 
 func (app *GatewayApp) defaultInput(message string) (string, error) {
@@ -1610,7 +1596,7 @@ func minInt(left int, right int) int {
 }
 
 func (app *GatewayApp) defaultConfirmReload(message string) (bool, error) {
-	selection, err := app.defaultSelect(message, []string{ReloadTemplateListLabel, CancelGatewaySetupLabel})
+	selection, err := app.defaultSelect(message, []string{ReloadTemplateListLabel, CancelGatewaySetupLabel}, "")
 	if err != nil {
 		return false, err
 	}
@@ -1618,16 +1604,7 @@ func (app *GatewayApp) defaultConfirmReload(message string) (bool, error) {
 }
 
 func (app *GatewayApp) input() io.Reader {
-	if app.In == nil {
-		app.In = os.Stdin
-	}
-	// Keep read-ahead between numbered menus and path prompts. Terminals must
-	// remain files so the cursor UI can use them directly.
-	if _, _, interactive := terminal.PromptFiles(app.In, app.Out); !interactive {
-		if _, buffered := app.In.(*bufio.Reader); !buffered {
-			app.In = bufio.NewReader(app.In)
-		}
-	}
+	app.In = prompt.Reader(app.In, app.Out)
 	return app.In
 }
 

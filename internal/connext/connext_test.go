@@ -167,7 +167,7 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 
 	var out bytes.Buffer
 	selected := false
-	err := EnsureCollectorServiceLite(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
+	err := EnsureCollectorServiceLite(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
 		selected = true
 		if !strings.Contains(message, "RTI Collector Service Lite") || len(choices) != 2 || choices[0] != InstallConnextCloudExtrasLabel {
 			t.Fatalf("unexpected prompt: %q %#v", message, choices)
@@ -196,7 +196,7 @@ func TestEnsureEnhancedDDSSpySkipsPatchForConnext770PatchRelease(t *testing.T) {
   </core>
 </rti>`)
 
-	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string) (string, error) {
+	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
 		t.Fatalf("did not expect patch prompt for 7.7.0.x install: %s %#v", message, choices)
 		return "", nil
 	}, nil)
@@ -209,7 +209,7 @@ func TestEnsureEnhancedDDSSpySkipsPatchForConnext771OrNewer(t *testing.T) {
 	install := createConnextInstall(t, t.TempDir(), "7.7.1", "rtiddsspy")
 	writeVersions(t, install, `<rti></rti>`)
 
-	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.1"}, func(message string, choices []string) (string, error) {
+	err := EnsureEnhancedDDSSpy(Install{Path: install, Version: "7.7.1"}, func(message string, choices []string, _ string) (string, error) {
 		t.Fatalf("did not expect patch prompt for 7.7.1+ install: %s %#v", message, choices)
 		return "", nil
 	}, nil)

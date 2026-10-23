@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
 
@@ -143,7 +144,7 @@ func InstalledComponents(installPath string) ([]ComponentInstallation, error) {
 	return components, nil
 }
 
-func EnsureCollectorServiceLite(install Install, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+func EnsureCollectorServiceLite(install Install, selectFunc prompt.SelectFunc, out io.Writer) error {
 	return ensureCloudExtrasCapability(install, capabilityPatch{
 		Name:        "RTI Collector Service Lite",
 		CommandName: "gateway",
@@ -151,7 +152,7 @@ func EnsureCollectorServiceLite(install Install, selectFunc func(message string,
 	}, selectFunc, out)
 }
 
-func EnsureEnhancedDDSSpy(install Install, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+func EnsureEnhancedDDSSpy(install Install, selectFunc prompt.SelectFunc, out io.Writer) error {
 	return ensureCloudExtrasCapability(install, capabilityPatch{
 		Name:        "enhanced RTI DDS Spy",
 		CommandName: "spy",
@@ -159,7 +160,7 @@ func EnsureEnhancedDDSSpy(install Install, selectFunc func(message string, choic
 	}, selectFunc, out)
 }
 
-func ensureCloudExtrasCapability(install Install, patch capabilityPatch, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+func ensureCloudExtrasCapability(install Install, patch capabilityPatch, selectFunc prompt.SelectFunc, out io.Writer) error {
 	version := install.Version
 	if version == "" {
 		version = VersionFromPath(install.Path)
@@ -178,7 +179,7 @@ func ensureCloudExtrasCapability(install Install, patch capabilityPatch, selectF
 		return common.UserError{Message: fmt.Sprintf("%s is missing from Connext Pro %s at %s.\nRun rticloud %s in an interactive terminal to install the Connext Cloud Extras package.", patch.Name, version, install.Path, patch.CommandName)}
 	}
 	message := fmt.Sprintf("%s is required for rticloud %s but is missing from Connext Pro %s at %s.\n\nInstall Connext Cloud Extras package to add this capability?", patch.Name, patch.CommandName, version, install.Path)
-	selected, err := selectFunc(message, []string{InstallConnextCloudExtrasLabel, CancelPackageInstallLabel})
+	selected, err := selectFunc(message, []string{InstallConnextCloudExtrasLabel, CancelPackageInstallLabel}, "")
 	if err != nil {
 		return err
 	}

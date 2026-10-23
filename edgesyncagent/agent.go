@@ -544,7 +544,7 @@ func NewAgent(store *edgestore.Store, out io.Writer) *Agent {
 func (a *Agent) defaultSelect(message string, choices []string) (string, error) {
 	out := a.promptOut()
 	sel := prompt.Selector{In: a.In, Out: out, CancelMessage: "Cancelled"}
-	return sel.Select(message, choices)
+	return sel.Select(message, choices, "")
 }
 
 func (a *Agent) defaultInput(message string) (string, error) {

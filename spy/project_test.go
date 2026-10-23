@@ -147,7 +147,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 		return true, nil
 	}
 	appSelectCalls := 0
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select Databus:":
 			return "inventory", nil
@@ -210,7 +210,7 @@ func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
 		}
 		return map[string]any{}, nil
 	}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select Databus:":
 			return "inventory", nil
@@ -257,7 +257,7 @@ func TestConfigureFirstRunDoesNotOfferCreateWhenRTICloudSpyExists(t *testing.T) 
 		t.Fatalf("did not expect create call: %s %#v", path, payload)
 		return nil, nil
 	}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select Databus:":
 			return "inventory", nil
@@ -798,19 +798,6 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func TestConnextConfirmationDefaultsToManagedOnEnter(t *testing.T) {
-	var out bytes.Buffer
-	app := NewApp(t.TempDir(), &out)
-	app.In = strings.NewReader("\n")
-	got, err := app.defaultSelect("Use NDDSHOME?", []string{"No, use rticloud-managed Connext [recommended]", "Yes, use NDDSHOME"})
-	if err != nil || got != "No, use rticloud-managed Connext [recommended]" {
-		t.Fatalf("choice=%q error=%v", got, err)
-	}
-	if !strings.Contains(out.String(), "No, use rticloud-managed Connext [recommended]") {
-		t.Fatal(out.String())
-	}
-}
-
 func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
 	var out bytes.Buffer
 	app := NewApp(t.TempDir(), &out)
@@ -827,56 +814,5 @@ func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Connext (last run): 7.7.0.1 (selected-managed)") || strings.Contains(out.String(), "obsolete") {
 		t.Fatal(out.String())
-	}
-}
-
-func TestConfirmationDefaultsOnEnter(t *testing.T) {
-	for _, choices := range [][]string{
-		{"Cancel", "Accept license and install"},
-		{"Copy and use this license", "Choose another license"},
-		{"Choose another license", "Copy and use this license"},
-		{"No, stop", "Yes, proceed anyway"},
-	} {
-		t.Run(choices[0], func(t *testing.T) {
-			var out bytes.Buffer
-			app := NewApp(t.TempDir(), &out)
-			app.In = strings.NewReader("\n")
-			got, err := app.defaultSelect("Confirm?", choices)
-			if err != nil || got != choices[0] {
-				t.Fatalf("choice=%q error=%v", got, err)
-			}
-		})
-	}
-}
-
-func TestPipedLicensePromptAnswers(t *testing.T) {
-	var out bytes.Buffer
-	app := NewApp(t.TempDir(), &out)
-	app.In = strings.NewReader("2\n/missing.dat\n/license.dat\n3\n2\n/replacement.dat\n\n")
-	menu := []string{"Download", "Enter license path", "Manual", "Skip"}
-	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
-		t.Fatalf("menu: %q %v", got, err)
-	}
-	for _, want := range []string{"/missing.dat", "/license.dat"} {
-		if got, err := app.defaultInput("Path?"); err != nil || got != want {
-			t.Fatalf("path: %q %v, want %q", got, err, want)
-		}
-	}
-	warnings := []string{"No, stop", "Yes, proceed anyway", "Choose another license"}
-	if got, err := app.defaultSelect("Warnings", warnings); err != nil || got != warnings[2] {
-		t.Fatalf("warnings: %q %v", got, err)
-	}
-	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
-		t.Fatalf("retry menu: %q %v", got, err)
-	}
-	if got, err := app.defaultInput("Path?"); err != nil || got != "/replacement.dat" {
-		t.Fatalf("replacement: %q %v", got, err)
-	}
-	choices := []string{"Copy and use this license", "Choose another license"}
-	if got, err := app.defaultSelect("Copy?", choices); err != nil || got != choices[0] {
-		t.Fatalf("copy: %q %v", got, err)
-	}
-	if _, err := app.defaultSelect("Copy again?", choices); err == nil {
-		t.Fatal("EOF must cancel")
 	}
 }

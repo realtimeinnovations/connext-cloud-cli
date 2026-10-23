@@ -91,7 +91,9 @@ func TestManagedRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { return AcceptManagedDownloadLabel, nil })}); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+		return AcceptManagedDownloadLabel, nil
+	})}); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -102,7 +104,7 @@ func TestManagedReusesValidInstallWithoutNetwork(t *testing.T) {
 	oldGet := HTTPGet
 	HTTPGet = func(string) (*http.Response, error) { t.Fatal("unexpected download"); return nil, nil }
 	t.Cleanup(func() { HTTPGet = oldGet })
-	install, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) {
+	install, err := installManaged(DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
 		t.Fatal("unexpected confirmation for a valid installation")
 		return "", nil
 	})})
@@ -173,7 +175,9 @@ echo installed
 					t.Fatal(err)
 				}
 			}
-			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { return AcceptManagedDownloadLabel, nil })}, artifact)
+			result, err := installManagedArtifact(DiscoveryOptions{HTTPClient: &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) { return getFixture(r.URL.String()) })}, Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+				return AcceptManagedDownloadLabel, nil
+			})}, artifact)
 			if scenario == "success" || scenario == "repair" {
 				if err != nil || result.Version != installerVersion {
 					t.Fatalf("%#v %v", result, err)
@@ -326,7 +330,7 @@ func TestMissingManagedInstallRequiresConsentBeforeDownload(t *testing.T) {
 			HTTPGet = func(string) (*http.Response, error) { t.Fatal("download occurred without consent"); return nil, nil }
 			options := DiscoveryOptions{AcceptExternalNDDSHome: true}
 			if mode != "no-prompt" {
-				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string) (string, error) {
+				options.Confirmations = ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
 					if len(choices) != 2 || choices[0] != CancelManagedDownloadLabel || choices[1] != AcceptManagedDownloadLabel {
 						t.Fatal(choices)
 					}

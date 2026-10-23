@@ -23,11 +23,13 @@ import (
 
 const choiceSeparator = "\x00"
 
+type SelectFunc func(message string, choices []string, defaultChoice string) (string, error)
+
 type Selector struct {
 	In            io.Reader
 	Out           io.Writer
 	CancelMessage string
-	DefaultChoice string
+	defaultChoice string
 	SpecialLabels map[string]string
 }
 
@@ -43,7 +45,8 @@ type selectItem struct {
 	Detail string
 }
 
-func (selector Selector) Select(message string, choices []string) (string, error) {
+func (selector Selector) Select(message string, choices []string, defaultChoice string) (string, error) {
+	selector.defaultChoice = defaultChoice
 	if len(choices) == 0 {
 		return "", nil
 	}
@@ -214,23 +217,23 @@ func (selector Selector) SelectionLabel(choice string) string {
 }
 
 func (selector Selector) defaultSelection(choices []string) (string, bool) {
-	if selector.DefaultChoice == "" {
+	if selector.defaultChoice == "" {
 		return "", false
 	}
 	for _, choice := range choices {
-		if SelectionValue(choice) == selector.DefaultChoice {
-			return selector.DefaultChoice, true
+		if SelectionValue(choice) == selector.defaultChoice {
+			return selector.defaultChoice, true
 		}
 	}
 	return "", false
 }
 
 func (selector Selector) defaultCursorPos(choices []string) int {
-	if selector.DefaultChoice == "" {
+	if selector.defaultChoice == "" {
 		return 0
 	}
 	for idx, choice := range choices {
-		if SelectionValue(choice) == selector.DefaultChoice {
+		if SelectionValue(choice) == selector.defaultChoice {
 			return idx
 		}
 	}
@@ -239,7 +242,7 @@ func (selector Selector) defaultCursorPos(choices []string) int {
 
 func (selector Selector) selectionPrompt(choices []string) string {
 	for _, choice := range choices {
-		if SelectionValue(choice) == selector.DefaultChoice {
+		if SelectionValue(choice) == selector.defaultChoice {
 			return fmt.Sprintf("Select an option [%s]: ", selectionTitle(selector.SelectionLabel(choice)))
 		}
 	}
@@ -379,4 +382,16 @@ func bufferedReader(input io.Reader) *bufio.Reader {
 		return reader
 	}
 	return bufio.NewReader(input)
+}
+
+// Reader retains read-ahead across prompts while leaving terminal files available
+// to the cursor UI. The caller must keep the returned reader for the next prompt.
+func Reader(in io.Reader, out io.Writer) io.Reader {
+	if in == nil {
+		in = os.Stdin
+	}
+	if _, _, interactive := terminal.PromptFiles(in, out); interactive {
+		return in
+	}
+	return bufferedReader(in)
 }

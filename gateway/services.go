@@ -13,6 +13,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 )
 
 const MinConnextVersion = "7.3.0"
@@ -103,7 +104,7 @@ func DiscoverCollectorInstall(env map[string]string) (ConnextInstall, error) {
 	return connext.DiscoverInstall(env, collectorInstallOptions())
 }
 
-func EnsureCollectorServiceLite(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+func EnsureCollectorServiceLite(install ConnextInstall, selectFunc prompt.SelectFunc, out io.Writer) error {
 	return connext.EnsureCollectorServiceLite(install, selectFunc, out)
 }
 

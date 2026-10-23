@@ -7,7 +7,6 @@
 package spy
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -68,7 +67,7 @@ type App struct {
 	GenerateCSRFunc          func(databus string, app string, clientID string) ([]byte, string, error)
 	DownloadArtifactsFunc    func(config map[string]any, force bool) error
 	PIDRunningFunc           func(pid int) bool
-	SelectFunc               func(message string, choices []string) (string, error)
+	SelectFunc               prompt.SelectFunc
 	InputFunc                func(message string) (string, error)
 	ConfirmReloadFunc        func(message string) (bool, error)
 	InterruptSignalFunc      func() (<-chan os.Signal, func())
@@ -198,7 +197,7 @@ func DiscoverConnextInstallWithConfirmation(env map[string]string, confirmations
 	return connext.DiscoverInstall(env, options)
 }
 
-func EnsureEnhancedDDSSpy(install ConnextInstall, selectFunc func(message string, choices []string) (string, error), out io.Writer) error {
+func EnsureEnhancedDDSSpy(install ConnextInstall, selectFunc prompt.SelectFunc, out io.Writer) error {
 	return connext.EnsureEnhancedDDSSpy(install, selectFunc, out)
 }
 
@@ -1018,7 +1017,7 @@ func (app *App) choose(message string, choices []string) (string, error) {
 	if app.SelectFunc == nil {
 		return "", fmt.Errorf("interactive selection is not configured")
 	}
-	return app.SelectFunc(message, choices)
+	return app.SelectFunc(message, choices, "")
 }
 
 func (app *App) confirmReload(message string) (bool, error) {
@@ -1028,20 +1027,8 @@ func (app *App) confirmReload(message string) (bool, error) {
 	return app.ConfirmReloadFunc(message)
 }
 
-func (app *App) defaultSelect(message string, choices []string) (string, error) {
-	selector := app.selector()
-	if len(choices) == 2 && choices[0] == connext.UseManagedConnextLabel && choices[1] == connext.UseNDDSHOMELabel {
-		selector.DefaultChoice = connext.UseManagedConnextLabel
-	} else if len(choices) == 2 && choices[0] == connext.CancelManagedDownloadLabel && choices[1] == connext.AcceptManagedDownloadLabel {
-		selector.DefaultChoice = connext.CancelManagedDownloadLabel
-	} else if len(choices) == 2 && choices[0] == connext.ImportManagedLicenseLabel && choices[1] == connext.DeclineManagedLicenseLabel {
-		selector.DefaultChoice = connext.ImportManagedLicenseLabel
-	} else if len(choices) == 2 && choices[0] == connext.DeclineManagedLicenseLabel && choices[1] == connext.ImportManagedLicenseLabel {
-		selector.DefaultChoice = connext.DeclineManagedLicenseLabel
-	} else if len(choices) >= 2 && choices[0] == connext.DeclineLicensePrecheckLabel && choices[1] == connext.ProceedLicensePrecheckLabel {
-		selector.DefaultChoice = connext.DeclineLicensePrecheckLabel
-	}
-	return selector.Select(message, choices)
+func (app *App) defaultSelect(message string, choices []string, defaultChoice string) (string, error) {
+	return app.selector().Select(message, choices, defaultChoice)
 }
 
 func (app *App) defaultInput(message string) (string, error) {
@@ -1049,7 +1036,7 @@ func (app *App) defaultInput(message string) (string, error) {
 }
 
 func (app *App) defaultConfirmReload(message string) (bool, error) {
-	selection, err := app.defaultSelect(message, []string{ReloadAppListLabel, CancelSpySetupLabel})
+	selection, err := app.defaultSelect(message, []string{ReloadAppListLabel, CancelSpySetupLabel}, "")
 	if err != nil {
 		return false, err
 	}
@@ -1057,16 +1044,7 @@ func (app *App) defaultConfirmReload(message string) (bool, error) {
 }
 
 func (app *App) input() io.Reader {
-	if app.In == nil {
-		app.In = os.Stdin
-	}
-	// Keep read-ahead between numbered menus and path prompts. Terminals must
-	// remain files so the cursor UI can use them directly.
-	if _, _, interactive := terminal.PromptFiles(app.In, app.Out); !interactive {
-		if _, buffered := app.In.(*bufio.Reader); !buffered {
-			app.In = bufio.NewReader(app.In)
-		}
-	}
+	app.In = prompt.Reader(app.In, app.Out)
 	return app.In
 }
 

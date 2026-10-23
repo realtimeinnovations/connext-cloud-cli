@@ -93,7 +93,7 @@ func TestTemplateSelectionCanCreateNewAndReload(t *testing.T) {
 	app.CurrentZoneFunc = func() string { return "dev-cloud" }
 	app.ConfirmReloadFunc = func(message string) (bool, error) { return true, nil }
 	selection := []string{CreateNewTemplate, "gw-new"}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		selected := selection[0]
 		selection = selection[1:]
 		return selected, nil
@@ -128,7 +128,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		calls = append(calls, "select:"+message)
 		switch message {
 		case "Select gateway capability:":
@@ -174,7 +174,7 @@ func TestFirstRunFailsBeforeDatabusSelectionWhenConnextMissing(t *testing.T) {
 		steps = append(steps, "discover")
 		return ConnextInstall{}, GatewayError{Message: "Connext Pro 7.3.0 or newer with rtiroutingservice was not found."}
 	}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		steps = append(steps, "select:"+message)
 		switch message {
 		case "Select gateway capability:":
@@ -212,7 +212,7 @@ func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
 		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select gateway capability:":
 			return "Observability only", nil
@@ -260,7 +260,7 @@ func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
 		reloadConfirmed = true
 		return true, nil
 	}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select gateway capability:":
 			return "Data only", nil
@@ -305,7 +305,7 @@ func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
 		}
 		return nil
 	}
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select gateway capability:":
 			return "Observability only", nil
@@ -404,7 +404,7 @@ func TestExistingGeneratedCollectorTemplateIsReused(t *testing.T) {
 	}
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
 	called := false
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select gateway capability:":
 			return "Data and Observability", nil
@@ -450,7 +450,7 @@ func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
 	}
 	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
 	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string) (string, error) {
+	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
 		switch message {
 		case "Select gateway capability:":
 			return "Data and Observability", nil
@@ -1263,19 +1263,6 @@ func readBytes(t *testing.T, path string) []byte {
 	return data
 }
 
-func TestConnextConfirmationDefaultsToManagedOnEnter(t *testing.T) {
-	var out bytes.Buffer
-	app := NewGatewayApp(t.TempDir(), &out)
-	app.In = strings.NewReader("\n")
-	got, err := app.defaultSelect("Use NDDSHOME?", []string{"No, use rticloud-managed Connext [recommended]", "Yes, use NDDSHOME"})
-	if err != nil || got != "No, use rticloud-managed Connext [recommended]" {
-		t.Fatalf("choice=%q error=%v", got, err)
-	}
-	if !strings.Contains(out.String(), "No, use rticloud-managed Connext [recommended]") {
-		t.Fatal(out.String())
-	}
-}
-
 func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
 	var out bytes.Buffer
 	app := NewGatewayApp(t.TempDir(), &out)
@@ -1292,56 +1279,5 @@ func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Connext (last run): 7.7.0.1 (selected-managed)") || strings.Contains(out.String(), "obsolete") {
 		t.Fatal(out.String())
-	}
-}
-
-func TestConfirmationDefaultsOnEnter(t *testing.T) {
-	for _, choices := range [][]string{
-		{"Cancel", "Accept license and install"},
-		{"Copy and use this license", "Choose another license"},
-		{"Choose another license", "Copy and use this license"},
-		{"No, stop", "Yes, proceed anyway"},
-	} {
-		t.Run(choices[0], func(t *testing.T) {
-			var out bytes.Buffer
-			app := NewGatewayApp(t.TempDir(), &out)
-			app.In = strings.NewReader("\n")
-			got, err := app.defaultSelect("Confirm?", choices)
-			if err != nil || got != choices[0] {
-				t.Fatalf("choice=%q error=%v", got, err)
-			}
-		})
-	}
-}
-
-func TestPipedLicensePromptAnswers(t *testing.T) {
-	var out bytes.Buffer
-	app := NewGatewayApp(t.TempDir(), &out)
-	app.In = strings.NewReader("2\n/missing.dat\n/license.dat\n3\n2\n/replacement.dat\n\n")
-	menu := []string{"Download", "Enter license path", "Manual", "Skip"}
-	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
-		t.Fatalf("menu: %q %v", got, err)
-	}
-	for _, want := range []string{"/missing.dat", "/license.dat"} {
-		if got, err := app.defaultInput("Path?"); err != nil || got != want {
-			t.Fatalf("path: %q %v, want %q", got, err, want)
-		}
-	}
-	warnings := []string{"No, stop", "Yes, proceed anyway", "Choose another license"}
-	if got, err := app.defaultSelect("Warnings", warnings); err != nil || got != warnings[2] {
-		t.Fatalf("warnings: %q %v", got, err)
-	}
-	if got, err := app.defaultSelect("License?", menu); err != nil || got != menu[1] {
-		t.Fatalf("retry menu: %q %v", got, err)
-	}
-	if got, err := app.defaultInput("Path?"); err != nil || got != "/replacement.dat" {
-		t.Fatalf("replacement: %q %v", got, err)
-	}
-	choices := []string{"Copy and use this license", "Choose another license"}
-	if got, err := app.defaultSelect("Copy?", choices); err != nil || got != choices[0] {
-		t.Fatalf("copy: %q %v", got, err)
-	}
-	if _, err := app.defaultSelect("Copy again?", choices); err == nil {
-		t.Fatal("EOF must cancel")
 	}
 }

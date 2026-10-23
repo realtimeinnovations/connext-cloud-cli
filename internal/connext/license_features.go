@@ -185,6 +185,7 @@ func confirmLicenseFeatureProblems(source string, problems []string, confirm Con
 		return clierror.InputRequired(message+"\nRun interactively to explicitly approve proceeding, or obtain a license from evaluation.rti.com.", "review_connext_license")
 	}
 	accepted, err := confirm.Confirm(Confirmation{
+		Kind:         ConfirmLicenseFeatures,
 		Message:      message,
 		AcceptLabel:  ProceedLicensePrecheckLabel,
 		DeclineLabel: DeclineLicensePrecheckLabel,

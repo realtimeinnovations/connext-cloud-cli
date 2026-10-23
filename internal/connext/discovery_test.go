@@ -24,7 +24,10 @@ func TestTransparentManagedResolution(t *testing.T) {
 	for _, env := range []map[string]string{{}, {"CONNEXTDDS_DIR": "ignored"}, {"NDDSHOME": managed}, {"NDDSHOME": filepath.Join(filepath.Dir(managed), ".", filepath.Base(managed))}} {
 		called := false
 		ManagedInstaller = func(DiscoveryOptions) (Install, error) { called = true; return Install{Path: managed}, nil }
-		result, err := DiscoverInstall(env, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { t.Fatal("unexpected selector"); return "", nil })})
+		result, err := DiscoverInstall(env, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+			t.Fatal("unexpected selector")
+			return "", nil
+		})})
 		if err != nil || !called || result.Path != managed {
 			t.Fatalf("%#v %v", result, err)
 		}
@@ -40,7 +43,7 @@ func TestNDDSHOMEConfirmation(t *testing.T) {
 		managedCalled := false
 		ManagedInstaller = func(DiscoveryOptions) (Install, error) { managedCalled = true; return Install{Path: "managed"}, nil }
 		prompts := 0
-		result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(message string, choices []string) (string, error) {
+		result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
 			prompts++
 			if !strings.Contains(message, custom) || !strings.Contains(message, "rticloud-managed Connext under your .rti directory?") || len(choices) != 2 || choices[0] != UseManagedConnextLabel {
 				t.Fatalf("unexpected confirmation: %s %v", message, choices)
@@ -62,7 +65,10 @@ func TestNDDSHOMEConfirmation(t *testing.T) {
 func TestSkipPreflightAcceptsNDDSHOMEWithoutAsking(t *testing.T) {
 	managedTestEnvironment(t)
 	custom := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiroutingservice")
-	result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { t.Fatal("unexpected confirmation"); return "", nil }), AcceptExternalNDDSHome: true})
+	result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
+		t.Fatal("unexpected confirmation")
+		return "", nil
+	}), AcceptExternalNDDSHome: true})
 	if err != nil || result.Path != custom {
 		t.Fatalf("%#v %v", result, err)
 	}
@@ -80,7 +86,7 @@ func TestOverrideCancellationAndMissingPrompt(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	cancelled := errors.New("cancelled")
-	_, err = DiscoverInstall(env, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string) (string, error) { return "", cancelled })})
+	_, err = DiscoverInstall(env, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) { return "", cancelled })})
 	if !errors.Is(err, cancelled) {
 		t.Fatalf("%v", err)
 	}

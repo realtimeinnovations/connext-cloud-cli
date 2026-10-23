@@ -37,6 +37,7 @@ import (
 	internalconnext "github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
@@ -542,7 +543,7 @@ func (runtime *Runtime) liveTextOutput(format string) bool {
 
 var errChooseAnotherConnextLicense = errors.New("choose another Connext license")
 
-func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc func(message string, choices []string) (string, error), inputFunc func(string) (string, error)) error {
+func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc prompt.SelectFunc, inputFunc func(string) (string, error)) error {
 	confirm := internalconnext.ConfirmationFromSelector(selectFunc)
 	if os.Getenv("RTI_LICENSE_FILE") != "" {
 		return internalconnext.PrecheckEnvironmentLicense(confirm, runtime.Out)
@@ -550,15 +551,17 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	// An explicit environment override must be unset to choose another license.
 	// For files being copied, let users leave feature warnings for the full menu.
 	if selectFunc != nil {
-		confirm = internalconnext.ConfirmationFromSelector(func(message string, choices []string) (string, error) {
-			if len(choices) == 2 && choices[0] == internalconnext.DeclineLicensePrecheckLabel && choices[1] == internalconnext.ProceedLicensePrecheckLabel {
-				choice, err := selectFunc(message, append(choices, internalconnext.DeclineManagedLicenseLabel))
-				if err == nil && choice == internalconnext.DeclineManagedLicenseLabel {
-					return "", errChooseAnotherConnextLicense
-				}
-				return choice, err
+		baseConfirm := confirm
+		confirm = internalconnext.ConfirmFunc(func(request internalconnext.Confirmation) (bool, error) {
+			if request.Kind != internalconnext.ConfirmLicenseFeatures {
+				return baseConfirm.Confirm(request)
 			}
-			return selectFunc(message, choices)
+			choices := append(request.Choices(), internalconnext.DeclineManagedLicenseLabel)
+			choice, err := selectFunc(request.Message, choices, choices[0])
+			if err == nil && choice == internalconnext.DeclineManagedLicenseLabel {
+				return false, errChooseAnotherConnextLicense
+			}
+			return choice == request.AcceptLabel, err
 		})
 	}
 	managed := internalconnext.IsManagedInstallation(install)
@@ -581,7 +584,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 		message = fmt.Sprintf("No Connext license is available for %s.\n\nChoose how to provide a Connext license:", install.Path)
 	}
 	for {
-		selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel})
+		selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel}, "")
 		if err != nil {
 			return err
 		}
