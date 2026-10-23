@@ -6,11 +6,23 @@ generated path must stay inside an output directory. `Inspect` distinguishes
 missing destinations from inspection failures; only missing paths are allowed
 by preflight. `MkdirAll` applies the same policy to directory creation.
 
-Existing ancestors must be directories. File destinations must be regular
-files. Symlinks, dangling links, and special files are rejected, including
-ancestors above the chosen output directory. Paths are normalized before use;
-macOS's fixed `/var`, `/tmp`, and `/etc` aliases are accepted only when they point
-to their standard `/private` locations. Arbitrary links are never resolved.
+Resolve a user-selected directory with `ResolveDirectory` **before** joining
+managed paths. This accepts symlinks at or above the chosen base, including
+relocated project/output directories and the shared `.rti` directory. Missing
+trailing directories are allowed; dangling links and non-directory bases fail.
+For an explicit output file, `ResolveFile` resolves only its parent.
+
+```text
+exports -> /mnt/work/exports     allowed: user-selected base
+  generated -> /elsewhere       rejected: generated child directory
+  client.key -> /elsewhere/key  rejected: output file
+```
+
+Use the returned canonical path for subsequent preflight and writes. Never
+resolve a generated subdirectory: that would hide a redirect below the base.
+Writers require directory ancestors and regular-file destinations, rejecting
+remaining symlinks and special files. The fixed macOS `/var`, `/tmp`, and `/etc`
+aliases remain supported by strict validation for ordinary temporary paths.
 
 Writers validate the destination and then use ordinary OS writes. They do not
 stage files, rename destinations, create parents, or change permissions. Callers

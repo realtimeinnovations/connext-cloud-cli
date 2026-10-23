@@ -952,11 +952,10 @@ func TestEnrollDeviceDirect_GenKey(t *testing.T) {
 	runner.ReadFile = func(path string) ([]byte, error) {
 		return nil, fmt.Errorf("ReadFile should not be called with --gen-key, got %q", path)
 	}
-	var wroteKeyPath string
-	var wroteKeyData []byte
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wroteKeyPath, wroteKeyData = path, data
-		return nil
+	base := t.TempDir()
+	selected := filepath.Join(t.TempDir(), "selected")
+	if err := os.Symlink(base, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 	runner.CSRGenerator = func(databus, app, clientID string) ([]byte, string, error) {
 		if databus != "ces-alpha-123" || app != "sensor-net" || clientID != "SN001" {
@@ -964,7 +963,7 @@ func TestEnrollDeviceDirect_GenKey(t *testing.T) {
 		}
 		return []byte("GENERATED-KEY"), "GENERATED-CSR", nil
 	}
-	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", "out.key", true)
+	_, _, err := runner.EnrollDeviceDirect("ces-alpha-123", "1:dom-a", "sensor-net", "SN001", nil, "", "", filepath.Join(selected, "out.key"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,8 +971,9 @@ func TestEnrollDeviceDirect_GenKey(t *testing.T) {
 	if payload["csr"] != "GENERATED-CSR" {
 		t.Fatalf("expected generated CSR in payload, got %#v", payload["csr"])
 	}
-	if wroteKeyPath != "out.key" || string(wroteKeyData) != "GENERATED-KEY" {
-		t.Fatalf("expected generated key written to out.key, got path=%q data=%q", wroteKeyPath, wroteKeyData)
+	data, err := os.ReadFile(filepath.Join(base, "out.key"))
+	if err != nil || string(data) != "GENERATED-KEY" {
+		t.Fatalf("generated key=%q, %v", data, err)
 	}
 }
 

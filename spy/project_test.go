@@ -170,7 +170,7 @@ func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	output := out.String()
-	if !strings.Contains(output, "Connext Cloud Spy setup") || !strings.Contains(output, "Create Cloud Native application") || !strings.Contains(output, "Configuration saved to "+filepath.Join(tmpDir, ".connext", "spy.yaml")) {
+	if !strings.Contains(output, "Connext Cloud Spy setup") || !strings.Contains(output, "Create Cloud Native application") || !strings.Contains(output, "Configuration saved to "+filepath.Join(app.WorkDir, ".connext", "spy.yaml")) {
 		t.Fatalf("unexpected output: %s", output)
 	}
 }
@@ -529,7 +529,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiddsspy")) ||
 		!strings.Contains(logLines[0], "-domainId 100") ||
-		!strings.Contains(logLines[0], "-qosFile "+filepath.Join(tmpDir, ".connext", "spy", "app", "generated", "app_1.qos.xml")) ||
+		!strings.Contains(logLines[0], "-qosFile "+filepath.Join(app.WorkDir, ".connext", "spy", "app", "generated", "app_1.qos.xml")) ||
 		!strings.Contains(logLines[0], "-qosProfile app_1_qos_lib::app_1_qos_profile") {
 		t.Fatalf("unexpected first spy log line: %q", logLines[0])
 	}
@@ -543,7 +543,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !strings.Contains(output, "Connext Cloud Spy") || !strings.Contains(output, "Square") || !strings.Contains(output, "Discovered 1 DataWriters") {
 		t.Fatalf("unexpected output: %s", output)
 	}
-	if !strings.Contains(output, "• Logs saved under "+filepath.Join(tmpDir, ".connext", "spy", "logs")) {
+	if !strings.Contains(output, "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "spy", "logs")) {
 		t.Fatalf("missing logs hint: %s", output)
 	}
 	if !strings.Contains(output, "• Run 'rticloud spy' from this directory to start this spy again.") {

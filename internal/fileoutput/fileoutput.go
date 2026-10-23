@@ -6,8 +6,9 @@
 
 // Package fileoutput owns destination validation for CLI-managed output.
 // Existing ancestors must be directories, and outputs must be regular files.
-// Symlinks, including dangling links and links above a caller's selected root,
-// are rejected. Missing paths are permitted during preflight.
+// Callers resolve user-selected directories with ResolveDirectory before joining
+// generated paths. Validation rejects remaining symlinks. Missing paths are
+// permitted during preflight.
 //
 // Writers validate, then use ordinary OS writes without changing their semantics.
 // Validation is path-based: it does not protect against concurrent replacement of
@@ -37,8 +38,8 @@ func ValidName(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\:\x00")
 }
 
-// absolutePath expands only macOS's fixed system aliases. Arbitrary user links
-// must never be resolved before validation, since that would hide an escape.
+// absolutePath expands only macOS's fixed system aliases. Strict operations
+// must not resolve arbitrary links, since that would hide generated-path escapes.
 func absolutePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("output path is empty")
@@ -59,6 +60,55 @@ func absolutePath(path string) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+// ResolveDirectory resolves links in a user-selected base directory, including
+// its ancestors. Missing trailing directories are preserved without creating them.
+// Call this before joining generated paths, never on generated subdirectories:
+// writers must still reject links below the selected base.
+func ResolveDirectory(path string) (string, error) {
+	absolute, err := absolutePath(path)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	var missing []string
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			// Lstat distinguishes a dangling link from a missing directory.
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			if err := Validate(resolved, Directory); err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) || filepath.Dir(current) == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = filepath.Dir(current)
+	}
+}
+
+// ResolveFile resolves the parent of an explicitly selected output file, while
+// leaving the file itself subject to strict validation (including link rejection).
+func ResolveFile(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("output path is empty")
+	}
+	parent, err := ResolveDirectory(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	resolved := filepath.Join(parent, filepath.Base(path))
+	return resolved, nil
 }
 
 // Inspect returns the destination's metadata after checking all ancestors.

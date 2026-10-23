@@ -274,3 +274,104 @@ func TestAppendPreservesPreviousLogContents(t *testing.T) {
 		t.Fatalf("log=%q, %v", data, err)
 	}
 }
+
+func TestResolveDirectorySelectsBaseWithoutCreatingIt(t *testing.T) {
+	base := t.TempDir()
+	link := filepath.Join(t.TempDir(), "selected")
+	if err := os.Symlink(base, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, suffix := range []string{"", "new/nested"} {
+		selected := filepath.Join(link, suffix)
+		resolved, err := ResolveDirectory(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := snapshot(t, base)
+		if len(before) != 1 {
+			t.Fatalf("resolution created output: %v", before)
+		}
+		if err := MkdirAll(resolved, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteFile(filepath.Join(resolved, "file"), []byte("through selected root"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(base, suffix, "file"))
+		if err != nil || string(data) != "through selected root" {
+			t.Fatalf("output=%q, %v", data, err)
+		}
+		if err := os.RemoveAll(filepath.Join(base, "new")); err != nil {
+			t.Fatal(err)
+		}
+		if suffix == "" {
+			if err := os.Remove(filepath.Join(base, "file")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestResolveDirectoryRejectsInvalidBase(t *testing.T) {
+	for _, kind := range []string{"dangling", "cycle", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			path := filepath.Join(base, "selected")
+			if kind == "file" {
+				if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				target := path
+				if kind == "dangling" {
+					target = filepath.Join(base, "missing")
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			before := snapshot(t, base)
+			for _, selected := range []string{path, filepath.Join(path, "new")} {
+				if resolved, err := ResolveDirectory(selected); err == nil {
+					t.Fatalf("accepted invalid base %s as %s", selected, resolved)
+				}
+			}
+			if after := snapshot(t, base); !reflect.DeepEqual(before, after) {
+				t.Fatalf("resolution mutated files: %v", after)
+			}
+		})
+	}
+}
+
+func TestResolvedBaseStillRejectsGeneratedSymlinks(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	selected := filepath.Join(t.TempDir(), "selected")
+	if err := os.Symlink(base, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	resolved, err := ResolveDirectory(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "generated")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(filepath.Join(resolved, "generated", "secret"), []byte("secret"), 0600); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("write error=%v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("write escaped: %v, %v", entries, err)
+	}
+	// An explicit file may select its parent, never the file symlink itself.
+	if err := os.Symlink(filepath.Join(outside, "missing"), filepath.Join(base, "file")); err != nil {
+		t.Fatal(err)
+	}
+	file, err := ResolveFile(filepath.Join(selected, "file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(file, []byte("secret"), 0600); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("file link accepted: %v", err)
+	}
+}

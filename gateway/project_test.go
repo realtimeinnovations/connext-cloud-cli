@@ -152,7 +152,7 @@ func TestFirstRunCanConfigureDataOnly(t *testing.T) {
 	if !strings.Contains(out.String(), "Connext Cloud Gateway setup") || !strings.Contains(out.String(), "Databuses available: 1") {
 		t.Fatalf("missing setup intro: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "Using Connext Pro 7.7.0 at "+install) || !strings.Contains(out.String(), "Configuration saved to "+filepath.Join(tmpDir, ".connext", "gateway.yaml")) {
+	if !strings.Contains(out.String(), "Using Connext Pro 7.7.0 at "+install) || !strings.Contains(out.String(), "Configuration saved to "+filepath.Join(app.WorkDir, ".connext", "gateway.yaml")) {
 		t.Fatalf("missing setup status output: %s", out.String())
 	}
 	if strings.Index(out.String(), "Connext Cloud Gateway setup") > strings.Index(out.String(), "Using Connext Pro 7.7.0 at "+install) {
@@ -667,7 +667,7 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
 		!strings.Contains(logLines[0], "-locationTag coll1") ||
 		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
@@ -803,13 +803,13 @@ func TestRunCollectorServiceWritesCommandLineToLog(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rticollectorservicelite")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "collector", "coll1.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "collector", "coll1.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName coll1") ||
 		!strings.Contains(logLines[0], "-locationTag coll1") ||
 		!strings.Contains(logLines[0], "-logEvent ENTITY_DISCOVERY") {
 		t.Fatalf("unexpected first collector log line: %q", logLines[0])
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
@@ -888,7 +888,7 @@ wait "$child"
 	if !strings.Contains(out.String(), "Collector interrupted.") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 }
@@ -959,7 +959,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	logLines := strings.Split(logContent, "\n")
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiroutingservice")) ||
-		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(tmpDir, ".connext", "gateway", "routing", "my-gw.xml")) ||
+		!strings.Contains(logLines[0], "-cfgFile "+filepath.Join(app.WorkDir, ".connext", "gateway", "routing", "my-gw.xml")) ||
 		!strings.Contains(logLines[0], "-cfgName my_gw_gateway") ||
 		!strings.Contains(logLines[0], "-verbosity LOCAL:WARN") {
 		t.Fatalf("unexpected first routing log line: %q", logLines[0])
@@ -973,7 +973,7 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	if !strings.Contains(out.String(), "(⚠ not secure)") {
 		t.Fatalf("missing dashboard warning: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {
@@ -1114,7 +1114,7 @@ func TestRunRoutingServiceInterruptRendersStoppedScreen(t *testing.T) {
 	if rc != 0 && rc != 130 {
 		t.Fatalf("unexpected rc: %d", rc)
 	}
-	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(tmpDir, ".connext", "gateway", "logs")) {
+	if !strings.Contains(out.String(), "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "gateway", "logs")) {
 		t.Fatalf("missing logs hint: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "Gateway interrupted.") || !strings.Contains(out.String(), "• Run 'rticloud gateway' from this directory to start this gateway again.") {

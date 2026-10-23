@@ -24,6 +24,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/cloudapi"
 	"github.com/realtimeinnovations/connext-cloud-cli/commands"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
+	"github.com/realtimeinnovations/connext-cloud-cli/edgeprovision"
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
@@ -741,6 +742,61 @@ func TestRegisterClientTargetDirectory(t *testing.T) {
 				}
 			} else if data, err := os.ReadFile(filepath.Join(target, "generated", "security", "client.key")); err != nil || string(data) != "private key" {
 				t.Fatalf("custom bundle key = %q, error = %v", data, err)
+			}
+		})
+	}
+}
+
+func TestEdgeSyncOutputSelectionKeepsStoreBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"identityCertPem":"test certificate"}`)
+	}))
+	defer server.Close()
+	for _, scenario := range []string{"file", "new-directory", "store-child"} {
+		t.Run(scenario, func(t *testing.T) {
+			work, storage := t.TempDir(), t.TempDir()
+			selected := filepath.Join(work, "selected")
+			if err := os.Symlink(storage, selected); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			rt := app.NewRuntime(work, io.Discard)
+			rt.EdgeProvision.NewMTLSClient = func(url, _, _, _, _ string) (*edgeprovision.Client, error) {
+				return edgeprovision.NewClient(url), nil
+			}
+			args := []string{"identity", "--url", server.URL, "--cert", "cert", "--key", "key", "--ca", "ca", "--service", "service", "--domain-tpl-id", "domain", "--participant-tpl-id", "participant", "--deployment-name", "node"}
+			output := filepath.Join(storage, "cert.pem")
+			switch scenario {
+			case "file":
+				args = append(args, "--output", filepath.Join(selected, "cert.pem"))
+			case "new-directory":
+				args = append(args, "--output", filepath.Join(selected, "new")+string(filepath.Separator))
+				output = filepath.Join(storage, "new", "identity.crt")
+			case "store-child":
+				if err := os.Symlink(storage, filepath.Join(work, ".connext")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := newEdgeSyncCommand(rt)
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if scenario == "store-child" {
+				if err == nil {
+					t.Fatal("accepted symlink under project base")
+				}
+				entries, err := os.ReadDir(storage)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("output escaped: %v, %v", entries, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(output)
+				if err != nil || string(data) != "test certificate" {
+					t.Fatalf("certificate=%q, %v", data, err)
+				}
 			}
 		})
 	}

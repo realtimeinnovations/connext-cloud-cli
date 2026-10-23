@@ -9,11 +9,14 @@ package fileoutput_test
 import (
 	"errors"
 	"fmt"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/app"
 	"github.com/realtimeinnovations/connext-cloud-cli/auth"
 	"github.com/realtimeinnovations/connext-cloud-cli/config"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
@@ -21,9 +24,8 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/spy"
 )
 
-// Verify production wiring with one shared invalid ancestor fixture. Do not
-// repeat the utility's filesystem matrix for each consumer.
-func TestManagedOutputCallersRejectInvalidAncestor(t *testing.T) {
+// Verify root-selection wiring without repeating the utility filesystem matrix.
+func TestManagedOutputCallersAcceptSelectedBaseSymlinks(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		write func(string) error
@@ -45,7 +47,7 @@ func TestManagedOutputCallersRejectInvalidAncestor(t *testing.T) {
 			return spy.NewApp(root, io.Discard).WriteRuntimeState(map[string]any{"test": true})
 		}},
 		{"enrollment", func(root string) error {
-			return edgestore.New(root).WriteEnrollArtifacts("service", "0:domain", "participant", "node", edgestore.EnrollArtifacts{DeviceCertPEM: []byte("cert"), PrivateKeyPEM: []byte("key")})
+			return app.NewRuntime(root, io.Discard).EdgeStore.WriteEnrollArtifacts("service", "0:domain", "participant", "node", edgestore.EnrollArtifacts{DeviceCertPEM: []byte("cert"), PrivateKeyPEM: []byte("key")})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,12 +56,34 @@ func TestManagedOutputCallersRejectInvalidAncestor(t *testing.T) {
 			if err := os.Symlink(outside, link); err != nil {
 				t.Skipf("symlinks unavailable: %v", err)
 			}
-			if err := tc.write(filepath.Join(link, "new-root")); !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("want unsafe output error, got %v", err)
+			if err := tc.write(filepath.Join(link, "new-root")); err != nil {
+				t.Fatal(err)
+			}
+			written := 0
+			if err := filepath.WalkDir(outside, func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !entry.IsDir() {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					if len(data) == 0 {
+						t.Errorf("empty output: %s", path)
+					}
+					written++
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if written == 0 {
+				t.Fatal("no output written through selected base")
 			}
 			entries, err := os.ReadDir(outside)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("output escaped: %v, %v", entries, err)
+			if err != nil || len(entries) != 1 || entries[0].Name() != "new-root" {
+				t.Fatalf("output did not reach selected base: %v, %v", entries, err)
 			}
 		})
 	}
@@ -168,5 +192,71 @@ func TestTemplateDownloadsStayWithinTheirOutputDirectory(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestProjectOutputsRejectSymlinksBelowSelectedBase(t *testing.T) {
+	for _, kind := range []string{"gateway", "spy", "agent"} {
+		t.Run(kind, func(t *testing.T) {
+			root, outside := t.TempDir(), t.TempDir()
+			if err := os.Symlink(outside, filepath.Join(root, ".connext")); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			runtime := app.NewRuntime(root, io.Discard)
+			var err error
+			switch kind {
+			case "gateway":
+				err = runtime.Gateway.WriteConfig(map[string]any{"test": true})
+			case "spy":
+				err = runtime.Spy.WriteConfig(map[string]any{"test": true})
+			case "agent":
+				err = runtime.EdgeStore.WriteEnrollArtifacts("service", "domain", "participant", "node", edgestore.EnrollArtifacts{DeviceCertPEM: []byte("cert")})
+			}
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("accepted generated link: %v", err)
+			}
+			entries, err := os.ReadDir(outside)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("output escaped: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestRelocatedRTIRootKeepsManagedChildrenStrict(t *testing.T) {
+	home, storage, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", home)
+	if err := os.Symlink(storage, filepath.Join(home, ".rti")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := config.New("").WriteConfig(map[string]string{"region": "test"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(storage, "rticloud", "configuration", "config.json"))
+	if err != nil || !strings.Contains(string(data), "test") {
+		t.Fatalf("relocated config=%q, %v", data, err)
+	}
+	install, err := connext.ManagedInstallationPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(install, filepath.Join(canonical, "rticloud", "installations")+string(filepath.Separator)) {
+		t.Fatalf("installer did not use relocated storage: %s", install)
+	}
+	if err := os.Symlink(outside, filepath.Join(storage, "rticloud", "auth")); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.New(nil, "").SaveAccessToken("dummy", 3600); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("accepted generated auth link: %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("token escaped: %v, %v", entries, err)
 	}
 }

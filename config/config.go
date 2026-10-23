@@ -85,6 +85,8 @@ func New(path string) *Manager {
 	var pathErr error
 	if path == "" {
 		path, pathErr = DefaultConfigPath()
+	} else if resolved, err := fileoutput.ResolveFile(path); err == nil {
+		path = resolved
 	}
 	return &Manager{Path: path, Env: os.Getenv, HTTPClient: &http.Client{Timeout: 30 * time.Second}, pathErr: pathErr, defaultPath: defaultPath}
 }

@@ -123,7 +123,7 @@ func TestGetAccessTokenFromHomeFileReturnsReadError(t *testing.T) {
 		t.Fatalf("GetAccessTokenFromHomeFile() token = %q, want empty", token)
 	}
 	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != tmpDir {
+	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != manager.TokenPath {
 		t.Fatalf("expected read failure for credential directory, got %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestGetAccessTokenForCLIReturnsHomeFileErrorBeforeAPIKeyAuth(t *testing.T) 
 		t.Fatalf("GetAccessTokenForCLI() token = %q, want empty", token)
 	}
 	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != tmpDir {
+	if !errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != manager.TokenPath {
 		t.Fatalf("expected read failure for credential directory, got %v", err)
 	}
 	if errors.Is(err, apiKeyErr) {

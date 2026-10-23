@@ -124,6 +124,8 @@ func New(configProvider ConfigProvider, tokenPath string) *Manager {
 	var pathErr error
 	if tokenPath == "" {
 		tokenPath, pathErr = config.DefaultCredentialsPath()
+	} else if resolved, err := fileoutput.ResolveFile(tokenPath); err == nil {
+		tokenPath = resolved
 	}
 	return newManager(configProvider, tokenPath, defaultPath, pathErr)
 }
@@ -152,6 +154,8 @@ func NewEvaluationManagerWithEnv(tokenPath string, env func(string) string) *Man
 	var pathErr error
 	if tokenPath == "" {
 		tokenPath, pathErr = DefaultWorkspacesCredentialsPath()
+	} else if resolved, err := fileoutput.ResolveFile(tokenPath); err == nil {
+		tokenPath = resolved
 	}
 	manager := newManager(fixedConfigProvider{
 		clientID: config.GetWorkspacesClientID(env),

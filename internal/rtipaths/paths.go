@@ -28,6 +28,16 @@ func Root(home, platform, localAppData string) string {
 	return filepath.Join(home, ".rti")
 }
 
+// ResolveRoot accepts a relocated shared .rti directory, while paths generated
+// beneath it (rticloud/auth, installations, etc.) remain subject to validation.
+func ResolveRoot(home, platform, localAppData string) (string, error) {
+	root := Root(home, platform, localAppData)
+	if !filepath.IsAbs(home) || !filepath.IsAbs(root) {
+		return "", fmt.Errorf("determine RTI directory: path is not absolute: %s", root)
+	}
+	return fileoutput.ResolveDirectory(root)
+}
+
 func CloudRoot() (string, error) {
 	_, root, err := resolveHomeAndCloudRoot()
 	return root, err
@@ -41,11 +51,11 @@ func resolveHomeAndCloudRoot() (string, string, error) {
 	if home == "" {
 		return "", "", fmt.Errorf("determine user home directory: path is empty")
 	}
-	root := filepath.Join(Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud")
-	if !filepath.IsAbs(root) {
-		return "", "", fmt.Errorf("determine RTI Cloud directory: path is not absolute: %s", root)
+	base, err := ResolveRoot(home, runtime.GOOS, os.Getenv("LOCALAPPDATA"))
+	if err != nil {
+		return "", "", err
 	}
-	return home, root, nil
+	return home, filepath.Join(base, "rticloud"), nil
 }
 
 // ValidateManagedPath checks containment and rejects symlinks throughout the path,

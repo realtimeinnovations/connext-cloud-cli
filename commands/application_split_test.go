@@ -7,6 +7,8 @@
 package commands
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -211,7 +214,7 @@ func TestSplitRefreshRejectsSpecialFileBeforeChangingAnyArtifacts(t *testing.T) 
 
 // Each route has its own dispatch/overwrite behavior, but all must reach the
 // common writer. The filesystem edge-case matrix lives in internal/fileoutput.
-func TestApplicationDownloadRoutesRejectSymlinkedAncestor(t *testing.T) {
+func TestApplicationDownloadRoutesAcceptSelectedBaseSymlinks(t *testing.T) {
 	for _, route := range []string{"generated", "example", "zip", "config", "gateway", "collector"} {
 		t.Run(route, func(t *testing.T) {
 			outside := t.TempDir()
@@ -239,29 +242,51 @@ func TestApplicationDownloadRoutesRejectSymlinkedAncestor(t *testing.T) {
 			if route == "config" {
 				api = registrationTestAPI(map[string]any{"client_data": map[string]any{"kind": "app"}})
 			}
-			if err := New(api, io.Discard).DownloadApplication("db", "app", options); !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("want unsafe output error, got %v", err)
+			if err := New(api, io.Discard).DownloadApplication("db", "app", options); err != nil {
+				t.Fatal(err)
 			}
-			entries, err := os.ReadDir(outside)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("outside files created: %v, %v", entries, err)
+			name := "generated/app.qos.xml"
+			switch route {
+			case "zip":
+				name = "db-app.zip"
+			case "config":
+				name = "config.json"
+			case "gateway", "collector":
+				name = "app.xml"
+			case "example":
+				name = "app.py"
+			}
+			data, err := os.ReadFile(filepath.Join(outside, "new", "bundle", name))
+			if err != nil || len(data) == 0 {
+				t.Fatalf("expected artifact %s: %q, %v", name, data, err)
 			}
 		})
 	}
 }
 
 func TestRegistrationPreflightsBeforeCredentialIssuance(t *testing.T) {
-	for _, location := range []string{"directory-ancestor", "zip-ancestor", "artifact", "security-entry"} {
+	for _, location := range []string{"generated-symlink", "zip-symlink", "artifact", "security-entry"} {
 		t.Run(location, func(t *testing.T) {
 			root := t.TempDir()
 			destination := filepath.Join(root, "bundle")
-			zipOutput := location == "zip-ancestor"
-			if location == "directory-ancestor" || zipOutput {
-				link := filepath.Join(t.TempDir(), "link")
-				if err := os.Symlink(root, link); err != nil {
+			zipOutput := location == "zip-symlink"
+			if location == "generated-symlink" || zipOutput {
+				if err := os.MkdirAll(destination, 0700); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(destination, "generated")
+				target := t.TempDir()
+				if zipOutput {
+					link = filepath.Join(destination, "db-app-client.zip")
+					target = filepath.Join(target, "output.zip")
+					if err := os.WriteFile(target, []byte("untouched"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(target, link); err != nil {
 					t.Skipf("symlinks unavailable: %v", err)
 				}
-				destination = filepath.Join(link, "bundle")
+
 			} else {
 				name := "app.xml"
 				if location == "security-entry" {
@@ -285,6 +310,59 @@ func TestRegistrationPreflightsBeforeCredentialIssuance(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(root, "bundle", "manifest.json")); !os.IsNotExist(err) {
 				t.Fatalf("preflight created output: %v", err)
+			}
+		})
+	}
+}
+
+func TestRegistrationWritesBundleThroughSelectedSymlink(t *testing.T) {
+	for _, zipOutput := range []bool{false, true} {
+		t.Run(fmt.Sprint(zipOutput), func(t *testing.T) {
+			base := t.TempDir()
+			link := filepath.Join(t.TempDir(), "selected")
+			if err := os.Symlink(base, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			runner := New(splitAPI(), io.Discard)
+			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
+			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{TargetDir: link, ForceOverwrite: true, ZIP: zipOutput, GeneratePrivateKey: true}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(base, "generated", "security", "identity.pem")
+			if zipOutput {
+				path = filepath.Join(base, "db-app-client.zip")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !zipOutput {
+				if string(data) != "certificate" {
+					t.Fatalf("credential=%q", data)
+				}
+			} else {
+				archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, entry := range archive.File {
+					if strings.HasSuffix(entry.Name, "/generated/security/identity.pem") {
+						file, err := entry.Open()
+						if err != nil {
+							t.Fatal(err)
+						}
+						content, err := io.ReadAll(file)
+						file.Close()
+						if err != nil || string(content) != "certificate" {
+							t.Fatalf("credential=%q, %v", content, err)
+						}
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("archive omitted issued credential")
+				}
 			}
 		})
 	}

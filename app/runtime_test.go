@@ -44,7 +44,10 @@ func TestRunUpdateRequiresManager(t *testing.T) {
 }
 
 func TestConfigureConnextDirCreatesAndSelectsDirectory(t *testing.T) {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime := &Runtime{EdgeStore: edgestore.New(base)}
 	path := filepath.Join(base, "artifacts")
 	for attempt := 0; attempt < 2; attempt++ {
@@ -75,26 +78,26 @@ func TestConfigureConnextDirClassifiesErrors(t *testing.T) {
 	}
 }
 
-func TestConfigureConnextDirRejectsLinkedDirectory(t *testing.T) {
+func TestConfigureConnextDirAcceptsSelectedDirectorySymlink(t *testing.T) {
 	base, outside := t.TempDir(), t.TempDir()
 	link := filepath.Join(base, "linked")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	runtime := &Runtime{EdgeStore: edgestore.New(base)}
-	original := runtime.EdgeStore.ConnextDir
 	for _, path := range []string{link, filepath.Join(link, "new")} {
-		if err := runtime.ConfigureConnextDir(path); err == nil {
-			t.Fatalf("accepted linked destination %s", path)
+		if err := runtime.ConfigureConnextDir(path); err != nil {
+			t.Fatal(err)
 		}
-		if runtime.EdgeStore.ConnextDir != original {
-			t.Fatal("rejected destination changed the selected directory")
+		if err := runtime.EdgeStore.WriteFile(filepath.Join(runtime.EdgeStore.ConnextDir, "artifact"), []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(path, "artifact"))
+		if err != nil || string(data) != "test" {
+			t.Fatalf("selected directory output=%q, %v", data, err)
 		}
 	}
-	entries, err := os.ReadDir(outside)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("rejected destination changed external directory: %v", err)
-	}
+
 }
 
 func TestDecodeGatewayJSONPassesThroughNotConfiguredError(t *testing.T) {
@@ -792,7 +795,11 @@ func TestReturningProjectIgnoresSavedConnextPath(t *testing.T) {
 }
 
 func TestRuntimeNDDSHOMEConfirmationAndSkipPreflight(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(base, "rti_connext_dds-7.7.0")
 	if err := os.MkdirAll(filepath.Join(directory, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +821,11 @@ func TestRuntimeNDDSHOMEConfirmationAndSkipPreflight(t *testing.T) {
 		}
 	}
 	// Initial setup has already asked, so do not ask again before launch.
-	values := map[string]any{"runtime": map[string]any{"connext_home": directory}}
+	selected := filepath.Join(t.TempDir(), "selected-install")
+	if err := os.Symlink(directory, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	values := map[string]any{"runtime": map[string]any{"connext_home": selected}}
 	result, err := resolveRuntimeConnext(values, false, false, internalconnext.ConfirmationFromSelector(func(string, []string, string) (string, error) {
 		t.Fatal("duplicate confirmation")
 		return "", nil

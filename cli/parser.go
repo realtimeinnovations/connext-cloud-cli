@@ -1936,6 +1936,28 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 
 	// All edge-sync endpoints use mTLS and require certificate verification.
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		// Only explicit CLI destinations select a new base. Store-derived paths
+		// keep the project's boundary and must not resolve generated children.
+		if flag := c.Flags().Lookup("output"); flag != nil && flag.Changed && flag.Value.String() != "" {
+			path := flag.Value.String()
+			info, _ := os.Stat(path)
+			directory := c.Name() == "renew-cert" || strings.HasSuffix(path, string(filepath.Separator)) || (info != nil && info.IsDir())
+			var resolved string
+			var err error
+			if directory {
+				resolved, err = fileoutput.ResolveDirectory(path)
+				// Preserve directory intent when the selected directory is new.
+				resolved += string(filepath.Separator)
+			} else {
+				resolved, err = fileoutput.ResolveFile(path)
+			}
+			if err != nil {
+				return err
+			}
+			if err := flag.Value.Set(resolved); err != nil {
+				return err
+			}
+		}
 		// --connext-dir relocates only the Connext artifacts tree; the agent
 		// base (inbox, log, mTLS, state) stays under BaseDir.
 		if connextDir != "" {
@@ -2322,6 +2344,13 @@ your container runtime for supervision.`,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if crlInterval > 0 {
 					runtime.EdgeSyncAgent.CRLInterval = crlInterval
+				}
+				if cmd.Flags().Changed("log-file") && logFile != "" {
+					resolved, err := fileoutput.ResolveFile(logFile)
+					if err != nil {
+						return err
+					}
+					logFile = resolved
 				}
 				runtime.EdgeSyncAgent.LogFile = logFile
 				runtime.EdgeSyncAgent.ManualMode = manualMode

@@ -71,6 +71,15 @@ type Runtime struct {
 }
 
 func NewRuntime(workDir string, out io.Writer) *Runtime {
+	if workDir == "" {
+		workDir = "."
+	}
+	// Resolve the project base before appending managed .connext paths.
+	// Invalid inputs remain intact for output preflight to reject.
+	if resolved, err := fileoutput.ResolveDirectory(workDir); err == nil {
+		workDir = resolved
+	}
+
 	configManager := config.New("")
 	authManager := auth.New(configManager, "")
 	authManager.Stdout = out
@@ -179,19 +188,18 @@ func (runtime *Runtime) RunUpdate(ctx context.Context, out, errOut io.Writer, op
 }
 
 func (runtime *Runtime) ConfigureConnextDir(path string) error {
-	info, err := fileoutput.Inspect(path, fileoutput.FileOrDirectory)
-	if err == nil {
-		if !info.IsDir() {
-			return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("--connext-dir %q exists but is not a directory", path)}
-		}
-	} else {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("--connext-dir %q: %w", path, err)
-		}
-		if err := fileoutput.MkdirAll(path, 0o755); err != nil {
-			return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
-		}
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return &clierror.Error{Code: clierror.CodeInvalidArgument, Message: fmt.Sprintf("--connext-dir %q exists but is not a directory", path)}
 	}
+	resolved, err := fileoutput.ResolveDirectory(path)
+	if err != nil {
+		return fmt.Errorf("--connext-dir %q: %w", path, err)
+	}
+	if err := fileoutput.MkdirAll(resolved, 0o755); err != nil {
+		return fmt.Errorf("--connext-dir %q could not be created: %w", path, err)
+	}
+	path = resolved
+
 	if runtime != nil && runtime.EdgeStore != nil {
 		runtime.EdgeStore.ConnextDir = path
 	}
@@ -530,7 +538,11 @@ func gatewayPreflightError(config map[string]any, existingConfig bool, err error
 func resolveRuntimeConnext(values map[string]any, existingConfig, skipPreflight bool, confirm internalconnext.Confirmer, options internalconnext.DiscoveryOptions) (internalconnext.Install, error) {
 	if !existingConfig {
 		if home := common.NestedString(values, "runtime", "connext_home"); home != "" {
-			return internalconnext.ValidateInstall(home, options)
+			resolved, err := fileoutput.ResolveDirectory(home)
+			if err != nil {
+				return internalconnext.Install{}, err
+			}
+			return internalconnext.ValidateInstall(resolved, options)
 		}
 	}
 	options.AcceptExternalNDDSHome = skipPreflight

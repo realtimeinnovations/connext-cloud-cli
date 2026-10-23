@@ -56,7 +56,11 @@ func managedRoot() (string, error) {
 		return "", fmt.Errorf("cannot determine user home directory")
 	}
 	platform, _ := Platform()
-	return filepath.Join(rtipaths.Root(home, platform, os.Getenv("LOCALAPPDATA")), "rticloud", "installations"), nil
+	base, err := rtipaths.ResolveRoot(home, platform, os.Getenv("LOCALAPPDATA"))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "rticloud", "installations"), nil
 }
 
 type installHost struct {

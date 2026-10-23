@@ -358,7 +358,11 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		}
 		return runner.mutationResult(map[string]any{"license": string(body), "status": "downloaded"}, string(body))
 	}
-	if err := runner.writeOutputFile(output, body, false); err != nil {
+	resolved, err := fileoutput.ResolveFile(output)
+	if err != nil {
+		return err
+	}
+	if err := runner.writeOutputFile(resolved, body, false); err != nil {
 		return err
 	}
 	absolutePath, err := filepath.Abs(output)
@@ -983,6 +987,13 @@ func enrollmentSecurityMode(result map[string]any) (string, error) {
 // endpoint URL (nodeUrl) from the enrollment response, so callers such as the
 // edge-sync agent can route subsequent mTLS calls without a campaign token.
 func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string, genKey bool) (string, string, error) {
+	if genKey && keyFile != "" {
+		resolved, err := fileoutput.ResolveFile(keyFile)
+		if err != nil {
+			return "", "", err
+		}
+		keyFile = resolved
+	}
 	var csrPEM string
 	var generatedKey []byte
 	if genKey {

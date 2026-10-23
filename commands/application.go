@@ -331,6 +331,15 @@ func (runner *Runner) DownloadApplication(name string, appName string, options A
 	if err := validateApplicationNames(name, appName, ""); err != nil {
 		return err
 	}
+	var err error
+	if options.ConfigOutput != "" {
+		options.ConfigOutput, err = fileoutput.ResolveFile(options.ConfigOutput)
+	} else {
+		options.TargetDir, err = fileoutput.ResolveDirectory(filepath.Clean(options.TargetDir))
+	}
+	if err != nil {
+		return err
+	}
 	artifacts, found, err := runner.fetchApplication(name, appName)
 	if err != nil || !found {
 		return err
@@ -606,8 +615,13 @@ func (runner *Runner) RegisterAppClientWithOptions(name, appName, clientID strin
 	if options.TargetDir != "" {
 		root = filepath.Clean(options.TargetDir)
 	}
+	root, err := fileoutput.ResolveDirectory(root)
+	if err != nil {
+		return err
+	}
+	destination = filepath.Join(root, destination)
 	if options.ZIP {
-		destination = filepath.Join(root, destination+".zip")
+		destination += ".zip"
 	} else if options.TargetDir != "" {
 		destination = root
 	}

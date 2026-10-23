@@ -327,9 +327,9 @@ func TestLocalFailuresRemainScoped(t *testing.T) {
 	}
 }
 
-func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
+func TestSymlinkedManagedChildBlocksManagedChecks(t *testing.T) {
 	o, home, _ := fixture(t)
-	rtiRoot := rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA"))
+	rtiRoot := filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud")
 	target := filepath.Join(home, "rti-target")
 	if err := os.Rename(rtiRoot, target); err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
 	r := Run(context.Background(), o)
 	c := check(t, r, "managed_connext")
 	if c.Status != CheckFail || c.Code != "CONNEXT_INVALID" || c.RequiredAction != "repair_connext" {
-		t.Fatalf("symlinked RTI root should block installation: %+v", c)
+		t.Fatalf("symlinked managed child should block installation: %+v", c)
 	}
 	if r.Healthy || r.ExitCode != 1 {
 		t.Fatalf("expected unhealthy report with exit 1: %+v", r)

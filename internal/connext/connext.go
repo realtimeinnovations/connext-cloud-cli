@@ -165,7 +165,11 @@ func DiscoverInstall(env map[string]string, options DiscoveryOptions) (Install, 
 				useOverride = answer
 			}
 			if useOverride {
-				install, err := ValidateInstall(home, options)
+				resolved, err := fileoutput.ResolveDirectory(home)
+				if err != nil {
+					return Install{}, err
+				}
+				install, err := ValidateInstall(resolved, options)
 				if err == nil {
 					install.Reason = "selected via $NDDSHOME"
 				}

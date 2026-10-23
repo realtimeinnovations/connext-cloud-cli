@@ -90,6 +90,11 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
+	// Keep an invalid input intact so output preflight reports the error.
+	if resolved, err := fileoutput.ResolveDirectory(workDir); err == nil {
+		workDir = resolved
+	}
+
 	app := &GatewayApp{
 		WorkDir:                       workDir,
 		In:                            os.Stdin,

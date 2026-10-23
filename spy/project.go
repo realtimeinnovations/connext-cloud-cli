@@ -83,6 +83,11 @@ func NewApp(workDir string, out io.Writer) *App {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
+	// Keep an invalid input intact so output preflight reports the error.
+	if resolved, err := fileoutput.ResolveDirectory(workDir); err == nil {
+		workDir = resolved
+	}
+
 	app := &App{
 		WorkDir: workDir,
 		In:      os.Stdin,

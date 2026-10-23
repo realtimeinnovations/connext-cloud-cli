@@ -244,7 +244,11 @@ func createConnextInstall(t *testing.T, root string, version string, executables
 			t.Fatal(err)
 		}
 	}
-	return install
+	canonical, err := filepath.EvalSymlinks(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func writeVersions(t *testing.T, install string, content string) {
