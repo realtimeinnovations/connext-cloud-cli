@@ -178,6 +178,11 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 	if err := safeManagedPath(rti, directory); err != nil {
 		return Install{}, err
 	}
+	// Healthy installations need no mutation or exclusive installer lock.
+	// Pending and recovery markers keep interrupted repairs on the locked path.
+	if install, err := validateManaged(directory, artifact.version, options); err == nil {
+		return install, nil
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return Install{}, err
 	}
@@ -241,7 +246,7 @@ func installManagedArtifact(options DiscoveryOptions, artifact installerArtifact
 		}
 		// Save outside the replaced tree, without importing into the license store.
 		// The next repair can recover this copy if the process exits abruptly.
-		if contents, err := readCopyableLicense(filepath.Join(directory, LicenseFileName)); err == nil {
+		if contents, err := installationLicenseForRepair(directory); err == nil {
 			if err := writeVerifiedLicense(installationLicenseRecoveryPath(directory), contents); err != nil {
 				return Install{}, fmt.Errorf("preserving installation license: %w", err)
 			}
@@ -356,4 +361,34 @@ func restoreInstallationLicense(directory string) error {
 		return err
 	}
 	return os.Remove(path)
+}
+
+// Never follow a local symlink during repair. The saved license can replace it,
+// but a failed read of a regular local file must still stop destructive repair.
+func installationLicenseForRepair(directory string) ([]byte, error) {
+	local := filepath.Join(directory, LicenseFileName)
+	contents, err := readCopyableLicense(local)
+	if err == nil {
+		return contents, nil
+	}
+	info, statErr := os.Lstat(local)
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil, err
+	}
+	saved, savedErr := managedLicensePath()
+	if savedErr != nil {
+		return nil, savedErr
+	}
+	root, savedErr := managedRoot()
+	if savedErr != nil {
+		return nil, savedErr
+	}
+	if savedErr := safeManagedPath(filepath.Dir(filepath.Dir(root)), saved); savedErr != nil {
+		return nil, savedErr
+	}
+	contents, savedErr = readCopyableLicense(saved)
+	if savedErr != nil {
+		return nil, fmt.Errorf("%w; no readable saved license to replace the local symlink: %v", err, savedErr)
+	}
+	return contents, nil
 }

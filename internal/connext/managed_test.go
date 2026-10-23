@@ -473,3 +473,123 @@ func TestManagedDiscoveryRecoversLicenseBeforeReusingInstall(t *testing.T) {
 		t.Fatalf("recovery copy was not cleaned up: %v", err)
 	}
 }
+
+func TestManagedHealthyInstallBypassesInstallerLock(t *testing.T) {
+	root := managedTestEnvironment(t)
+	artifact, err := bundledInstaller("linux", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := writeManagedFixture(t, filepath.Dir(artifact.installationPath(root)), installerVersion)
+	lock, err := os.OpenFile(filepath.Join(root, ".installer-"+artifact.version+"-"+artifact.platform+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := lockInstallerFile(lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"", filepath.Join(filepath.Dir(directory), installationPendingFile), installationLicenseRecoveryPath(directory)} {
+		if marker != "" {
+			if err := os.WriteFile(marker, []byte("pending recovery"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		install, err := installManagedArtifact(DiscoveryOptions{Output: io.Discard}, artifact)
+		if marker == "" {
+			if err != nil || install.Path != directory {
+				t.Fatalf("healthy installation: %+v %v", install, err)
+			}
+		} else {
+			if err == nil || !strings.Contains(err.Error(), "another Connext setup is running") {
+				t.Fatalf("marker %s bypassed lock: %v", marker, err)
+			}
+			if err := os.Remove(marker); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestManagedRepairUsesSavedLicenseForLocalSymlink(t *testing.T) {
+	for _, scenario := range []string{"readable-target", "dangling-target", "missing-saved", "symlinked-saved"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := managedTestEnvironment(t)
+			artifact, err := bundledInstaller("linux", "amd64")
+			if err != nil {
+				t.Fatal(err)
+			}
+			prefix := filepath.Dir(artifact.installationPath(root))
+			directory := writeManagedFixture(t, prefix, installerVersion)
+			if err := os.Remove(Executable(directory, "rtiddsspy")); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside.dat")
+			if scenario != "dangling-target" {
+				if err := os.WriteFile(outside, []byte("unrelated"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			license := filepath.Join(directory, LicenseFileName)
+			if err := os.Symlink(outside, license); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			saved, _ := managedLicensePath()
+			if scenario != "missing-saved" {
+				if err := writeVerifiedLicense(saved, []byte(validTestConnextLicense)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "symlinked-saved" {
+				if err := os.Remove(saved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := "#!/bin/sh\nexit 1\n"
+			artifact.sha256 = fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+			oldRun := runInstallerCommand
+			t.Cleanup(func() { runInstallerCommand = oldRun })
+			ran := false
+			runInstallerCommand = func(context.Context, string, []string, io.Writer, io.Writer, func(string) string) error {
+				ran = true
+				writeManagedFixture(t, prefix, installerVersion)
+				return nil
+			}
+			_, err = installManagedArtifact(DiscoveryOptions{
+				Output:        io.Discard,
+				Confirmations: ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }),
+				HTTPClient: &http.Client{Transport: testRoundTripper(func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(strings.NewReader(script))}, nil
+				})},
+			}, artifact)
+			if scenario == "missing-saved" || scenario == "symlinked-saved" {
+				if err == nil || ran {
+					t.Fatalf("unsafe repair proceeded: ran=%v err=%v", ran, err)
+				}
+				if target, err := os.Readlink(license); err != nil || target != outside {
+					t.Fatalf("local symlink changed: %q %v", target, err)
+				}
+			} else {
+				if err != nil || !ran {
+					t.Fatalf("repair failed: ran=%v err=%v", ran, err)
+				}
+				if data, err := readCopyableLicense(license); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("local license: %q %v", data, err)
+				}
+				if data, err := readCopyableLicense(saved); err != nil || string(data) != validTestConnextLicense {
+					t.Fatalf("saved license changed: %q %v", data, err)
+				}
+			}
+			if scenario == "dangling-target" {
+				if _, err := os.Lstat(outside); !os.IsNotExist(err) {
+					t.Fatalf("dangling target created: %v", err)
+				}
+			} else if data, err := os.ReadFile(outside); err != nil || string(data) != "unrelated" {
+				t.Fatalf("external target changed: %q %v", data, err)
+			}
+		})
+	}
+}
