@@ -389,7 +389,12 @@ func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
 	const childHome = "RTICLOUD_TEST_REPAIR_HOME"
 	if home := os.Getenv(childHome); home != "" {
 		UserHomeDir = func() (string, error) { return home, nil }
-		Platform = func() (string, string) { return "linux", "amd64" }
+		Platform = func() (string, string) {
+			if runtime.GOOS == "windows" {
+				return "windows", "amd64"
+			}
+			return "linux", "amd64"
+		}
 	} else {
 		managedTestEnvironment(t)
 	}

@@ -445,7 +445,7 @@ func TestLicenseInspectionUsesSymlinkedEnvironmentWithoutCopying(t *testing.T) {
 
 func TestLicenseInspectionRequiresImportEvenWhenLocalCopyMatches(t *testing.T) {
 	o, home, install := fixture(t)
-	if err := os.Remove(filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")); err != nil {
+	if err := os.Remove(filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat")); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE\nFEATURE RTIRWT RTI 6. permanent SECRET_LICENSE")
@@ -462,7 +462,7 @@ func TestLicenseInspectionRequiresImportEvenWhenLocalCopyMatches(t *testing.T) {
 func TestDoctorReportsRequiredLicenseFeatureProblems(t *testing.T) {
 	o, home, install := fixture(t)
 	contents := "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE"
-	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), contents)
+	writeFile(t, filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat"), contents)
 	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), contents)
 	before := snapshot(t, home)
 	r := Run(context.Background(), o)

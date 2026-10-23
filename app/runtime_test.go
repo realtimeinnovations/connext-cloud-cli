@@ -362,14 +362,8 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				}
 				source = environmentPath
 			} else if scenario == "relative-file" {
-				cwd, err := os.Getwd()
-				if err != nil {
-					t.Fatal(err)
-				}
-				environmentPath, err = filepath.Rel(cwd, source)
-				if err != nil {
-					t.Fatal(err)
-				}
+				t.Chdir(filepath.Dir(source))
+				environmentPath = filepath.Base(source)
 			} else if scenario == "quoted-file" {
 				environmentPath = "\"" + source + "\""
 			}
