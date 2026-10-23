@@ -13,7 +13,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -265,12 +267,6 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	manager.Platform = func() (string, string) { return "linux", "amd64" }
 	manager.ExecutablePath = func() (string, error) { return binaryPath, nil }
 	manager.EvalSymlinks = func(path string) (string, error) { return path, nil }
-	manager.ReadFile = func(path string) ([]byte, error) {
-		if filepath.Base(path) == archiveName {
-			t.Fatalf("archive should be hashed from disk, not read into memory: %s", path)
-		}
-		return os.ReadFile(path)
-	}
 
 	if err := manager.Run(context.Background(), Options{}); err != nil {
 		t.Fatal(err)
@@ -284,6 +280,164 @@ func TestRunInstallsVerifiedUnixArchive(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Updated rticloud from 1.2.3 to 1.2.4") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRunPreservesInstalledBinary(t *testing.T) {
+	errorsByScenario := map[string]string{
+		"checksum-mismatch":    "checksum mismatch",
+		"missing-checksum":     "checksum not found",
+		"invalid-archive":      "gzip: invalid header",
+		"missing-binary":       "rticloud not found in archive",
+		"nonregular-binary":    "not a regular file",
+		"release-http-error":   "release check failed: HTTP 503",
+		"archive-http-error":   "HTTP 503",
+		"checksum-http-error":  "HTTP 503",
+		"interrupted-download": "unexpected EOF",
+		"rename-failure":       "replacement rename failed",
+	}
+	for _, scenario := range []string{"checksum-mismatch", "missing-checksum", "invalid-archive", "missing-binary", "nonregular-binary", "release-http-error", "archive-http-error", "checksum-http-error", "interrupted-download", "rename-failure", "check-only", "up-to-date"} {
+		t.Run(scenario, func(t *testing.T) {
+			installDir := t.TempDir()
+			binaryPath := filepath.Join(installDir, "rticloud")
+			if err := os.WriteFile(binaryPath, []byte("original binary"), 0751); err != nil {
+				t.Fatal(err)
+			}
+			originalInfo, err := os.Stat(binaryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const archiveName = "connext-cloud-cli_linux_amd64.tar.gz"
+			archive := tarGzBytes(t, "rticloud", []byte("replacement binary"))
+			switch scenario {
+			case "invalid-archive":
+				archive = []byte("not a gzip archive")
+			case "missing-binary":
+				archive = tarGzBytes(t, "other", []byte("not the executable"))
+			case "nonregular-binary":
+				path := filepath.Join(t.TempDir(), "fixture.tar.gz")
+				writeTarGzEntry(t, path, &tar.Header{Name: "rticloud", Typeflag: tar.TypeSymlink, Linkname: "other"}, nil)
+				var err error
+				archive, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			checksums := checksumsFor(archiveName, archive)
+			if scenario == "checksum-mismatch" {
+				checksums = checksumsFor(archiveName, []byte("different bytes"))
+			}
+			if scenario == "missing-checksum" {
+				checksums = checksumsFor("other.tar.gz", archive)
+			}
+			var downloads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					http.Error(w, "unexpected method", 405)
+					return
+				}
+				switch r.URL.Path {
+				case "/releases/latest":
+					if scenario == "release-http-error" {
+						http.Error(w, "release unavailable", 503)
+						return
+					}
+					version := "v1.2.4"
+					if scenario == "up-to-date" {
+						version = "v1.2.3"
+					}
+					fmt.Fprintf(w, `{"tag_name":%q}`, version)
+				case "/v1.2.4/" + archiveName:
+					downloads.Add(1)
+					if scenario == "archive-http-error" {
+						http.Error(w, "archive unavailable", 503)
+						return
+					}
+					if scenario == "interrupted-download" {
+						w.Header().Set("Content-Length", fmt.Sprint(len(archive)+100))
+						_, _ = w.Write(archive[:len(archive)/2])
+						return
+					}
+					_, _ = w.Write(archive)
+				case "/v1.2.4/checksums.txt":
+					downloads.Add(1)
+					if scenario == "checksum-http-error" {
+						http.Error(w, "checksums unavailable", 503)
+						return
+					}
+					_, _ = io.WriteString(w, checksums)
+				default:
+					t.Errorf("unexpected request: %s", r.URL)
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			var out bytes.Buffer
+			manager := newTestManager(t, server.URL)
+			manager.DownloadURL = server.URL
+			manager.Out = &out
+			manager.CurrentVersion = func() string { return "1.2.3" }
+			manager.Platform = func() (string, string) { return "linux", "amd64" }
+			manager.ExecutablePath = func() (string, error) { return binaryPath, nil }
+			temporaryRoot := t.TempDir()
+			manager.MkdirTemp = func(_ string, pattern string) (string, error) { return os.MkdirTemp(temporaryRoot, pattern) }
+			if scenario == "rename-failure" {
+				manager.Rename = func(oldPath, newPath string) error {
+					if filepath.Base(oldPath) == ".rticloud.update" {
+						return fmt.Errorf("replacement rename failed")
+					}
+					return os.Rename(oldPath, newPath)
+				}
+			}
+			err = manager.Run(context.Background(), Options{CheckOnly: scenario == "check-only"})
+			wantError := scenario != "check-only" && scenario != "up-to-date"
+			if (err != nil) != wantError {
+				t.Fatalf("err=%v wantError=%v output=%s", err, wantError, out.String())
+			}
+			if wantError && !strings.Contains(err.Error(), errorsByScenario[scenario]) {
+				t.Fatalf("wrong failure: %v; want %q", err, errorsByScenario[scenario])
+			}
+			data, readErr := os.ReadFile(binaryPath)
+			if readErr != nil || string(data) != "original binary" {
+				t.Fatalf("original binary changed: %q %v", data, readErr)
+			}
+			info, statErr := os.Stat(binaryPath)
+			if statErr != nil {
+				t.Fatal(statErr)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != originalInfo.Mode().Perm() {
+				t.Fatalf("binary mode changed: %v", info.Mode())
+			}
+			for _, path := range []string{filepath.Join(installDir, ".rticloud.update"), binaryPath + ".bak"} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("replacement debris %s: %v", path, err)
+				}
+			}
+			leftovers, err := os.ReadDir(temporaryRoot)
+			if err != nil || len(leftovers) != 0 {
+				t.Fatalf("download directory not cleaned: %v %v", leftovers, err)
+			}
+			if strings.Contains(out.String(), "Updated rticloud") {
+				t.Fatalf("failure/check reported success: %s", out.String())
+			}
+			wantDownloads := int32(2)
+			switch scenario {
+			case "release-http-error", "check-only", "up-to-date":
+				wantDownloads = 0
+			case "archive-http-error", "interrupted-download":
+				wantDownloads = 1
+			}
+			if downloads.Load() != wantDownloads {
+				t.Fatalf("downloads=%d, want %d", downloads.Load(), wantDownloads)
+			}
+			if scenario == "check-only" && !strings.Contains(out.String(), "Update available") {
+				t.Fatalf("missing update hint: %s", out.String())
+			}
+			if scenario == "up-to-date" && !strings.Contains(out.String(), "rticloud is up to date.") {
+				t.Fatalf("missing version result: %s", out.String())
+			}
+		})
 	}
 }
 
