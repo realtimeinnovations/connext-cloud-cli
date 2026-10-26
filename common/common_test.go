@@ -50,11 +50,14 @@ func TestSecureFilesPreferLocalKeyAndPreserveExistingPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"client.key": "ignored-invalid-server-copy",
-		"CLIENT.KEY": "ignored-invalid-uppercase-copy",
-		"Client.Key": "ignored-invalid-mixed-case-copy",
-		"psk.key":    base64.StdEncoding.EncodeToString([]byte("PSK")),
-		"client.crt": base64.StdEncoding.EncodeToString([]byte("certificate")),
+		"client.key":   "ignored-invalid-server-copy",
+		"CLIENT.KEY":   "ignored-invalid-uppercase-copy",
+		"Client.Key":   "ignored-invalid-mixed-case-copy",
+		"client.key.":  "ignored-invalid-trailing-dot-copy",
+		"client.key ":  "ignored-invalid-trailing-space-copy",
+		"CLIENT.KEY. ": "ignored-invalid-combined-alias-copy",
+		"psk.key":      base64.StdEncoding.EncodeToString([]byte("PSK")),
+		"client.crt":   base64.StdEncoding.EncodeToString([]byte("certificate")),
 	}
 	if err := SaveSecureFiles(files, []byte("local private key"), root); err != nil {
 		t.Fatal(err)

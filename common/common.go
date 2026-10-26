@@ -194,15 +194,15 @@ func ValidateSecureFileNames(files map[string]string) error {
 }
 
 // DecodeSecureFiles validates the entire response before any output is written.
-// A locally generated private key takes precedence over all case variants of
-// the server's copy, including on case-insensitive filesystems.
+// A locally generated private key takes precedence over the server's copy,
+// including case variants and trailing-dot/space aliases on Windows.
 func DecodeSecureFiles(files map[string]string, privateKey []byte) (map[string][]byte, error) {
 	if err := ValidateSecureFileNames(files); err != nil {
 		return nil, err
 	}
 	decoded := make(map[string][]byte, len(files)+1)
 	for name, content := range files {
-		if len(privateKey) > 0 && strings.EqualFold(name, "client.key") {
+		if len(privateKey) > 0 && strings.EqualFold(strings.TrimRight(name, ". "), "client.key") {
 			continue
 		}
 		data, err := base64.StdEncoding.DecodeString(content)

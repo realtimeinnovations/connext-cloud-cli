@@ -276,7 +276,7 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 	bundle, err := applicationBundle("demo", "shapes", "client-1", applicationArtifacts{
 		Bundle:   testApplicationBundle(`<dds path="./generated/security/identity.pem"/>`, "# example\n"),
 		Manifest: json.RawMessage(`{"version":1,"topics":[]}`),
-	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")), "CLIENT.KEY": "ignored-invalid-server-copy"}, []byte("private key"))
+	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")), "CLIENT.KEY": "ignored-invalid-server-copy", "client.key. ": "ignored-invalid-windows-alias"}, []byte("private key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 		files[file.Name] = file
 	}
 	root := "demo-shapes-client-1/"
-	if files[root+"generated/security/CLIENT.KEY"] != nil {
+	if files[root+"generated/security/CLIENT.KEY"] != nil || files[root+"generated/security/client.key. "] != nil {
 		t.Fatal("archive contains the conflicting server key")
 	}
 	if files[root+"shapes.xml"] == nil || files[root+"manifest.json"] == nil || files[root+"generated/security/identity.pem"] == nil {
