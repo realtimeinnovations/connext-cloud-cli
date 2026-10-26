@@ -70,7 +70,7 @@ func newSetupFixtureAt(t *testing.T, input, workDir string) *setupFixture {
 	}
 	oldHome, oldPlatform, oldPaths := connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir
 	connext.UserHomeDir = func() (string, error) { return home, nil }
-	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	connext.Platform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 	rtipaths.UserHomeDir = connext.UserHomeDir
 	t.Cleanup(func() { connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir = oldHome, oldPlatform, oldPaths })
 	oldTransport := http.DefaultTransport

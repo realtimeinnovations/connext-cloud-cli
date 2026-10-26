@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -213,7 +214,8 @@ func managedLicenseRuntime(t *testing.T) (*Runtime, internalconnext.Install, str
 	}
 	oldHome, oldPlatform := internalconnext.UserHomeDir, internalconnext.Platform
 	internalconnext.UserHomeDir = func() (string, error) { return home, nil }
-	internalconnext.Platform = func() (string, string) { return "linux", "amd64" }
+	internalconnext.Platform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
+	t.Setenv("LOCALAPPDATA", home)
 	t.Cleanup(func() { internalconnext.UserHomeDir, internalconnext.Platform = oldHome, oldPlatform })
 	t.Setenv("NDDSHOME", "")
 	t.Setenv("RTI_LICENSE_FILE", "")
