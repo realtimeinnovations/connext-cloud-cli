@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
@@ -85,6 +86,11 @@ func NewGatewayApp(workDir string, out io.Writer) *GatewayApp {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
+	// Keep an invalid input intact so output preflight reports the error.
+	if resolved, err := fileoutput.ResolveDirectory(workDir); err == nil {
+		workDir = resolved
+	}
+
 	app := &GatewayApp{
 		WorkDir:                       workDir,
 		In:                            os.Stdin,
@@ -157,14 +163,14 @@ func (app *GatewayApp) ReadConfig() (map[string]any, error) {
 }
 
 func (app *GatewayApp) WriteConfig(config map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.ConfigPath()), 0o755); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.ConfigPath(), data, 0o644)
+	return fileoutput.WriteFile(app.ConfigPath(), data, 0o644)
 }
 
 func (app *GatewayApp) RuntimeState() (map[string]any, error) {
@@ -183,14 +189,14 @@ func (app *GatewayApp) RuntimeState() (map[string]any, error) {
 }
 
 func (app *GatewayApp) WriteRuntimeState(state map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(app.RuntimePath()), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(app.RuntimePath(), data, 0o644)
+	return fileoutput.WriteFile(app.RuntimePath(), data, 0o644)
 }
 
 func ProjectID(config map[string]any) string {
@@ -235,6 +241,9 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 	if databus := common.StringValue(config, "databus"); databus != "" {
 		if gatewayTemplate, _ := templates["gateway"].(string); gatewayTemplate != "" {
 			target := filepath.Join(app.RoutingDir(), gatewayTemplate+".xml")
+			if err := fileoutput.ValidateWithin(app.RoutingDir(), target, fileoutput.File); err != nil {
+				return err
+			}
 			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(databus, gatewayTemplate, target); err != nil {
 					return err
@@ -246,6 +255,9 @@ func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) erro
 	if observability := common.StringValue(config, "observability"); observability != "" {
 		if collectorTemplate, _ := templates["collector"].(string); collectorTemplate != "" {
 			target := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
+			if err := fileoutput.ValidateWithin(app.CollectorDir(), target, fileoutput.File); err != nil {
+				return err
+			}
 			if force || !common.FileExists(target) {
 				if err := app.downloadTemplate(observability, collectorTemplate, target); err != nil {
 					return err
@@ -277,10 +289,10 @@ func (app *GatewayApp) downloadTemplate(resourceName string, templateName string
 		encoded, _ := json.MarshalIndent(typed, "", "  ")
 		content = string(encoded)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(target, []byte(content), 0o644)
+	return fileoutput.WriteFile(target, []byte(content), 0o644)
 }
 
 func (app *GatewayApp) EnsureSecureArtifacts(config map[string]any) (bool, bool, error) {
@@ -332,6 +344,9 @@ func (app *GatewayApp) ensureSecureCredentials(resourceName string, templateName
 	}
 	if app.GenerateCSRFunc == nil || app.APIPost == nil {
 		return fmt.Errorf("secure credential dependencies are not configured")
+	}
+	if err := common.PreflightSecureDirectory(targetDir); err != nil {
+		return err
 	}
 	privateKey, csr, err := app.GenerateCSRFunc(resourceName, templateName, clientID)
 	if err != nil {
@@ -407,10 +422,10 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 	}
 	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
 	command, discoveryEnabled := app.collectorCommand(collectorExe, xmlPath, collectorTemplate)
-	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return nil, err
 	}
-	logFile, err := os.OpenFile(app.CollectorLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := fileoutput.OpenAppend(app.CollectorLogPath(), 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -524,10 +539,10 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	}
 	xmlPath := filepath.Join(app.CollectorDir(), collectorTemplate+".xml")
 	command, discoveryEnabled := app.collectorCommand(collectorExe, xmlPath, collectorTemplate)
-	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
 	}
-	logFile, err := os.OpenFile(app.CollectorLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := fileoutput.OpenAppend(app.CollectorLogPath(), 0o644)
 	if err != nil {
 		return 0, err
 	}
@@ -687,7 +702,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 		"-cfgName", routingServiceConfigName(gatewayTemplate),
 		"-verbosity", "LOCAL:WARN",
 	}
-	if err := os.MkdirAll(app.LogsDir(), 0o755); err != nil {
+	if err := fileoutput.MkdirAll(app.LogsDir(), 0o755); err != nil {
 		return 0, err
 	}
 	liveView := NewRoutingLiveView(config)
@@ -706,7 +721,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	}
 	renderer := TerminalRenderer{Out: app.Out}
 	defer func() { _ = renderer.Finish() }()
-	logFile, err := os.OpenFile(app.RoutingLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := fileoutput.OpenAppend(app.RoutingLogPath(), 0o644)
 	if err != nil {
 		return 0, err
 	}

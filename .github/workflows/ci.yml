@@ -11,7 +11,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +32,7 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: go build -o /tmp/rticloud ./cmd/rticloud
+        run: go build ./cmd/rticloud
 
   build-release-targets:
     runs-on: ubuntu-latest

@@ -138,7 +138,7 @@ func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX package installer fixture")
 	}
-	for _, scenario := range []string{"install", "cancel", "eof", "installer-failure", "missing-capability"} {
+	for _, scenario := range []string{"install", "symlink-base", "cancel", "eof", "installer-failure", "missing-capability"} {
 		t.Run(scenario, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			install := createConnextInstall(t, tmpDir, "7.7.0", "rtiroutingservice", "rtipkginstall")
@@ -158,8 +158,16 @@ chmod +x bin/rticollectorservicelite
 			if err := os.WriteFile(Executable(install, "rtipkginstall"), []byte(script), 0755); err != nil {
 				t.Fatal(err)
 			}
+			selectedDir := tmpDir
+			if scenario == "symlink-base" {
+				selectedDir = filepath.Join(t.TempDir(), "project")
+				if err := os.Symlink(tmpDir, selectedDir); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			success := scenario == "install" || scenario == "symlink-base"
 			oldWD, oldPlatform, oldGet := CurrentWorkDir, Platform, HTTPGet
-			CurrentWorkDir = func() (string, error) { return tmpDir, nil }
+			CurrentWorkDir = func() (string, error) { return selectedDir, nil }
 			Platform = func() (string, string) { return "linux", "amd64" }
 			calls := 0
 			HTTPGet = func(url string) (*http.Response, error) {
@@ -181,7 +189,7 @@ chmod +x bin/rticollectorservicelite
 			selector := prompt.Selector{In: bufio.NewReader(strings.NewReader(input)), Out: &out}
 			selected := Install{Path: install, Version: "7.7.0"}
 			err := EnsureCollectorServiceLite(selected, selector.Select, &out)
-			if (err == nil) != (scenario == "install") {
+			if (err == nil) != success {
 				t.Fatalf("unexpected result: %v\n%s", err, out.String())
 			}
 			wantCalls := 1
@@ -191,10 +199,10 @@ chmod +x bin/rticollectorservicelite
 			if calls != wantCalls {
 				t.Fatalf("downloads=%d want=%d", calls, wantCalls)
 			}
-			if HasCollectorServiceLite(selected) != (scenario == "install") {
+			if HasCollectorServiceLite(selected) != success {
 				t.Fatal("unexpected installed capability")
 			}
-			if strings.Contains(out.String(), "Connext Cloud Extras package installed.") != (scenario == "install") {
+			if strings.Contains(out.String(), "Connext Cloud Extras package installed.") != success {
 				t.Fatalf("incorrect completion output: %s", out.String())
 			}
 			if scenario == "missing-capability" && !strings.Contains(err.Error(), "still missing") {
@@ -260,7 +268,11 @@ func createConnextInstall(t *testing.T, root string, version string, executables
 			t.Fatal(err)
 		}
 	}
-	return install
+	canonical, err := filepath.EvalSymlinks(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func writeVersions(t *testing.T, install string, content string) {

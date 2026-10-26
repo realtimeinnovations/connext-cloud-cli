@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -487,7 +488,11 @@ func TestValidateConnextRejectsOldVersion(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(install, "bin", "rtiroutingservice"), []byte(""), 0o755); err != nil {
+	launcher := "rtiroutingservice"
+	if runtime.GOOS == "windows" {
+		launcher += ".bat"
+	}
+	if err := os.WriteFile(filepath.Join(install, "bin", launcher), []byte(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, err := ValidateConnextInstall(install)

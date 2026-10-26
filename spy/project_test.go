@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -252,7 +253,11 @@ func TestValidateConnextRequiresRTIDdsSpy77(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(install, "bin", "rtiddsspy"), []byte(""), 0o755); err != nil {
+	launcher := "rtiddsspy"
+	if runtime.GOOS == "windows" {
+		launcher += ".bat"
+	}
+	if err := os.WriteFile(filepath.Join(install, "bin", launcher), []byte(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, err := ValidateConnextInstall(install)
@@ -262,6 +267,9 @@ func TestValidateConnextRequiresRTIDdsSpy77(t *testing.T) {
 }
 
 func TestRunSpyWritesRuntimeLogAndStatistics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
 	if err := os.MkdirAll(filepath.Join(appDir, "generated"), 0o755); err != nil {
@@ -309,7 +317,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !strings.HasPrefix(logLines[0], "Running ") ||
 		!strings.Contains(logLines[0], filepath.Join(install, "bin", "rtiddsspy")) ||
 		!strings.Contains(logLines[0], "-domainId 100") ||
-		!strings.Contains(logLines[0], "-qosFile "+filepath.Join(tmpDir, ".connext", "spy", "app", "generated", "app_1.qos.xml")) ||
+		!strings.Contains(logLines[0], "-qosFile "+filepath.Join(app.WorkDir, ".connext", "spy", "app", "generated", "app_1.qos.xml")) ||
 		!strings.Contains(logLines[0], "-qosProfile app_1_qos_lib::app_1_qos_profile") {
 		t.Fatalf("unexpected first spy log line: %q", logLines[0])
 	}
@@ -323,7 +331,7 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 	if !strings.Contains(output, "Connext Cloud Spy") || !strings.Contains(output, "Square") || !strings.Contains(output, "Discovered 1 DataWriters") {
 		t.Fatalf("unexpected output: %s", output)
 	}
-	if !strings.Contains(output, "• Logs saved under "+filepath.Join(tmpDir, ".connext", "spy", "logs")) {
+	if !strings.Contains(output, "• Logs saved under "+filepath.Join(app.WorkDir, ".connext", "spy", "logs")) {
 		t.Fatalf("missing logs hint: %s", output)
 	}
 	if !strings.Contains(output, "• Run 'rticloud spy' from this directory to start this spy again.") {
@@ -332,6 +340,9 @@ printf "\t1, 0, 0 \t(Topic=\"Square\"  Type=\"ShapeType\")\n"
 }
 
 func TestRunSpyWithTextOutputPrintsPlainEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
+	}
 	tmpDir := t.TempDir()
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
 	if err := os.MkdirAll(filepath.Join(appDir, "generated"), 0o755); err != nil {

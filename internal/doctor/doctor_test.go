@@ -51,7 +51,7 @@ func fixture(t *testing.T) (Options, string, connext.Install) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
 	oldHome, oldPlatform, oldPaths := connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir
 	connext.UserHomeDir = func() (string, error) { return home, nil }
-	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	connext.Platform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 	rtipaths.UserHomeDir = connext.UserHomeDir
 	t.Cleanup(func() { connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir = oldHome, oldPlatform, oldPaths })
 	t.Setenv("NDDSHOME", "")
@@ -73,7 +73,7 @@ func fixture(t *testing.T) (Options, string, connext.Install) {
 		writeFile(t, connext.Executable(path, tool), "launcher")
 	}
 	license := "FEATURE RTIPRO RTI 4. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. 12-oct-2026 0 SIGN=SECRET_LICENSE\nFEATURE RTIRWT RTI 6. 12-oct-2026 0 SIGN=SECRET_LICENSE"
-	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), license)
+	writeFile(t, filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat"), license)
 	writeFile(t, filepath.Join(path, "rti_license.dat"), license)
 	project := filepath.Join(home, "project")
 	gatewayPath, spyPath := filepath.Join(project, ".connext", "gateway.yaml"), filepath.Join(project, ".connext", "spy.yaml")
@@ -327,9 +327,9 @@ func TestLocalFailuresRemainScoped(t *testing.T) {
 	}
 }
 
-func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
+func TestSymlinkedManagedChildBlocksManagedChecks(t *testing.T) {
 	o, home, _ := fixture(t)
-	rtiRoot := filepath.Join(home, ".rti")
+	rtiRoot := filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud")
 	target := filepath.Join(home, "rti-target")
 	if err := os.Rename(rtiRoot, target); err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestSymlinkedRTIRootBlocksManagedChecks(t *testing.T) {
 	r := Run(context.Background(), o)
 	c := check(t, r, "managed_connext")
 	if c.Status != CheckFail || c.Code != "CONNEXT_INVALID" || c.RequiredAction != "repair_connext" {
-		t.Fatalf("symlinked RTI root should block installation: %+v", c)
+		t.Fatalf("symlinked managed child should block installation: %+v", c)
 	}
 	if r.Healthy || r.ExitCode != 1 {
 		t.Fatalf("expected unhealthy report with exit 1: %+v", r)
@@ -445,7 +445,7 @@ func TestLicenseInspectionUsesSymlinkedEnvironmentWithoutCopying(t *testing.T) {
 
 func TestLicenseInspectionRequiresImportEvenWhenLocalCopyMatches(t *testing.T) {
 	o, home, install := fixture(t)
-	if err := os.Remove(filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")); err != nil {
+	if err := os.Remove(filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat")); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE\nFEATURE RTIRWT RTI 6. permanent SECRET_LICENSE")
@@ -462,7 +462,7 @@ func TestLicenseInspectionRequiresImportEvenWhenLocalCopyMatches(t *testing.T) {
 func TestDoctorReportsRequiredLicenseFeatureProblems(t *testing.T) {
 	o, home, install := fixture(t)
 	contents := "FEATURE RTIPRO RTI 4. permanent SECRET_LICENSE\nFEATURE RTISECURITY RTI 5. permanent SECRET_LICENSE"
-	writeFile(t, filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat"), contents)
+	writeFile(t, filepath.Join(rtipaths.Root(home, runtime.GOOS, os.Getenv("LOCALAPPDATA")), "rticloud", "licenses", "rti_license.dat"), contents)
 	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), contents)
 	before := snapshot(t, home)
 	r := Run(context.Background(), o)

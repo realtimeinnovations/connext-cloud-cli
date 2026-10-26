@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,11 @@ type setupFixture struct {
 
 func newSetupFixture(t *testing.T, input string) *setupFixture {
 	t.Helper()
+	return newSetupFixtureAt(t, input, t.TempDir())
+}
+
+func newSetupFixtureAt(t *testing.T, input, workDir string) *setupFixture {
+	t.Helper()
 	home := t.TempDir()
 	for _, key := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA"} {
 		t.Setenv(key, home)
@@ -64,7 +70,7 @@ func newSetupFixture(t *testing.T, input string) *setupFixture {
 	}
 	oldHome, oldPlatform, oldPaths := connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir
 	connext.UserHomeDir = func() (string, error) { return home, nil }
-	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	connext.Platform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 	rtipaths.UserHomeDir = connext.UserHomeDir
 	t.Cleanup(func() { connext.UserHomeDir, connext.Platform, rtipaths.UserHomeDir = oldHome, oldPlatform, oldPaths })
 	oldTransport := http.DefaultTransport
@@ -83,7 +89,7 @@ func newSetupFixture(t *testing.T, input string) *setupFixture {
 	for _, name := range []string{"rtiroutingservice", "rtiddsspy", "rticollectorservicelite"} {
 		setupWrite(t, connext.Executable(f.install, name), "fixture executable")
 	}
-	f.runtime = NewRuntime(t.TempDir(), &f.out)
+	f.runtime = NewRuntime(workDir, &f.out)
 	if err := f.runtime.Config.WriteConfig(map[string]string{"api_host": "https://setup.invalid/api/v1", "region": "us-east-2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -435,15 +441,19 @@ func TestSetupReportsCloudFailureWithoutWritingArtifact(t *testing.T) {
 
 func TestSetupRegistersAndReusesRealSecureCredentials(t *testing.T) {
 	for _, tc := range []struct {
-		command string
-		nested  bool
+		command        string
+		nested, linked bool
 	}{
 		{command: "gateway"}, {command: "collector"}, {command: "spy"},
 		{command: "gateway", nested: true}, {command: "collector", nested: true}, {command: "spy", nested: true},
+		{command: "gateway", linked: true}, {command: "collector", linked: true}, {command: "spy", linked: true},
 	} {
 		shape := "top-level"
 		if tc.nested {
 			shape = "nested"
+		}
+		if tc.linked {
+			shape = "linked project"
 		}
 		t.Run(tc.command+"/"+shape, func(t *testing.T) {
 			command := tc.command
@@ -454,7 +464,15 @@ func TestSetupRegistersAndReusesRealSecureCredentials(t *testing.T) {
 			if command == "spy" {
 				input, template, clientField = "1\n1\n", "app_1", "app_client_id"
 			}
-			f := newSetupFixture(t, input)
+			workDir := t.TempDir()
+			if tc.linked {
+				selected := filepath.Join(t.TempDir(), "project")
+				if err := os.Symlink(workDir, selected); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				workDir = selected
+			}
+			f := newSetupFixtureAt(t, input, workDir)
 			body := f.replies["GET /databuses/"+resource][0].body.(map[string]any)
 			if tc.nested {
 				config, _ := body["config"].(map[string]any)
@@ -641,6 +659,50 @@ printf 'setup-process-ready\n'
 			}
 			if log := setupRead(t, logPath); !strings.Contains(log, "setup-process-ready") {
 				t.Fatalf("process output missing from log: %s", log)
+			}
+		})
+	}
+}
+
+// Exercise preflight through real Runtime wiring and HTTP adapters. Rejection
+// must preserve existing credentials and avoid a registration request.
+func TestProjectCredentialPreflightBeforeRegistration(t *testing.T) {
+	for _, command := range []string{"gateway", "collector", "spy"} {
+		t.Run(command, func(t *testing.T) {
+			f := newSetupFixture(t, "")
+			resource := "inventory"
+			values := map[string]any{"databus": resource, "templates": map[string]any{"gateway": "gw", "app": "app_1"}}
+			target := f.runtime.Gateway.RoutingDir()
+			if command == "collector" {
+				resource = "inventory-obs"
+				values = map[string]any{"observability": resource, "templates": map[string]any{"collector": "collector"}}
+				target = filepath.Join(f.runtime.Gateway.CollectorDir(), "secure")
+			}
+			if command == "spy" {
+				target = filepath.Join(f.runtime.Spy.AppDir(), "generated", "security")
+			}
+			f.reply("GET /databuses/"+resource, map[string]any{"secure": true})
+			if err := os.MkdirAll(filepath.Join(target, "client.key"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			setupWrite(t, filepath.Join(target, "client.crt"), "existing certificate")
+			var err error
+			if command == "spy" {
+				_, err = f.runtime.Spy.EnsureSecureArtifacts(values)
+			} else {
+				_, _, err = f.runtime.Gateway.EnsureSecureArtifacts(values)
+			}
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("want unsafe output error, got %v", err)
+			}
+			if len(f.posts()) != 0 {
+				t.Fatal("invalid credential destination registered a client")
+			}
+			if got := setupRead(t, filepath.Join(target, "client.crt")); got != "existing certificate" {
+				t.Fatalf("certificate changed: %q", got)
+			}
+			if entries, err := os.ReadDir(target); err != nil || len(entries) != 2 {
+				t.Fatalf("preflight changed outputs: %v, %v", entries, err)
 			}
 		})
 	}

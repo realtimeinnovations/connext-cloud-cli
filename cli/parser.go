@@ -23,6 +23,7 @@ import (
 	"github.com/realtimeinnovations/connext-cloud-cli/edgesyncagent"
 	"github.com/realtimeinnovations/connext-cloud-cli/gateway"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -1935,6 +1936,28 @@ func newEdgeSyncCommand(runtime *app.Runtime) *cobra.Command {
 
 	// All edge-sync endpoints use mTLS and require certificate verification.
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		// Only explicit CLI destinations select a new base. Store-derived paths
+		// keep the project's boundary and must not resolve generated children.
+		if flag := c.Flags().Lookup("output"); flag != nil && flag.Changed && flag.Value.String() != "" {
+			path := flag.Value.String()
+			info, _ := os.Stat(path)
+			directory := c.Name() == "renew-cert" || strings.HasSuffix(path, string(filepath.Separator)) || (info != nil && info.IsDir())
+			var resolved string
+			var err error
+			if directory {
+				resolved, err = fileoutput.ResolveDirectory(path)
+				// Preserve directory intent when the selected directory is new.
+				resolved += string(filepath.Separator)
+			} else {
+				resolved, err = fileoutput.ResolveFile(path)
+			}
+			if err != nil {
+				return err
+			}
+			if err := flag.Value.Set(resolved); err != nil {
+				return err
+			}
+		}
 		// --connext-dir relocates only the Connext artifacts tree; the agent
 		// base (inbox, log, mTLS, state) stays under BaseDir.
 		if connextDir != "" {
@@ -2322,6 +2345,15 @@ your container runtime for supervision.`,
 				if crlInterval > 0 {
 					runtime.EdgeSyncAgent.CRLInterval = crlInterval
 				}
+				if !cmd.Flags().Changed("log-file") && runtime.EdgeStore != nil {
+					logFile = runtime.EdgeStore.LogPath()
+				} else if logFile != "" {
+					resolved, err := fileoutput.ResolveFile(logFile)
+					if err != nil {
+						return err
+					}
+					logFile = resolved
+				}
 				runtime.EdgeSyncAgent.LogFile = logFile
 				runtime.EdgeSyncAgent.ManualMode = manualMode
 				runtime.EdgeSyncAgent.DeploymentName = serial
@@ -2378,9 +2410,6 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 						}
 					}
 					inboxDir := runtime.EdgeSyncAgent.InboxDir
-					if err := os.MkdirAll(inboxDir, 0o755); err != nil {
-						return err
-					}
 					if serial == "" {
 						serial = edgesyncagent.DetectSerial()
 					}
@@ -2418,7 +2447,13 @@ for a lightweight domain. Direct enrollment uses the agent's management login.`,
 					data, _ := json.MarshalIndent(req, "", "  ")
 					fname := strings.ReplaceAll(req.ServiceID+"-"+req.ParticipantID, "/", "_") + ".json"
 					dest := filepath.Join(inboxDir, "enroll-"+fname)
-					if err := os.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
+					if err := fileoutput.ValidateWithin(inboxDir, dest, fileoutput.File); err != nil {
+						return err
+					}
+					if err := fileoutput.MkdirAll(inboxDir, 0o755); err != nil {
+						return err
+					}
+					if err := fileoutput.WriteFile(dest, append(data, '\n'), 0o600); err != nil {
 						return err
 					}
 					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Enrollment request written to %s\n", dest)
