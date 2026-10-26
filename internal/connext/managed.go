@@ -30,7 +30,6 @@ import (
 const installationPendingFile = ".rticloud-installing"
 
 var (
-	ManagedInstaller    = installManaged
 	runInstallerCommand = executeInstallerCommand
 	exactVersionRE      = regexp.MustCompile(`^\d+\.\d+\.\d+(?:\.\d+)?$`)
 )

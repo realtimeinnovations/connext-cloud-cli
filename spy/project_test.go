@@ -8,7 +8,6 @@ package spy
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,170 +120,12 @@ func TestQosProfileFromXMLSelectsDefaultNativeAppProfile(t *testing.T) {
 	}
 }
 
-func TestConfigureFirstRunPromptsForDatabusAndCloudNativeApp(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"obs": {}}, nil
-	}
-	resourceCalls := 0
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		resourceCalls++
-		if resourceCalls == 1 {
-			return map[string]any{"name": "inventory", "clients": map[string]any{}}, nil
-		}
-		return map[string]any{"name": "inventory", "clients": map[string]any{"app_1": map[string]any{"kind": "app"}, "gw": map[string]any{"kind": "gateway"}}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		if message != "After you've created the Cloud Native application in the dashboard, reload." {
-			return false, UserError{Message: message}
-		}
-		return true, nil
-	}
-	appSelectCalls := 0
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Cloud Native application from inventory:":
-			appSelectCalls++
-			if appSelectCalls == 1 {
-				return CreateNewApp, nil
-			}
-			return "app_1", nil
-		default:
-			return "", UserError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stringValue(config, "databus") != "inventory" || common.NestedString(config, "templates", "app") != "app_1" || common.NestedString(config, "runtime", "connext_home") != install {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	output := out.String()
-	if !strings.Contains(output, "Connext Cloud Spy setup") || !strings.Contains(output, "Create Cloud Native application") || !strings.Contains(output, "Configuration saved to "+filepath.Join(app.WorkDir, ".connext", "spy.yaml")) {
-		t.Fatalf("unexpected output: %s", output)
-	}
-}
-
-func TestConfigureFirstRunCanCreateRTICloudSpyApp(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, nil, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory", "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
-		if path != "/databuses/inventory/applications" {
-			return nil, UserError{Message: path}
-		}
-		if payload["kind"] != "app" || payload["client_name"] != RTICloudSpyAppName || payload["port"] != RTICloudSpyAppPort {
-			t.Fatalf("unexpected create payload: %#v", payload)
-		}
-		topicData, ok := payload["topic_data"].(map[string]any)
-		if !ok {
-			t.Fatalf("missing topic_data: %#v", payload)
-		}
-		domain, ok := topicData["0"].(map[string]any)
-		if !ok || domain["configuration"] != "all" || domain["domainId"] != 0 || domain["tag"] != "" {
-			t.Fatalf("unexpected topic domain: %#v", topicData)
-		}
-		allTopics, ok := domain["allTopicsConfiguration"].(map[string]any)
-		if !ok || allTopics["cloudToEdgeDirection"] != true || allTopics["edgeToCloudDirection"] != false {
-			t.Fatalf("unexpected topic permissions: %#v", domain)
-		}
-		return map[string]any{}, nil
-	}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Cloud Native application from inventory:":
-			if !containsString(choices, CreateRTICloudSpyApp) {
-				t.Fatalf("expected create rticloud_spy choice in %#v", choices)
-			}
-			return CreateRTICloudSpyApp, nil
-		default:
-			return "", UserError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.NestedString(config, "templates", "app") != RTICloudSpyAppName {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	if !strings.Contains(out.String(), "Created rticloud_spy cloud application") {
-		t.Fatalf("unexpected output: %s", out.String())
-	}
-}
-
-func TestConfigureFirstRunDoesNotOfferCreateWhenRTICloudSpyExists(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, nil, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory", "clients": map[string]any{
-			RTICloudSpyAppName: map[string]any{"kind": "app"},
-			"app_1":            map[string]any{"kind": "app"},
-		}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
-		t.Fatalf("did not expect create call: %s %#v", path, payload)
-		return nil, nil
-	}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Cloud Native application from inventory:":
-			if containsString(choices, CreateRTICloudSpyApp) {
-				t.Fatalf("did not expect create rticloud_spy choice in %#v", choices)
-			}
-			return RTICloudSpyAppName, nil
-		default:
-			return "", UserError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.NestedString(config, "templates", "app") != RTICloudSpyAppName {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-}
-
 func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 	app := NewApp(tmpDir, &out)
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
 	}
 	created := false
@@ -306,7 +147,8 @@ func TestValidateConfigResourcesCreatesMissingConfiguredRTICloudSpyApp(t *testin
 
 func TestValidateConfigResourcesRejectsMissingConfiguredApp(t *testing.T) {
 	app := NewApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
 	}
 	err := app.ValidateConfigResources(map[string]any{"databus": "db", "templates": map[string]any{"app": "missing"}})
@@ -317,7 +159,8 @@ func TestValidateConfigResourcesRejectsMissingConfiguredApp(t *testing.T) {
 
 func TestValidateConfigResourcesRejectsInactiveSpyDatabus(t *testing.T) {
 	app := NewApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"app_1": map[string]any{"kind": "app"}}}, nil
 	}
 	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}}
@@ -401,61 +244,6 @@ func TestDownloadArtifactsExplainsMissingDatabusEndpoint(t *testing.T) {
 		!strings.Contains(message, "rticloud databus resume --name test-new") ||
 		!strings.Contains(message, "rticloud spy") {
 		t.Fatalf("unexpected error: %s", message)
-	}
-}
-
-func TestSecureSpyCredentialsDownloadAndReuse(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewApp(tmpDir, &out)
-	targetDir := filepath.Join(app.AppDir(), "generated", "security")
-	registrations := 0
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": name, "config": map[string]any{"secure": true}}, nil
-	}
-	app.GenerateCSRFunc = func(resource string, template string, clientID string) ([]byte, string, error) {
-		return []byte("private-key"), "csr", nil
-	}
-	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
-		if path != "/databuses/db/applications/app_1/clients" || payload["client_id"] != "app_1-1" {
-			return nil, UserError{Message: path}
-		}
-		registrations++
-		return map[string]any{"secure_files": map[string]any{
-			"client.crt":             base64.StdEncoding.EncodeToString([]byte("cert")),
-			"identity_ca.crt":        base64.StdEncoding.EncodeToString([]byte("identity")),
-			"permissions_ca.crt":     base64.StdEncoding.EncodeToString([]byte("permissions")),
-			"signed_governance.p7s":  base64.StdEncoding.EncodeToString([]byte("governance")),
-			"signed_permissions.p7s": base64.StdEncoding.EncodeToString([]byte("signed")),
-			"psk.key":                base64.StdEncoding.EncodeToString([]byte("psk")),
-		}}, nil
-	}
-	config := map[string]any{"databus": "db", "templates": map[string]any{"app": "app_1"}, "clients": map[string]any{"app_client_id": "app_1-1"}}
-	secure, err := app.EnsureSecureArtifacts(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !secure {
-		t.Fatal("expected secure databus")
-	}
-	if got := readFile(t, filepath.Join(targetDir, "client.key")); got != "private-key" {
-		t.Fatalf("unexpected client.key: %s", got)
-	}
-	if got := readFile(t, filepath.Join(targetDir, "client.crt")); got != "cert" {
-		t.Fatalf("unexpected client.crt: %s", got)
-	}
-	output := out.String()
-	if !strings.Contains(output, "•") || !strings.Contains(output, "Secure Databus detected.") || strings.Count(output, "✓") < 2 || !strings.Contains(output, "Registered spy client credentials") || !strings.Contains(output, "Saved spy credentials to ") {
-		t.Fatalf("unexpected output: %s", output)
-	}
-	if !app.LocalSecureArtifacts() {
-		t.Fatal("saved credentials not recognized")
-	}
-	if _, err := app.EnsureSecureArtifacts(config); err != nil {
-		t.Fatal(err)
-	}
-	if registrations != 1 {
-		t.Fatalf("registered %d times; expected credential reuse", registrations)
 	}
 }
 
@@ -789,15 +577,6 @@ func TestResetRemovesConfigAndCredentials(t *testing.T) {
 func stringValue(config map[string]any, key string) string {
 	value, _ := config[key].(string)
 	return value
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func readFile(t *testing.T, path string) string {

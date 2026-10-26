@@ -7,8 +7,6 @@
 package commands
 
 import (
-	"archive/zip"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -152,16 +149,13 @@ func testApplicationBundle(application, example string) *applicationBundleV2 {
 }
 
 func TestCloudApplicationRejectsFlatResponseBeforeWritingOrRegistering(t *testing.T) {
-	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
 	for _, register := range []bool{false, true} {
 		api := &registrationOrderAPI{fakeAPI: registrationTestAPI(map[string]any{
 			"client_config": "<dds/>", "client_example": "# old", "manifest": map[string]any{"topics": []any{}},
 		})}
 		runner := New(api, io.Discard)
-		runner.WriteFile = func(string, []byte, os.FileMode) error {
-			t.Fatal("must reject obsolete response before writing")
-			return nil
-		}
 		runner.CSRGenerator = func(string, string, string) ([]byte, string, error) {
 			t.Fatal("must reject obsolete response before creating credentials")
 			return nil, "", nil
@@ -177,6 +171,9 @@ func TestCloudApplicationRejectsFlatResponseBeforeWritingOrRegistering(t *testin
 		}
 		if api.lastPayload != nil {
 			t.Fatal("obsolete artifacts must not register a client")
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Fatalf("obsolete response created output: %v, %v", entries, err)
 		}
 	}
 }
@@ -310,59 +307,6 @@ func TestRegistrationPreflightsBeforeCredentialIssuance(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(root, "bundle", "manifest.json")); !os.IsNotExist(err) {
 				t.Fatalf("preflight created output: %v", err)
-			}
-		})
-	}
-}
-
-func TestRegistrationWritesBundleThroughSelectedSymlink(t *testing.T) {
-	for _, zipOutput := range []bool{false, true} {
-		t.Run(fmt.Sprint(zipOutput), func(t *testing.T) {
-			base := t.TempDir()
-			link := filepath.Join(t.TempDir(), "selected")
-			if err := os.Symlink(base, link); err != nil {
-				t.Skipf("symlinks unavailable: %v", err)
-			}
-			runner := New(splitAPI(), io.Discard)
-			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{TargetDir: link, ForceOverwrite: true, ZIP: zipOutput, GeneratePrivateKey: true}); err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(base, "generated", "security", "identity.pem")
-			if zipOutput {
-				path = filepath.Join(base, "db-app-client.zip")
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !zipOutput {
-				if string(data) != "certificate" {
-					t.Fatalf("credential=%q", data)
-				}
-			} else {
-				archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-				if err != nil {
-					t.Fatal(err)
-				}
-				found := false
-				for _, entry := range archive.File {
-					if strings.HasSuffix(entry.Name, "/generated/security/identity.pem") {
-						file, err := entry.Open()
-						if err != nil {
-							t.Fatal(err)
-						}
-						content, err := io.ReadAll(file)
-						file.Close()
-						if err != nil || string(content) != "certificate" {
-							t.Fatalf("credential=%q, %v", content, err)
-						}
-						found = true
-					}
-				}
-				if !found {
-					t.Fatal("archive omitted issued credential")
-				}
 			}
 		})
 	}

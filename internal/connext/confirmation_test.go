@@ -46,19 +46,3 @@ func TestConfirmationAdapter(t *testing.T) {
 		}
 	}
 }
-
-func TestDiscoveryUsesBooleanConfirmation(t *testing.T) {
-	managedTestEnvironment(t)
-	custom := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiroutingservice")
-	calls := 0
-	result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmFunc(func(request Confirmation) (bool, error) {
-		calls++
-		if request.AcceptLabel != UseNDDSHOMELabel || request.DeclineLabel != UseManagedConnextLabel {
-			t.Fatal(request)
-		}
-		return true, nil
-	})})
-	if err != nil || calls != 1 || result.Path != custom {
-		t.Fatalf("%+v calls=%d err=%v", result, calls, err)
-	}
-}

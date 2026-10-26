@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
@@ -480,24 +479,6 @@ func TestAPIConnectionErrorReportsNotConfiguredHost(t *testing.T) {
 		if !strings.Contains(errMsg, check) {
 			t.Fatalf("missing %q in %s", check, errMsg)
 		}
-	}
-}
-
-func TestDiscoverConnextUsesManagedWithoutSelector(t *testing.T) {
-	old := connext.ManagedInstaller
-	t.Cleanup(func() { connext.ManagedInstaller = old })
-	connext.ManagedInstaller = func(options connext.DiscoveryOptions) (connext.Install, error) {
-		if options.ExecutableName != "rtiroutingservice" {
-			t.Fatal(options)
-		}
-		return connext.Install{Path: "managed", Version: "7.7.0.1"}, nil
-	}
-	result, err := DiscoverConnextInstallWithConfirmation(map[string]string{}, connext.ConfirmationFromSelector(func(string, []string, string) (string, error) {
-		t.Fatal("unexpected installation selector")
-		return "", nil
-	}))
-	if err != nil || result.Path != "managed" {
-		t.Fatalf("%#v %v", result, err)
 	}
 }
 

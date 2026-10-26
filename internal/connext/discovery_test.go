@@ -7,58 +7,62 @@
 package connext
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"io"
+	"net/http"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestTransparentManagedResolution(t *testing.T) {
-	managedTestEnvironment(t)
-	old := ManagedInstaller
-	t.Cleanup(func() { ManagedInstaller = old })
-	managed, err := ManagedInstallationPath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := managedTestEnvironment(t)
+	managed := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	for _, env := range []map[string]string{{}, {"CONNEXTDDS_DIR": "ignored"}, {"NDDSHOME": managed}, {"NDDSHOME": filepath.Join(filepath.Dir(managed), ".", filepath.Base(managed))}} {
-		called := false
-		ManagedInstaller = func(DiscoveryOptions) (Install, error) { called = true; return Install{Path: managed}, nil }
-		result, err := DiscoverInstall(env, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(string, []string, string) (string, error) {
-			t.Fatal("unexpected selector")
-			return "", nil
-		})})
-		if err != nil || !called || result.Path != managed {
-			t.Fatalf("%#v %v", result, err)
+		var out bytes.Buffer
+		result, err := DiscoverInstall(env, DiscoveryOptions{HTTPClient: rejectDownloadClient(t), Confirmations: scriptedConfirmation("", &out)})
+		if err != nil || result.Path != managed || out.Len() != 0 {
+			t.Fatalf("install=%#v err=%v unexpected prompt=%q", result, err, out.String())
 		}
 	}
 }
 
 func TestNDDSHOMEConfirmation(t *testing.T) {
-	managedTestEnvironment(t)
-	custom := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiroutingservice")
-	old := ManagedInstaller
-	t.Cleanup(func() { ManagedInstaller = old })
-	for _, choice := range []string{UseManagedConnextLabel, UseNDDSHOMELabel} {
-		managedCalled := false
-		ManagedInstaller = func(DiscoveryOptions) (Install, error) { managedCalled = true; return Install{Path: "managed"}, nil }
-		prompts := 0
-		result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{Confirmations: ConfirmationFromSelector(func(message string, choices []string, _ string) (string, error) {
-			prompts++
-			if !strings.Contains(message, custom) || !strings.Contains(message, "rticloud-managed Connext under your .rti directory?") || len(choices) != 2 || choices[0] != UseManagedConnextLabel {
-				t.Fatalf("unexpected confirmation: %s %v", message, choices)
+	for _, scenario := range []struct {
+		name, input         string
+		external, cancelled bool
+	}{
+		{name: "enter-uses-managed", input: "\n"},
+		{name: "choose-external", input: "2\n", external: true},
+		{name: "eof-cancels", cancelled: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := managedTestEnvironment(t)
+			managed := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
+			custom := createConnextInstall(t, t.TempDir(), "7.7.0", "rtiroutingservice")
+			var out bytes.Buffer
+			result, err := DiscoverInstall(map[string]string{"NDDSHOME": custom}, DiscoveryOptions{HTTPClient: rejectDownloadClient(t), Confirmations: scriptedConfirmation(scenario.input, &out)})
+			if scenario.cancelled {
+				if err == nil || result.Path != "" {
+					t.Fatalf("EOF accepted an installation: %#v %v", result, err)
+				}
+			} else {
+				want := managed
+				if scenario.external {
+					want = custom
+				}
+				if err != nil || result.Path != want {
+					t.Fatalf("install=%#v want=%s err=%v", result, want, err)
+				}
 			}
-			return choice, nil
-		})})
-		if err != nil || prompts != 1 {
-			t.Fatalf("prompts=%d err=%v", prompts, err)
-		}
-		if choice == UseManagedConnextLabel && (!managedCalled || result.Path != "managed") {
-			t.Fatal(result)
-		}
-		if choice == UseNDDSHOMELabel && (managedCalled || result.Path != custom) {
-			t.Fatal(result)
-		}
+			if !strings.Contains(out.String(), custom) || !strings.Contains(out.String(), UseManagedConnextLabel) || !strings.Contains(out.String(), UseNDDSHOMELabel) {
+				t.Fatalf("missing installation choices: %s", out.String())
+			}
+		})
 	}
 }
 
@@ -90,4 +94,19 @@ func TestOverrideCancellationAndMissingPrompt(t *testing.T) {
 	if !errors.Is(err, cancelled) {
 		t.Fatalf("%v", err)
 	}
+}
+
+// Use one reader for every confirmation in a flow, including warning then copy.
+func scriptedConfirmation(input string, out io.Writer) Confirmer {
+	selector := prompt.Selector{In: bufio.NewReader(strings.NewReader(input)), Out: out}
+	return ConfirmationFromSelector(selector.Select)
+}
+
+func rejectDownloadClient(t *testing.T) *http.Client {
+	t.Helper()
+	return &http.Client{Transport: testRoundTripper(func(request *http.Request) (*http.Response, error) {
+		t.Errorf("unexpected download: %s", request.URL)
+		return nil, errors.New("unexpected download")
+	})}
+
 }

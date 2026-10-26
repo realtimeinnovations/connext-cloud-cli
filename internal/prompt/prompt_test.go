@@ -8,9 +8,39 @@ package prompt
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
+
+func TestSelectionInputPreservesKeysAndStopsAtInterrupt(t *testing.T) {
+	for _, scenario := range []struct {
+		name, input, want, remaining string
+	}{
+		{"arrow-and-enter", "\x1b[B\r", "\x1b[B\r", ""},
+		{"interrupt", "\x03next prompt\n", "", "next prompt\n"},
+		{"keys-before-interrupt", "\x1b[B\x03next prompt\n", "\x1b[B", "next prompt\n"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			source := strings.NewReader(scenario.input)
+			input := &selectionInput{ReadCloser: io.NopCloser(source)}
+			if n, err := input.Read(nil); n != 0 || err != nil {
+				t.Fatalf("empty read = %d, %v", n, err)
+			}
+			got, err := io.ReadAll(input)
+			if err != nil || string(got) != scenario.want {
+				t.Fatalf("keys = %q, %v; want %q", got, err, scenario.want)
+			}
+			if n, err := input.Read(make([]byte, 8)); n != 0 || err != io.EOF {
+				t.Fatalf("read after cancellation/EOF = %d, %v", n, err)
+			}
+			remaining, err := io.ReadAll(source)
+			if err != nil || string(remaining) != scenario.remaining {
+				t.Fatalf("remaining input = %q, %v; want %q", remaining, err, scenario.remaining)
+			}
+		})
+	}
+}
 
 func TestSelectorUsesNumberedFallback(t *testing.T) {
 	var out bytes.Buffer

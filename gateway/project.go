@@ -61,13 +61,9 @@ type GatewayApp struct {
 	Out                           io.Writer
 	APIGet                        func(path string) (map[string]any, error)
 	APIPost                       func(path string, payload map[string]any) (map[string]any, error)
-	ListResourcesFunc             func() (map[string]map[string]any, map[string]map[string]any, error)
-	GetResourceFunc               func(name string) (map[string]any, error)
 	CurrentZoneFunc               func() string
 	DiscoverConnextInstallFn      func() (ConnextInstall, error)
 	GenerateCSRFunc               func(databus string, app string, clientID string) ([]byte, string, error)
-	CreateApplicationFunc         func(databusName string, kind string, clientName string) error
-	DownloadArtifactsFunc         func(config map[string]any, force bool) error
 	PIDRunningFunc                func(pid int) bool
 	SelectFunc                    prompt.SelectFunc
 	InputFunc                     func(message string) (string, error)
@@ -241,9 +237,6 @@ func LinkedObservabilityName(databus map[string]any) string {
 }
 
 func (app *GatewayApp) DownloadArtifacts(config map[string]any, force bool) error {
-	if app.DownloadArtifactsFunc != nil {
-		return app.DownloadArtifactsFunc(config, force)
-	}
 	templates, _ := config["templates"].(map[string]any)
 	if databus := common.StringValue(config, "databus"); databus != "" {
 		if gatewayTemplate, _ := templates["gateway"].(string); gatewayTemplate != "" {
@@ -1445,9 +1438,6 @@ func (app *GatewayApp) createCollectorTemplate(obsName, collectorName string) (s
 	if len(collectorName) > maxCollectorNameLength {
 		return "", GatewayError{Message: fmt.Sprintf("Collector name cannot exceed %d characters.", maxCollectorNameLength)}
 	}
-	if app.CreateApplicationFunc != nil {
-		return collectorName, app.CreateApplicationFunc(obsName, "telemetry-service-collector", collectorName)
-	}
 	if app.APIPost == nil {
 		return "", fmt.Errorf("API not configured")
 	}
@@ -1511,9 +1501,6 @@ func (app *GatewayApp) selectTemplateOrCreate(resourceName string, resourceLabel
 }
 
 func (app *GatewayApp) getResource(name string) (map[string]any, error) {
-	if app.GetResourceFunc != nil {
-		return app.GetResourceFunc(name)
-	}
 	if app.APIGet == nil {
 		return nil, fmt.Errorf("resource getter is not configured")
 	}
@@ -1526,9 +1513,6 @@ func (app *GatewayApp) getResource(name string) (map[string]any, error) {
 }
 
 func (app *GatewayApp) listResources() (map[string]map[string]any, map[string]map[string]any, error) {
-	if app.ListResourcesFunc != nil {
-		return app.ListResourcesFunc()
-	}
 	if app.APIGet == nil {
 		return nil, nil, fmt.Errorf("resource lister is not configured")
 	}

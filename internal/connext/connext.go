@@ -177,7 +177,7 @@ func DiscoverInstall(env map[string]string, options DiscoveryOptions) (Install, 
 			}
 		}
 	}
-	return ManagedInstaller(options)
+	return installManaged(options)
 }
 
 const (

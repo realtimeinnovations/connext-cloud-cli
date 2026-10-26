@@ -7,7 +7,9 @@
 package connext
 
 import (
+	"bufio"
 	"bytes"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"io"
 	"net/http"
 	"os"
@@ -133,65 +135,80 @@ func TestCloudExtrasPackageURLSelectsPlatformPackage(t *testing.T) {
 }
 
 func TestEnsureCollectorServiceLiteInstallsCloudExtras(t *testing.T) {
-	tmpDir := t.TempDir()
-	install := createConnextInstall(t, tmpDir, "7.7.0", "rtiroutingservice", "rtipkginstall")
-	writeVersions(t, install, `<rti></rti>`)
-
-	selectedDir := filepath.Join(t.TempDir(), "project")
-	if err := os.Symlink(tmpDir, selectedDir); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX package installer fixture")
 	}
-
-	previousGetwd := CurrentWorkDir
-	previousPlatform := Platform
-	previousHTTPGet := HTTPGet
-	previousInstaller := PackageInstaller
-	CurrentWorkDir = func() (string, error) { return selectedDir, nil }
-	Platform = func() (string, string) { return "darwin", "arm64" }
-	HTTPGet = func(url string) (*http.Response, error) {
-		if !strings.HasSuffix(url, "arm64Darwin-cloud-extras.rtipkg") {
-			t.Fatalf("unexpected url: %s", url)
-		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("package"))}, nil
-	}
-	PackageInstaller = func(install Install, packagePath string, out io.Writer) error {
-		if !strings.HasSuffix(packagePath, "arm64Darwin-cloud-extras.rtipkg") {
-			t.Fatalf("unexpected package path: %s", packagePath)
-		}
-		data, err := os.ReadFile(packagePath)
-		if err != nil || string(data) != "package" {
-			t.Fatalf("downloaded package=%q, %v", data, err)
-		}
-
-		if err := os.WriteFile(Executable(install.Path, "rticollectorservicelite"), []byte(""), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return nil
-	}
-	t.Cleanup(func() {
-		CurrentWorkDir = previousGetwd
-		Platform = previousPlatform
-		HTTPGet = previousHTTPGet
-		PackageInstaller = previousInstaller
-	})
-
-	var out bytes.Buffer
-	selected := false
-	err := EnsureCollectorServiceLite(Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
-		selected = true
-		if !strings.Contains(message, "RTI Collector Service Lite") || len(choices) != 2 || choices[0] != InstallConnextCloudExtrasLabel {
-			t.Fatalf("unexpected prompt: %q %#v", message, choices)
-		}
-		return InstallConnextCloudExtrasLabel, nil
-	}, &out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !selected {
-		t.Fatal("expected install prompt")
-	}
-	if !strings.Contains(out.String(), "Connext Cloud Extras package installed") {
-		t.Fatalf("unexpected output: %s", out.String())
+	for _, scenario := range []string{"install", "symlink-base", "cancel", "eof", "installer-failure", "missing-capability"} {
+		t.Run(scenario, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			install := createConnextInstall(t, tmpDir, "7.7.0", "rtiroutingservice", "rtipkginstall")
+			writeVersions(t, install, `<rti></rti>`)
+			script := `#!/bin/sh
+set -eu
+[ "$(cat "$1")" = "package" ]
+printf '#!/bin/sh\n' > bin/rticollectorservicelite
+chmod +x bin/rticollectorservicelite
+`
+			if scenario == "installer-failure" {
+				script = "#!/bin/sh\nexit 1\n"
+			}
+			if scenario == "missing-capability" {
+				script = "#!/bin/sh\nexit 0\n"
+			}
+			if err := os.WriteFile(Executable(install, "rtipkginstall"), []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			selectedDir := tmpDir
+			if scenario == "symlink-base" {
+				selectedDir = filepath.Join(t.TempDir(), "project")
+				if err := os.Symlink(tmpDir, selectedDir); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			success := scenario == "install" || scenario == "symlink-base"
+			oldWD, oldPlatform, oldGet := CurrentWorkDir, Platform, HTTPGet
+			CurrentWorkDir = func() (string, error) { return selectedDir, nil }
+			Platform = func() (string, string) { return "linux", "amd64" }
+			calls := 0
+			HTTPGet = func(url string) (*http.Response, error) {
+				calls++
+				if !strings.HasSuffix(url, "x64Linux-cloud-extras.rtipkg") {
+					t.Errorf("unexpected download: %s", url)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("package"))}, nil
+			}
+			t.Cleanup(func() { CurrentWorkDir, Platform, HTTPGet = oldWD, oldPlatform, oldGet })
+			input := "1\n"
+			if scenario == "cancel" {
+				input = "2\n"
+			}
+			if scenario == "eof" {
+				input = ""
+			}
+			var out bytes.Buffer
+			selector := prompt.Selector{In: bufio.NewReader(strings.NewReader(input)), Out: &out}
+			selected := Install{Path: install, Version: "7.7.0"}
+			err := EnsureCollectorServiceLite(selected, selector.Select, &out)
+			if (err == nil) != success {
+				t.Fatalf("unexpected result: %v\n%s", err, out.String())
+			}
+			wantCalls := 1
+			if scenario == "cancel" || scenario == "eof" {
+				wantCalls = 0
+			}
+			if calls != wantCalls {
+				t.Fatalf("downloads=%d want=%d", calls, wantCalls)
+			}
+			if HasCollectorServiceLite(selected) != success {
+				t.Fatal("unexpected installed capability")
+			}
+			if strings.Contains(out.String(), "Connext Cloud Extras package installed.") != success {
+				t.Fatalf("incorrect completion output: %s", out.String())
+			}
+			if scenario == "missing-capability" && !strings.Contains(err.Error(), "still missing") {
+				t.Fatalf("missing capability error: %v", err)
+			}
+		})
 	}
 }
 
@@ -247,10 +264,7 @@ func createConnextInstall(t *testing.T, root string, version string, executables
 		t.Fatal(err)
 	}
 	for _, executable := range executables {
-		if runtime.GOOS == "windows" {
-			executable += ".bat"
-		}
-		if err := os.WriteFile(filepath.Join(binDir, executable), []byte(""), 0o755); err != nil {
+		if err := os.WriteFile(Executable(install, executable), []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

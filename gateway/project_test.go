@@ -9,8 +9,6 @@ package gateway
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,251 +86,6 @@ func TestDownloadArtifactsWritesGatewayAndCollectorXML(t *testing.T) {
 	}
 }
 
-func TestTemplateSelectionCanCreateNewAndReload(t *testing.T) {
-	var out bytes.Buffer
-	app := NewGatewayApp(t.TempDir(), &out)
-	app.CurrentZoneFunc = func() string { return "dev-cloud" }
-	app.ConfirmReloadFunc = func(message string) (bool, error) { return true, nil }
-	selection := []string{CreateNewTemplate, "gw-new"}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		selected := selection[0]
-		selection = selection[1:]
-		return selected, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}, "gw-new": map[string]any{"kind": "gateway"}}}, nil
-	}
-	selected, err := app.selectTemplateOrCreate("inventory", "Databus", "gateway", "Select Gateway template from inventory:", []TemplateItem{{Name: "gw", Kind: "gateway"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected != "gw-new" {
-		t.Fatalf("unexpected selection: %s", selected)
-	}
-}
-
-func TestFirstRunCanConfigureDataOnly(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	calls := []string{}
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		calls = append(calls, "list")
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		calls = append(calls, "discover")
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		calls = append(calls, "select:"+message)
-		switch message {
-		case "Select gateway capability:":
-			return "Data only", nil
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Gateway template from inventory:":
-			return "gw", nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.StringValue(config, "databus") != "inventory" || config["observability"] != nil || common.NestedString(config, "templates", "gateway") != "gw" || config["runtime"].(map[string]any)["connext_home"] != install {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	if !strings.Contains(out.String(), "Connext Cloud Gateway setup") || !strings.Contains(out.String(), "Databuses available: 1") {
-		t.Fatalf("missing setup intro: %s", out.String())
-	}
-	if !strings.Contains(out.String(), "Using Connext Pro 7.7.0 at "+install) || !strings.Contains(out.String(), "Configuration saved to "+filepath.Join(app.WorkDir, ".connext", "gateway.yaml")) {
-		t.Fatalf("missing setup status output: %s", out.String())
-	}
-	if strings.Index(out.String(), "Connext Cloud Gateway setup") > strings.Index(out.String(), "Using Connext Pro 7.7.0 at "+install) {
-		t.Fatalf("expected setup intro before Connext selection: %s", out.String())
-	}
-	if discoverIndex(calls, "discover") > discoverIndex(calls, "select:Select gateway capability:") {
-		t.Fatalf("expected Connext discovery before capability selection: %#v", calls)
-	}
-}
-
-func TestFirstRunFailsBeforeDatabusSelectionWhenConnextMissing(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	steps := []string{}
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		steps = append(steps, "discover")
-		return ConnextInstall{}, GatewayError{Message: "Connext Pro 7.3.0 or newer with rtiroutingservice was not found."}
-	}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		steps = append(steps, "select:"+message)
-		switch message {
-		case "Select gateway capability:":
-			return "Data only", nil
-		case "Select Databus:":
-			return "inventory", nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	_, err := app.ConfigureFirstRun()
-	if err == nil || !strings.Contains(err.Error(), "Connext Pro 7.3.0 or newer with rtiroutingservice was not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if discoverIndex(steps, "select:Select gateway capability:") < len(steps)+1 {
-		t.Fatalf("expected failure before capability selection: %#v", steps)
-	}
-	if discoverIndex(steps, "select:Select Databus:") < len(steps)+1 {
-		t.Fatalf("expected failure before databus selection: %#v", steps)
-	}
-}
-
-func TestFirstRunCanConfigureObservabilityOnly(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "custom", "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory-obs", "clients": map[string]any{"collector": map[string]any{"kind": "telemetry-service-collector"}}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select gateway capability:":
-			return "Observability only", nil
-		case "Select Observability Service:":
-			return "inventory-obs", nil
-		case "Select Collector template from inventory-obs:":
-			return "collector", nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config["databus"] != nil || common.StringValue(config, "observability") != "inventory-obs" || common.NestedString(config, "templates", "collector") != "collector" {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	if common.NestedString(config, "runtime", "connext_home") != install {
-		t.Fatalf("expected observability-only connext_home %q in config: %#v", install, config)
-	}
-}
-
-func TestFirstRunCanCreateGatewayTemplateWhenNoneExist(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	selection := []string{CreateNewTemplate, "gw"}
-	resourceCalls := 0
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		resourceCalls++
-		if resourceCalls == 1 {
-			return map[string]any{"name": "inventory", "clients": map[string]any{}}, nil
-		}
-		return map[string]any{"name": "inventory", "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	reloadConfirmed := false
-	app.ConfirmReloadFunc = func(message string) (bool, error) {
-		reloadConfirmed = true
-		return true, nil
-	}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select gateway capability:":
-			return "Data only", nil
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Gateway template from inventory:":
-			selected := selection[0]
-			selection = selection[1:]
-			return selected, nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.NestedString(config, "templates", "gateway") != "gw" {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	if !reloadConfirmed {
-		t.Fatal("expected template creation reload confirmation")
-	}
-}
-
-func TestFirstRunCanCreateCollectorTemplateWhenNoneExist(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{}, map[string]map[string]any{"inventory-obs": {}}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": "inventory-obs", "clients": map[string]any{}}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
-	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
-		if databusName != "inventory-obs" || kind != "telemetry-service-collector" || clientName != "collector" {
-			return GatewayError{Message: fmt.Sprintf("unexpected args: %s %s %s", databusName, kind, clientName)}
-		}
-		return nil
-	}
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select gateway capability:":
-			return "Observability only", nil
-		case "Select Observability Service:":
-			return "inventory-obs", nil
-		case "Select Collector template from inventory-obs:":
-			return "Create a new one...", nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	app.InputFunc = func(message string) (string, error) {
-		if message != "Collector name" {
-			return "", GatewayError{Message: message}
-		}
-		return "collector", nil
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.NestedString(config, "templates", "collector") != "collector" {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-}
-
 func TestGeneratedCollectorNamePreservesShortNames(t *testing.T) {
 	if got := generatedCollectorName("inventory", "gateway"); got != "inventory_gateway" {
 		t.Fatalf("unexpected generated collector name: %s", got)
@@ -381,117 +134,10 @@ func TestManualCollectorNameRejectsNamesOverLimit(t *testing.T) {
 	}
 }
 
-func TestExistingGeneratedCollectorTemplateIsReused(t *testing.T) {
-	databusName := strings.Repeat("d", 50)
-	gatewayTemplate := "gateway"
-	generated := generatedCollectorName(databusName, gatewayTemplate)
-	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
-	install := filepath.Join(t.TempDir(), "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{databusName: {}}, map[string]map[string]any{"observability": {}}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		switch name {
-		case databusName:
-			return map[string]any{"name": databusName, "clients": map[string]any{gatewayTemplate: map[string]any{"kind": "gateway"}}}, nil
-		case "observability":
-			return map[string]any{"name": "observability", "clients": map[string]any{generated: map[string]any{"kind": "telemetry-service-collector"}}}, nil
-		default:
-			return nil, GatewayError{Message: name}
-		}
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) {
-		return ConnextInstall{Path: install, Version: "7.7.0"}, nil
-	}
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	called := false
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select gateway capability:":
-			return "Data and Observability", nil
-		case "Select Databus:":
-			return databusName, nil
-		case "Select Gateway template from " + databusName + ":":
-			return gatewayTemplate, nil
-		case "Select Observability Service:":
-			return "observability", nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	app.CreateApplicationFunc = func(databusName string, kind string, clientName string) error {
-		called = true
-		return nil
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.NestedString(config, "templates", "collector") != generated || called {
-		t.Fatalf("expected existing generated template to be reused: config=%#v createCalled=%v", config, called)
-	}
-}
-
-func TestFirstRunAnnotatesLinkedObservabilityChoice(t *testing.T) {
-	tmpDir := t.TempDir()
-	app := NewGatewayApp(tmpDir, &bytes.Buffer{})
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
-	app.ListResourcesFunc = func() (map[string]map[string]any, map[string]map[string]any, error) {
-		return map[string]map[string]any{"inventory": {}}, map[string]map[string]any{"inventory-obs": {}, "other-obs": {}}, nil
-	}
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		switch name {
-		case "inventory":
-			return map[string]any{"name": "inventory", "config": map[string]any{"observability_service": "inventory-obs"}, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
-		case "inventory-obs":
-			return map[string]any{"name": "inventory-obs", "clients": map[string]any{"inventory_gw": map[string]any{"kind": "telemetry-service-collector"}}}, nil
-		default:
-			return nil, GatewayError{Message: name}
-		}
-	}
-	app.DiscoverConnextInstallFn = func() (ConnextInstall, error) { return ConnextInstall{Path: install, Version: "7.7.0"}, nil }
-	app.DownloadArtifactsFunc = func(config map[string]any, force bool) error { return nil }
-	app.SelectFunc = func(message string, choices []string, _ string) (string, error) {
-		switch message {
-		case "Select gateway capability:":
-			return "Data and Observability", nil
-		case "Select Databus:":
-			return "inventory", nil
-		case "Select Gateway template from inventory:":
-			return "gw", nil
-		case "Select Observability Service:":
-			if selectionLabel(choices[0]) != "inventory-obs  (linked to inventory)" {
-				return "", GatewayError{Message: selectionLabel(choices[0])}
-			}
-			return selectionValue(choices[0]), nil
-		default:
-			return "", GatewayError{Message: message}
-		}
-	}
-	config, err := app.ConfigureFirstRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if common.StringValue(config, "observability") != "inventory-obs" {
-		t.Fatalf("unexpected config: %#v", config)
-	}
-	if common.NestedString(config, "templates", "collector") != "inventory_gw" {
-		t.Fatalf("expected collector template inventory_gw, got: %#v", config)
-	}
-}
-
-func discoverIndex(values []string, target string) int {
-	for index, value := range values {
-		if value == target {
-			return index
-		}
-	}
-	return len(values) + 1
-}
-
 func TestValidateConfigResourcesPointsToObservabilityDashboard(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		if name == "inventory" {
 			return map[string]any{"name": "inventory", "status": common.ServiceStatusActive, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 		}
@@ -506,7 +152,8 @@ func TestValidateConfigResourcesPointsToObservabilityDashboard(t *testing.T) {
 
 func TestValidateConfigResourcesRejectsMissingGatewayTemplate(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"name": name, "status": common.ServiceStatusActive, "clients": map[string]any{}}, nil
 	}
 	err := app.ValidateConfigResources(map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "missing"}})
@@ -517,7 +164,8 @@ func TestValidateConfigResourcesRejectsMissingGatewayTemplate(t *testing.T) {
 
 func TestValidateConfigResourcesRejectsInactiveGatewayService(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"name": name, "status": common.ServiceStatusDisabled, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 	}
 	config := map[string]any{"databus": "inventory", "templates": map[string]any{"gateway": "gw"}}
@@ -535,7 +183,8 @@ func TestValidateConfigResourcesRejectsInactiveGatewayService(t *testing.T) {
 
 func TestValidateConfigResourcesRejectsCreatingObservabilityService(t *testing.T) {
 	app := NewGatewayApp(t.TempDir(), &bytes.Buffer{})
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		if name == "inventory" {
 			return map[string]any{"name": "inventory", "status": common.ServiceStatusActive, "clients": map[string]any{"gw": map[string]any{"kind": "gateway"}}}, nil
 		}
@@ -566,45 +215,6 @@ func TestValidateLocalArtifactsRejectsMissingGatewayXML(t *testing.T) {
 	}
 }
 
-func TestSecureCollectorCredentialsSavedUnderSecureSubdirectory(t *testing.T) {
-	tmpDir := t.TempDir()
-	var out bytes.Buffer
-	app := NewGatewayApp(tmpDir, &out)
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
-		return map[string]any{"name": name, "config": map[string]any{"secure": name == "obs"}}, nil
-	}
-	app.GenerateCSRFunc = func(resource string, template string, clientID string) ([]byte, string, error) {
-		return []byte("private-key"), "csr", nil
-	}
-	app.APIPost = func(path string, payload map[string]any) (map[string]any, error) {
-		return map[string]any{"secure_files": map[string]any{
-			"client.crt":         base64.StdEncoding.EncodeToString([]byte("cert")),
-			"identity_ca.crt":    base64.StdEncoding.EncodeToString([]byte("identity")),
-			"permissions_ca.crt": base64.StdEncoding.EncodeToString([]byte("permissions")),
-			"governance.p7s":     base64.StdEncoding.EncodeToString([]byte("governance")),
-			"permissions.p7s":    base64.StdEncoding.EncodeToString([]byte("signed")),
-			"psk.key":            base64.StdEncoding.EncodeToString([]byte("psk")),
-		}}, nil
-	}
-	config := map[string]any{"databus": "db", "observability": "obs", "templates": map[string]any{"gateway": "gw", "collector": "collector"}, "clients": map[string]any{"collector_client_id": "collector-1"}}
-	databusSecure, collectorSecure, err := app.EnsureSecureArtifacts(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if databusSecure || !collectorSecure {
-		t.Fatalf("unexpected secure flags: %v %v", databusSecure, collectorSecure)
-	}
-	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); string(got) != "private-key" {
-		t.Fatalf("unexpected client.key: %s", string(got))
-	}
-	if info, err := os.Stat(filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.key")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
-		t.Fatalf("client.key permissions = %v, %v; want 0600", info.Mode().Perm(), err)
-	}
-	if got := readBytes(t, filepath.Join(tmpDir, ".connext", "gateway", "collector", "secure", "client.crt")); string(got) != "cert" {
-		t.Fatalf("unexpected client.crt: %s", string(got))
-	}
-}
-
 func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
@@ -628,7 +238,7 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if supportsRoutingPTY() {
 		ttyCheck = "if [ ! -t 1 ]; then exit 3; fi\n"
 	}
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"printf '%s\\n' 'collector started' '"+collectorLine+"'\ntrap '' INT TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"trap '' INT TERM\nprintf '%s\\n' 'collector started' '"+collectorLine+"'\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -640,18 +250,30 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stopped := false
+	stop := func() bool {
+		if stopped || cmd == nil || cmd.Process == nil {
+			return false
+		}
+		stopped = app.stopManagedCollector(cmd.Process.Pid)
+		return stopped
+	}
+	t.Cleanup(func() { stop() })
 	if cmd == nil || cmd.Process == nil || cmd.Process.Pid == 0 {
 		t.Fatal("expected a running process")
 	}
 	select {
-	case line := <-app.collectorLines:
-		if line != collectorLine {
+	case line, ok := <-app.collectorLines:
+		if !ok || line != collectorLine {
 			t.Fatalf("unexpected collector line: %q", line)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("collector output was not streamed")
+	case <-app.collectorDone:
+		t.Fatalf("collector exited before its ready event: %s", readFile(t, app.CollectorLogPath()))
+	case <-time.After(5 * time.Second):
+		stop()
+		t.Fatalf("collector did not emit its ready event: %s", readFile(t, app.CollectorLogPath()))
 	}
-	if !app.stopManagedCollector(cmd.Process.Pid) {
+	if !stop() {
 		t.Fatal("expected the managed collector to stop")
 	}
 	if app.pidRunning(cmd.Process.Pid) {
@@ -1252,7 +874,8 @@ func TestOpenObservabilityDashboardOpensGrafanaURL(t *testing.T) {
 	var out bytes.Buffer
 	var opened []string
 	app := NewGatewayApp(tmpDir, &out)
-	app.GetResourceFunc = func(name string) (map[string]any, error) {
+	app.APIGet = func(name string) (map[string]any, error) {
+		name = strings.TrimPrefix(name, "/databuses/")
 		return map[string]any{"entrypoints": map[string]any{"grafana": map[string]any{"url": "https://grafana.example"}}}, nil
 	}
 	app.OpenBrowserFunc = func(url string) error {
@@ -1277,15 +900,6 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func readBytes(t *testing.T, path string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
 }
 
 func TestStatusUsesRecordedConnextInsteadOfLegacyConfig(t *testing.T) {

@@ -130,13 +130,13 @@ func TestDownloadRejectsMissingRequestedArtifactsBeforeWriting(t *testing.T) {
 			delete(payload, field)
 			api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses/db/applications/app": newJSONResponse(http.StatusOK, payload)}}
 			runner := New(api, io.Discard)
-			runner.WriteFile = func(string, []byte, os.FileMode) error {
-				t.Fatal("missing requested artifact must not produce partial output")
-				return nil
-			}
-			options := ApplicationDownloadOptions{GenerateExample: field == "bundle", IncludeManifest: field == "manifest"}
+			dir := t.TempDir()
+			options := ApplicationDownloadOptions{TargetDir: dir, GenerateExample: field == "bundle", IncludeManifest: field == "manifest"}
 			if err := runner.DownloadApplication("db", "app", options); err == nil {
 				t.Fatal("missing requested artifact returned success")
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Fatalf("incomplete response produced output: %v, %v", entries, err)
 			}
 		})
 	}
@@ -342,13 +342,13 @@ func TestDownloadConfigurationRejectsNullClientData(t *testing.T) {
 		"client_config": "<dds/>", "client_data": nil,
 	})}}
 	runner := New(api, io.Discard)
-	runner.WriteFile = func(string, []byte, os.FileMode) error {
-		t.Fatal("null client_data must not produce an export")
-		return nil
-	}
-	err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{ConfigOutput: filepath.Join(t.TempDir(), "app.json")})
+	dir := t.TempDir()
+	err := runner.DownloadApplication("db", "app", ApplicationDownloadOptions{ConfigOutput: filepath.Join(dir, "app.json")})
 	if err == nil || !strings.Contains(err.Error(), "unexpected application configuration") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("null configuration produced output: %v, %v", entries, err)
 	}
 }
 

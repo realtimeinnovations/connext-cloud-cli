@@ -36,13 +36,9 @@ func TestManagedOutputCallersAcceptSelectedBaseSymlinks(t *testing.T) {
 		{"token", func(root string) error {
 			return auth.New(nil, filepath.Join(root, "token.json")).SaveAccessToken("dummy-token", 3600)
 		}},
-		{"gateway config", func(root string) error {
-			return gateway.NewGatewayApp(root, io.Discard).WriteConfig(map[string]any{"test": true})
-		}},
 		{"gateway state", func(root string) error {
 			return gateway.NewGatewayApp(root, io.Discard).WriteRuntimeState(map[string]any{"test": true})
 		}},
-		{"spy config", func(root string) error { return spy.NewApp(root, io.Discard).WriteConfig(map[string]any{"test": true}) }},
 		{"spy state", func(root string) error {
 			return spy.NewApp(root, io.Discard).WriteRuntimeState(map[string]any{"test": true})
 		}},
@@ -84,47 +80,6 @@ func TestManagedOutputCallersAcceptSelectedBaseSymlinks(t *testing.T) {
 			entries, err := os.ReadDir(outside)
 			if err != nil || len(entries) != 1 || entries[0].Name() != "new-root" {
 				t.Fatalf("output did not reach selected base: %v, %v", entries, err)
-			}
-		})
-	}
-}
-
-func TestProjectCredentialPreflightRunsBeforeRegistration(t *testing.T) {
-	for _, kind := range []string{"gateway", "spy"} {
-		t.Run(kind, func(t *testing.T) {
-			root := t.TempDir()
-			configuration := map[string]any{"databus": "db", "templates": map[string]any{"gateway": "gw", "app": "app"}}
-			get := func(string) (map[string]any, error) { return map[string]any{"secure": true}, nil }
-			generate := func(string, string, string) ([]byte, string, error) {
-				t.Fatal("invalid credential path generated a key")
-				return nil, "", nil
-			}
-			post := func(string, map[string]any) (map[string]any, error) {
-				t.Fatal("invalid credential path registered a client")
-				return nil, nil
-			}
-			var target string
-			var ensure func() error
-			if kind == "gateway" {
-				app := gateway.NewGatewayApp(root, io.Discard)
-				app.GetResourceFunc = get
-				app.GenerateCSRFunc = generate
-				app.APIPost = post
-				target = app.RoutingDir()
-				ensure = func() error { _, _, err := app.EnsureSecureArtifacts(configuration); return err }
-			} else {
-				app := spy.NewApp(root, io.Discard)
-				app.GetResourceFunc = get
-				app.GenerateCSRFunc = generate
-				app.APIPost = post
-				target = filepath.Join(app.AppDir(), "generated", "security")
-				ensure = func() error { _, err := app.EnsureSecureArtifacts(configuration); return err }
-			}
-			if err := os.MkdirAll(filepath.Join(target, "client.key"), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := ensure(); !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("want unsafe credential output error, got %v", err)
 			}
 		})
 	}

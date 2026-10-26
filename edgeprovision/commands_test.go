@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -186,187 +186,6 @@ func TestRequestPSK(t *testing.T) {
 	}
 }
 
-func TestRequestIdentityToFile(t *testing.T) {
-	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identityCertPem": certPEM,
-			"certSerial":      "ABC",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "subdir", "identity.pem")
-	var mkdirPath, wrotePath string
-	var wroteData []byte
-	runner.MkdirAll = func(path string, _ os.FileMode) error { mkdirPath = path; return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		wroteData = data
-		return nil
-	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", target); err != nil {
-		t.Fatal(err)
-	}
-	if mkdirPath != filepath.Dir(target) {
-		t.Fatalf("expected MkdirAll on parent dir, got %q", mkdirPath)
-	}
-	if wrotePath != target || string(wroteData) != certPEM {
-		t.Fatalf("unexpected write: path=%q data=%s", wrotePath, wroteData)
-	}
-	if !strings.Contains(out.String(), "Identity certificate saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
-func TestRequestIdentityToFileWritesLease(t *testing.T) {
-	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identityCertPem": certPEM,
-			"certSerial":      "ABC",
-			"lease":           map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
-			"serverTimeUtc":   "2026-05-16T00:00:00Z",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "subdir", "identity.crt")
-	written := map[string][]byte{}
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		written[filepath.Base(path)] = data
-		return nil
-	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", target); err != nil {
-		t.Fatal(err)
-	}
-	if written["identity.crt"] == nil {
-		t.Fatal("expected identity.crt to be written")
-	}
-	if !strings.Contains(string(written["identity.lease.json"]), "notAfter") {
-		t.Fatalf("expected identity.lease.json with lease data; got %s", written["identity.lease.json"])
-	}
-	if !strings.Contains(string(written["identity.lease.json"]), "serverTimeUtc") {
-		t.Fatalf("expected identity.lease.json with server_time_utc; got %s", written["identity.lease.json"])
-	}
-	if !strings.Contains(out.String(), "Identity lease saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
-func TestRequestPermissionsToFile(t *testing.T) {
-	const doc = "MIME-Version: 1.0\r\ncontent"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissionsDocSmime": doc,
-			"subjectName":         "CN=device1.net",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "subdir", "permissions.p7s")
-	var mkdirPath, wrotePath string
-	var wroteData []byte
-	runner.MkdirAll = func(path string, _ os.FileMode) error { mkdirPath = path; return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		wroteData = data
-		return nil
-	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", target); err != nil {
-		t.Fatal(err)
-	}
-	if mkdirPath != filepath.Dir(target) {
-		t.Fatalf("expected MkdirAll on parent dir, got %q", mkdirPath)
-	}
-	if wrotePath != target || string(wroteData) != doc {
-		t.Fatalf("unexpected write: path=%q data=%s", wrotePath, wroteData)
-	}
-	if !strings.Contains(out.String(), "Permissions document saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
-func TestRequestPermissionsToFileWritesLease(t *testing.T) {
-	const doc = "MIME-Version: 1.0\r\ncontent"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissionsDocSmime": doc,
-			"subjectName":         "CN=device1.net",
-			"lease":               map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"},
-			"serverTimeUtc":       "2026-05-16T00:00:00Z",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "subdir", "permissions.p7s")
-	written := map[string][]byte{}
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		written[filepath.Base(path)] = data
-		return nil
-	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", target); err != nil {
-		t.Fatal(err)
-	}
-	if written["permissions.p7s"] == nil {
-		t.Fatal("expected permissions file to be written")
-	}
-	if !strings.Contains(string(written["permissions.lease.json"]), "notAfter") {
-		t.Fatalf("expected permissions.lease.json with lease data; got %s", written["permissions.lease.json"])
-	}
-	if !strings.Contains(out.String(), "Permissions lease saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
-func TestRequestPSKToFile(t *testing.T) {
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"pskA":          map[string]any{"passphrase": "0:aaaa", "passphraseId": 0, "lease": map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-01-02T00:00:00Z"}},
-			"pskB":          map[string]any{"passphrase": "1:bbbb", "passphraseId": 1, "lease": map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-01-03T00:00:00Z"}},
-			"serverTimeUtc": "2026-01-01T00:00:00Z",
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	// Supply a non-directory path so pskOutputDir derives its parent as the dir.
-	target := filepath.Join(t.TempDir(), "subdir", "psk.json")
-	expectedDir := filepath.Dir(target)
-	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", target); err != nil {
-		t.Fatal(err)
-	}
-	written := map[string][]byte{}
-	for name, mode := range map[string]os.FileMode{"psk_secret.key": 0644, "psk_secret_extra.key": 0644, "psk_secret.lease.json": 0644} {
-		path := filepath.Join(expectedDir, name)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		written[name] = data
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if runtime.GOOS != "windows" && info.Mode().Perm() != mode {
-			t.Errorf("%s permissions = %o, want %o", name, info.Mode().Perm(), mode)
-		}
-	}
-	if string(written["psk_secret.key"]) != "0:aaaa" {
-		t.Fatalf("unexpected psk_secret.key: %q", written["psk_secret.key"])
-	}
-	if string(written["psk_secret_extra.key"]) != "0:aaaa\n1:bbbb" {
-		t.Fatalf("unexpected psk_secret_extra.key: %q", written["psk_secret_extra.key"])
-	}
-	if !strings.Contains(string(written["psk_secret.lease.json"]), "pskA") || !strings.Contains(string(written["psk_secret.lease.json"]), "serverTimeUtc") {
-		t.Fatalf("unexpected psk_secret.lease.json: %s", written["psk_secret.lease.json"])
-	}
-	if !strings.Contains(out.String(), "PSK primary passphrase saved") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
 func TestGetCRLToStdout(t *testing.T) {
 	doer := &fakeDoer{responses: map[string]*http.Response{
 		"GET /crl": newTextResponse(http.StatusOK, "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"),
@@ -378,142 +197,6 @@ func TestGetCRLToStdout(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "BEGIN X509 CRL") {
 		t.Fatalf("unexpected output: %s", out.String())
-	}
-}
-
-func TestGetCRLToFileCreatesParentDir(t *testing.T) {
-	crlContent := "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /crl": newTextResponse(http.StatusOK, crlContent),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	target := filepath.Join(t.TempDir(), "nested", "subdir", "crl.pem")
-	var mkdirPath string
-	var wrotePath string
-	var wroteData []byte
-	runner.MkdirAll = func(path string, _ os.FileMode) error { mkdirPath = path; return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		wroteData = data
-		return nil
-	}
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", target); err != nil {
-		t.Fatal(err)
-	}
-	if mkdirPath != filepath.Dir(target) {
-		t.Fatalf("expected MkdirAll on parent dir, got %q", mkdirPath)
-	}
-	if wrotePath != target || string(wroteData) != crlContent {
-		t.Fatalf("unexpected write: %q / %s", wrotePath, wroteData)
-	}
-	if !strings.Contains(out.String(), "CRL saved to") {
-		t.Fatalf("unexpected output: %s", out.String())
-	}
-}
-
-// ── Directory-output tests ────────────────────────────────────────────────────
-// These verify that passing an existing directory as --output causes the CLI to
-// write the artifact to a default filename inside that directory.
-
-func TestRequestIdentityToDirectory(t *testing.T) {
-	const certPEM = "-----BEGIN CERTIFICATE-----\nid\n-----END CERTIFICATE-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /identity": newJSONResponse(http.StatusOK, map[string]any{
-			"identityCertPem": certPEM,
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	dir := t.TempDir()
-	var wrotePath string
-	var wroteData []byte
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		wroteData = data
-		return nil
-	}
-	if err := runner.RequestIdentity("https://x:8443", "cert", "key", "ca", "", "", dir); err != nil {
-		t.Fatal(err)
-	}
-	if wrotePath != filepath.Join(dir, "identity.crt") {
-		t.Fatalf("expected identity.crt in dir, got %q", wrotePath)
-	}
-	if string(wroteData) != certPEM {
-		t.Fatalf("unexpected cert content: %s", wroteData)
-	}
-}
-
-func TestRequestPermissionsToDirectory(t *testing.T) {
-	const doc = "MIME-Version: 1.0\r\ncontent"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /permissions": newJSONResponse(http.StatusOK, map[string]any{
-			"permissionsDocSmime": doc,
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	dir := t.TempDir()
-	var wrotePath string
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		return nil
-	}
-	if err := runner.RequestPermissions("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
-		t.Fatal(err)
-	}
-	if wrotePath != filepath.Join(dir, "permissions.p7s") {
-		t.Fatalf("expected permissions.p7s in dir, got %q", wrotePath)
-	}
-}
-
-func TestRequestPSKToDirectory(t *testing.T) {
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /psk": newJSONResponse(http.StatusOK, map[string]any{
-			"pskA": map[string]any{"passphrase": "0:abc", "passphraseId": 0},
-			"pskB": map[string]any{"passphrase": "1:def", "passphraseId": 1},
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	dir := t.TempDir()
-	written := map[string]bool{}
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		written[filepath.Base(path)] = true
-		return nil
-	}
-	if err := runner.RequestPSK("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []string{"psk_secret.key", "psk_secret_extra.key", "psk_secret.lease.json"} {
-		if !written[f] {
-			t.Fatalf("expected %s to be written; got %v", f, written)
-		}
-	}
-}
-
-func TestGetCRLToDirectory(t *testing.T) {
-	crlContent := "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"GET /crl": newTextResponse(http.StatusOK, crlContent),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	dir := t.TempDir()
-	var wrotePath string
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		wrotePath = path
-		return nil
-	}
-	if err := runner.GetCRL("https://x:8443", "cert", "key", "ca", "", dir); err != nil {
-		t.Fatal(err)
-	}
-	if wrotePath != filepath.Join(dir, "crl.pem") {
-		t.Fatalf("expected crl.pem in dir, got %q", wrotePath)
 	}
 }
 
@@ -573,42 +256,6 @@ func TestRenewDeviceCertWithValidityMinutes(t *testing.T) {
 	}
 }
 
-func TestRenewDeviceCertToDirectory(t *testing.T) {
-	const certPEM = "-----BEGIN CERTIFICATE-----\nnewcert\n-----END CERTIFICATE-----"
-	const caPEM = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"
-	doer := &fakeDoer{responses: map[string]*http.Response{
-		"POST /device/renew-cert": newJSONResponse(http.StatusOK, map[string]any{
-			"certificate": certPEM,
-			"caChain":     caPEM,
-		}),
-	}}
-	var out bytes.Buffer
-	runner := newRunnerWithDoer(&out, doer)
-	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
-	dir := t.TempDir()
-	written := map[string][]byte{}
-	runner.MkdirAll = func(path string, _ os.FileMode) error { return nil }
-	runner.WriteFile = func(path string, data []byte, _ os.FileMode) error {
-		written[filepath.Base(path)] = data
-		return nil
-	}
-	if err := runner.RenewDeviceCert("https://x:8443", "cert", "key", "ca", "", "device.csr", 0, dir); err != nil {
-		t.Fatal(err)
-	}
-	if string(written["node.crt"]) != certPEM {
-		t.Fatalf("unexpected node.crt: %s", written["node.crt"])
-	}
-	if string(written["ca-chain.crt"]) != caPEM {
-		t.Fatalf("unexpected ca-chain.crt: %s", written["ca-chain.crt"])
-	}
-	if !strings.Contains(out.String(), "Device certificate saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-	if !strings.Contains(out.String(), "CA chain saved to") {
-		t.Fatalf("unexpected stdout: %s", out.String())
-	}
-}
-
 func TestRenewDeviceCertRequiresMTLS(t *testing.T) {
 	runner := newRunnerWithDoer(io.Discard, &fakeDoer{})
 	runner.ReadFile = func(_ string) ([]byte, error) { return []byte("CSR"), nil }
@@ -633,5 +280,121 @@ func TestRenewDeviceCertHTTPError(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Error:") {
 		t.Fatalf("expected error message in output: %s", out.String())
+	}
+}
+
+// Artifact responses are external fixtures; all output paths and writes use the
+// production filesystem code, including missing parent directories.
+func TestArtifactFiles(t *testing.T) {
+	lease := map[string]any{"notBefore": "2026-01-01T00:00:00Z", "notAfter": "2026-07-01T00:00:00Z"}
+	leaseResponse := map[string]any{"lease": lease, "serverTimeUtc": "2026-05-16T00:00:00Z"}
+	pskLease := map[string]any{"pskA": map[string]any{"lease": lease}, "pskB": map[string]any{"lease": lease}, "serverTimeUtc": "2026-05-16T00:00:00Z"}
+	for _, tc := range []struct {
+		name, request, filename, leaseFile string
+		response                           any
+		text                               string
+		files                              map[string]string
+		lease                              any
+		run                                func(*Runner, string, string) error
+	}{
+		{name: "identity", request: "POST /identity", filename: "identity.crt", response: map[string]any{"identityCertPem": "CERT"}, files: map[string]string{"identity.crt": "CERT"}, run: func(r *Runner, output, csr string) error {
+			return r.RequestIdentity("https://device.test", "cert", "key", "ca", "", csr, output)
+		}},
+		{name: "identity with lease", request: "POST /identity", filename: "identity.crt", response: map[string]any{"identityCertPem": "CERT", "lease": lease, "serverTimeUtc": "2026-05-16T00:00:00Z"}, files: map[string]string{"identity.crt": "CERT"}, leaseFile: "identity.lease.json", lease: leaseResponse, run: func(r *Runner, output, csr string) error {
+			return r.RequestIdentity("https://device.test", "cert", "key", "ca", "", csr, output)
+		}},
+		{name: "permissions", request: "POST /permissions", filename: "permissions.p7s", response: map[string]any{"permissionsDocSmime": "MIME-Version: 1.0\r\ncontent"}, files: map[string]string{"permissions.p7s": "MIME-Version: 1.0\r\ncontent"}, run: func(r *Runner, output, _ string) error {
+			return r.RequestPermissions("https://device.test", "cert", "key", "ca", "", output)
+		}},
+		{name: "permissions with lease", request: "POST /permissions", filename: "permissions.p7s", response: map[string]any{"permissionsDocSmime": "PERMISSIONS", "lease": lease, "serverTimeUtc": "2026-05-16T00:00:00Z"}, files: map[string]string{"permissions.p7s": "PERMISSIONS"}, leaseFile: "permissions.lease.json", lease: leaseResponse, run: func(r *Runner, output, _ string) error {
+			return r.RequestPermissions("https://device.test", "cert", "key", "ca", "", output)
+		}},
+		{name: "PSK", request: "POST /psk", filename: "psk.json", response: map[string]any{"pskA": map[string]any{"passphrase": "0:aaaa", "passphraseId": 0, "lease": lease}, "pskB": map[string]any{"passphrase": "1:bbbb", "passphraseId": 1, "lease": lease}, "serverTimeUtc": "2026-05-16T00:00:00Z"}, files: map[string]string{"psk_secret.key": "0:aaaa", "psk_secret_extra.key": "0:aaaa\n1:bbbb"}, leaseFile: "psk_secret.lease.json", lease: pskLease, run: func(r *Runner, output, _ string) error {
+			return r.RequestPSK("https://device.test", "cert", "key", "ca", "", output)
+		}},
+		{name: "CRL", request: "GET /crl", filename: "crl.pem", text: "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----", files: map[string]string{"crl.pem": "-----BEGIN X509 CRL-----\ntest\n-----END X509 CRL-----"}, run: func(r *Runner, output, _ string) error {
+			return r.GetCRL("https://device.test", "cert", "key", "ca", "", output)
+		}},
+		{name: "device certificate", request: "POST /device/renew-cert", response: map[string]any{"certificate": "NEW CERT", "caChain": "CA"}, files: map[string]string{"node.crt": "NEW CERT", "ca-chain.crt": "CA"}, run: func(r *Runner, output, csr string) error {
+			return r.RenewDeviceCert("https://device.test", "cert", "key", "ca", "", csr, 0, output)
+		}},
+	} {
+		for _, layout := range []string{"filename", "existing directory", "new directory"} {
+			if layout == "filename" && tc.filename == "" {
+				continue
+			}
+			t.Run(tc.name+"/"+layout, func(t *testing.T) {
+				root := t.TempDir()
+				dir := filepath.Join(root, "nested", "artifacts")
+				output := dir + string(os.PathSeparator)
+				if layout == "filename" {
+					output = filepath.Join(dir, "custom-"+tc.filename)
+				}
+				if layout == "existing directory" {
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+					output = dir
+				}
+				csr := filepath.Join(root, "device.csr")
+				if err := os.WriteFile(csr, []byte("CSR CONTENT"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				response := newJSONResponse(http.StatusOK, tc.response)
+				if tc.text != "" {
+					response = newTextResponse(http.StatusOK, tc.text)
+				}
+				doer := &fakeDoer{responses: map[string]*http.Response{tc.request: response}}
+				var out bytes.Buffer
+				runner := newRunnerWithDoer(&out, doer)
+				if err := tc.run(runner, output, csr); err != nil {
+					t.Fatal(err)
+				}
+				wantCount := len(tc.files)
+				if tc.leaseFile != "" {
+					wantCount++
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != wantCount {
+					t.Fatalf("artifact directory = %v, error=%v; want %d files", entries, err, wantCount)
+				}
+				for name, want := range tc.files {
+					if layout == "filename" && name == tc.filename {
+						name = "custom-" + name
+					}
+					path := filepath.Join(dir, name)
+					data, err := os.ReadFile(path)
+					if err != nil || string(data) != want {
+						t.Fatalf("%s = %q, error=%v; want %q", path, data, err, want)
+					}
+					if !strings.Contains(out.String(), path) {
+						t.Errorf("saved path missing from output: %s", path)
+					}
+				}
+				if tc.leaseFile != "" {
+					data, err := os.ReadFile(filepath.Join(dir, tc.leaseFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var got any
+					if err := json.Unmarshal(data, &got); err != nil || !reflect.DeepEqual(got, tc.lease) {
+						t.Fatalf("lease = %s, error=%v; want %v", data, err, tc.lease)
+					}
+				}
+				if tc.request == "POST /identity" || tc.request == "POST /device/renew-cert" {
+					var payload map[string]string
+					if err := json.Unmarshal(doer.lastBody, &payload); err != nil {
+						t.Fatal(err)
+					}
+					key, want := "csr_pem", "CSR CONTENT"
+					if tc.request == "POST /device/renew-cert" {
+						key, want = "csr", "Q1NSIENPTlRFTlQ="
+					}
+					if payload[key] != want {
+						t.Fatalf("CSR payload = %v; want %s=%q", payload, key, want)
+					}
+				}
+			})
+		}
 	}
 }

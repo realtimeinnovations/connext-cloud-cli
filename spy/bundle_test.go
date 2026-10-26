@@ -72,12 +72,12 @@ func TestSpyGeneratedPathsRejectSymlinksBeforeSideEffects(t *testing.T) {
 			if err := os.Symlink(target, link); err != nil {
 				t.Skipf("symlinks unavailable: %v", err)
 			}
-			app.APIGet = func(string) (map[string]any, error) {
-				t.Fatal("unsafe QoS destination triggered a download")
+			app.APIGet = func(path string) (map[string]any, error) {
+				if path == "/databuses/db" {
+					return map[string]any{"secure": true}, nil
+				}
+				t.Fatalf("unsafe destination triggered download: %s", path)
 				return nil, nil
-			}
-			app.GetResourceFunc = func(string) (map[string]any, error) {
-				return map[string]any{"secure": true}, nil
 			}
 			app.GenerateCSRFunc = func(string, string, string) ([]byte, string, error) {
 				t.Fatal("unsafe credential destination generated a key")

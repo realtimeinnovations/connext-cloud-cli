@@ -54,7 +54,6 @@ type Manager struct {
 	Remove         func(string) error
 	Rename         func(string, string) error
 	Chmod          func(string, os.FileMode) error
-	ReadFile       func(string) ([]byte, error)
 }
 
 type Options struct {
@@ -100,7 +99,6 @@ func New(manager *config.Manager, out io.Writer) *Manager {
 		Remove:         os.Remove,
 		Rename:         os.Rename,
 		Chmod:          os.Chmod,
-		ReadFile:       os.ReadFile,
 	}
 }
 
@@ -268,7 +266,7 @@ func (manager *Manager) install(ctx context.Context, status Status) error {
 	if err := manager.download(ctx, downloadURL(manager.downloadURL(), tag, "checksums.txt"), checksumsPath); err != nil {
 		return err
 	}
-	checksums, err := manager.readFile(checksumsPath)
+	checksums, err := os.ReadFile(checksumsPath)
 	if err != nil {
 		return err
 	}
@@ -619,11 +617,4 @@ func (manager *Manager) chmod(path string, mode os.FileMode) error {
 		return manager.Chmod(path, mode)
 	}
 	return os.Chmod(path, mode)
-}
-
-func (manager *Manager) readFile(path string) ([]byte, error) {
-	if manager.ReadFile != nil {
-		return manager.ReadFile(path)
-	}
-	return os.ReadFile(path)
 }
