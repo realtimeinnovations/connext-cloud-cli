@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -719,34 +720,62 @@ func (a *Agent) promptMultipleMACs() ([]string, error) {
 	return macs, nil
 }
 
-// readTokenInput reads a campaign token without echoing the input to the
-// terminal.  Long JWTs cause promptui to corrupt the display when pasted,
-// so we bypass it entirely and use term.ReadPassword (hidden input).
+// readTokenInput reads a single-line secret (e.g. a campaign token) without
+// echoing terminal input. Leading and trailing whitespace is trimmed.
+// Long secrets can corrupt promptui's display; term.ReadPassword also enables
+// canonical input, whose line limit on macOS can discard the terminating Enter
+// and block forever. Use raw mode instead, restoring settings on return.
 func (a *Agent) readTokenInput(label string) (string, error) {
-	_, _ = fmt.Fprintf(a.promptOut(), "%s (input hidden): ", label)
-
+	interactive := false
 	if f, ok := a.In.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		b, err := term.ReadPassword(int(f.Fd()))
-		_, _ = fmt.Fprintln(a.promptOut()) // newline after hidden input
+		fd := int(f.Fd())
+		state, err := term.MakeRaw(fd)
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(b)), nil
+		defer func() {
+			_ = term.Restore(fd, state)
+			_, _ = fmt.Fprintln(a.promptOut())
+		}()
+		interactive = true
 	}
+	_, _ = fmt.Fprintf(a.promptOut(), "%s (input hidden): ", label)
+	return readTokenLine(a.In, interactive)
+}
 
-	// Non-terminal (pipe / test): read one line without extra buffering.
+// readTokenLine avoids read-ahead so subsequent prompts keep their input.
+// In raw mode the terminal no longer handles cancellation or basic editing.
+// Non-terminal input ends at LF (or EOF), preserving CRLF as one delimiter.
+func readTokenLine(in io.Reader, interactive bool) (string, error) {
 	var line []byte
-	buf := make([]byte, 1)
+	var buf [1]byte
 	for {
-		n, err := a.In.Read(buf)
-		if n > 0 && buf[0] != '\n' {
-			line = append(line, buf[0])
+		n, err := in.Read(buf[:])
+		if n > 0 {
+			switch b := buf[0]; {
+			case b == '\n' || (interactive && b == '\r'):
+				return strings.TrimSpace(string(line)), nil
+			case interactive && b == 0x03: // Ctrl+C
+				return "", errors.New("secret input cancelled")
+			case interactive && b == 0x04: // Ctrl+D
+				return "", io.EOF
+			case interactive && (b == '\b' || b == 0x7f):
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			case interactive && b == 0x15: // Ctrl+U
+				line = line[:0]
+			default:
+				line = append(line, b)
+			}
 		}
-		if (n > 0 && buf[0] == '\n') || err != nil {
-			break
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				return strings.TrimSpace(string(line)), nil
+			}
+			return "", err
 		}
 	}
-	return strings.TrimSpace(string(line)), nil
 }
 
 // truncateToken returns a shortened display of the JWT for the confirmation line.
