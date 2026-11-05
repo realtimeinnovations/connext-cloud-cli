@@ -45,6 +45,10 @@ func TestCLIProcess(t *testing.T) {
 
 	type requestExpectation struct{ method, uri, body string }
 	databusList := []requestExpectation{{"GET", "/databuses?extra_fields=true", ""}}
+	databusShortList := []requestExpectation{{"GET", "/databuses", ""}}
+	mixedList := `{"databuses":{"zeta":{"kind":"databus","status":"active"},"obs":{"kind":"telemetry","status":"active"},"alpha":{"kind":"databus","status":"disabled"}},"metadata":{"region":"test"}}`
+	databusOnly := `{"databuses":{"alpha":{"kind":"databus","status":"disabled"},"zeta":{"kind":"databus","status":"active"}},"metadata":{"region":"test"}}`
+	obsOnly := `{"observability_services":{"obs":{"kind":"telemetry","status":"active"}}}`
 	databusQuery := []requestExpectation{{"GET", "/databuses/demo", ""}}
 	databusCreate := []requestExpectation{{"POST", "/databuses", `{"name":"demo","replicas":2,"network_name":"","secure":true}`}, {"GET", "/databuses/demo", ""}}
 	databusDelete := []requestExpectation{{"DELETE", "/databuses/demo", ""}, {"GET", "/databuses/demo", ""}}
@@ -65,6 +69,7 @@ func TestCLIProcess(t *testing.T) {
 		status        int
 		mutation      int
 		mutationBody  string
+		resultWant    string
 		textWant      string
 		project       string
 		stderrWant    string
@@ -81,6 +86,18 @@ func TestCLIProcess(t *testing.T) {
 		requests      []requestExpectation
 	}{
 		{name: "list", args: []string{"databus", "list"}, requests: databusList},
+
+		{name: "mixed databus JSON", args: []string{"databus", "list"}, list: mixedList, resultWant: databusOnly, requests: databusList},
+		{name: "mixed databus default", args: []string{"databus", "list"}, text: true, list: mixedList, resultWant: databusOnly, requests: databusList},
+		{name: "mixed databus short", args: []string{"databus", "list", "--short"}, text: true, textWant: "- alpha (databus)", list: mixedList, resultWant: "- alpha (databus)\n- zeta (databus)\n", requests: databusShortList},
+		{name: "mixed observability JSON", args: []string{"observability", "list"}, list: mixedList, resultWant: obsOnly, requests: databusList},
+		{name: "mixed observability default", args: []string{"observability", "list"}, text: true, textWant: `"observability_services"`, list: mixedList, resultWant: obsOnly, requests: databusList},
+		{name: "mixed observability short", args: []string{"observability", "list", "--short"}, text: true, textWant: "- obs", list: mixedList, resultWant: "- obs\n", requests: databusShortList},
+		{name: "only telemetry JSON", args: []string{"databus", "list"}, list: `{"databuses":{"obs":{"kind":"telemetry"}}}`, resultWant: `{"databuses":{}}`, requests: databusList},
+		{name: "only telemetry default", args: []string{"databus", "list"}, text: true, list: `{"databuses":{"obs":{"kind":"telemetry"}}}`, resultWant: `{"databuses":{}}`, requests: databusList},
+		{name: "empty databus JSON", args: []string{"databus", "list"}, list: `{"databuses":{}}`, resultWant: `{"databuses":{}}`, requests: databusList},
+		{name: "legacy databus JSON", args: []string{"databus", "list"}, list: `{"databuses":{"legacy":{"status":"active"},"obs":{"kind":"telemetry"}}}`, resultWant: `{"databuses":{"legacy":{"status":"active"}}}`, requests: databusList},
+
 		{name: "query", args: []string{"databus", "query", "--name", "demo"}, requests: databusQuery},
 		{name: "query escaped name", args: []string{"databus", "query", "--name", "demo/one"}, requests: []requestExpectation{{"GET", "/databuses/demo%2Fone", ""}}},
 		{name: "create active", args: []string{"databus", "create", "--name", "demo"}, requests: databusCreate},
@@ -364,6 +381,29 @@ func TestCLIProcess(t *testing.T) {
 			}
 			if exit != tc.exit || calls.Load() != int32(len(tc.requests)) {
 				t.Fatalf("exit=%d calls=%d; want exit=%d calls=%d; stdout=%q stderr=%q", exit, calls.Load(), tc.exit, len(tc.requests), stdout.String(), stderr.String())
+			}
+			if tc.resultWant != "" {
+				got := stdout.Bytes()
+				if !tc.text {
+					var envelope struct {
+						Data json.RawMessage `json:"data"`
+					}
+					if err := json.Unmarshal(got, &envelope); err != nil {
+						t.Fatal(err)
+					}
+					got = envelope.Data
+				}
+				if json.Valid([]byte(tc.resultWant)) {
+					var gotJSON, wantJSON any
+					if err := json.Unmarshal([]byte(tc.resultWant), &wantJSON); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(got, &gotJSON); err != nil || !reflect.DeepEqual(gotJSON, wantJSON) {
+						t.Fatalf("result = %s; want %s", got, tc.resultWant)
+					}
+				} else if string(got) != tc.resultWant {
+					t.Fatalf("result = %q; want %q", got, tc.resultWant)
+				}
 			}
 			if tc.text {
 				if tc.stderrWant != "" && !strings.Contains(stderr.String(), tc.stderrWant) {
