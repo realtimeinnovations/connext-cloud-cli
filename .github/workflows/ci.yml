@@ -25,7 +25,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          check-latest: true
 
       - name: Vet
         run: go vet ./...
@@ -56,7 +55,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
-          check-latest: true
 
       - name: Build release target
         env:
