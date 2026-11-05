@@ -54,6 +54,21 @@ The installer verifies the downloaded archive against the published `checksums.t
 
 Pre-built binaries for all platforms are available on the [releases page](https://github.com/realtimeinnovations/connext-cloud-cli/releases). Download the archive for your platform, extract the `rticloud` binary, and place it on your PATH.
 
+## Building from source
+
+Go 1.27.3 or later is required:
+
+```sh
+go build -o rticloud ./cmd/rticloud
+go version -m ./rticloud
+```
+
+The minimum Go version includes the certificate-verification protections for the
+[eMudhra incident](https://go.dev/blog/emudhra-incident). It also excludes the
+unpatched Go 1.27.0–1.27.2 releases. Updating Go alone does not protect an existing
+CLI binary: rebuild and redistribute it, or install a release built with a patched
+toolchain. Use `go version -m` to inspect the compiler version embedded in a binary.
+
 ## Usage
 
 First-time setup:
