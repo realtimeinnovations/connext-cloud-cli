@@ -9,8 +9,100 @@ package edgesyncagent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
+	"strings"
 	"testing"
+	"testing/iotest"
 )
+
+func TestReadTokenLine(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		input       string
+		interactive bool
+		want        string
+		wantErr     error
+	}{
+		{name: "LF", input: "  token  \n", want: "token"},
+		{name: "CR", input: "token\r", want: "token"},
+		{name: "raw CR", input: "token\r", interactive: true, want: "token"},
+		{name: "CRLF", input: "token\r\n", want: "token"},
+		{name: "final partial line", input: "token", want: "token"},
+		{name: "empty EOF", wantErr: io.EOF},
+		{name: "empty line", input: "\n"},
+		{name: "long token", input: strings.Repeat("x", 16000) + "\n", want: strings.Repeat("x", 16000)},
+		{name: "backspace", input: "tokex\bn\r", interactive: true, want: "token"},
+		{name: "delete", input: "tokex\x7fn\r", interactive: true, want: "token"},
+		{name: "delete empty", input: "\x7ftoken\r", interactive: true, want: "token"},
+		{name: "clear line", input: "wrong\x15token\r", interactive: true, want: "token"},
+		{name: "Ctrl+D", input: "token\x04", interactive: true, wantErr: io.EOF},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readTokenLine(strings.NewReader(tt.input), tt.interactive)
+			if got != tt.want || !errors.Is(err, tt.wantErr) {
+				t.Fatalf("got %q, %v; want %q, %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReadTokenLine_Cancel(t *testing.T) {
+	if _, err := readTokenLine(strings.NewReader("token\x03"), true); err == nil {
+		t.Fatal("expected Ctrl+C to cancel hidden input")
+	}
+}
+
+func TestReadTokenLine_ReadError(t *testing.T) {
+	wantErr := errors.New("read failed")
+	if _, err := readTokenLine(iotest.ErrReader(wantErr), false); !errors.Is(err, wantErr) {
+		t.Fatalf("got %v, want %v", err, wantErr)
+	}
+}
+
+func TestReadTokenLine_PreservesNextPromptInput(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		t.Run("ending="+ending, func(t *testing.T) {
+			in := strings.NewReader("token" + ending + "next" + ending)
+			got, err := readTokenLine(in, false)
+			if err != nil || got != "token" {
+				t.Fatalf("first input = %q, %v", got, err)
+			}
+			rest, err := io.ReadAll(in)
+			if err != nil || string(rest) != "next"+ending {
+				t.Fatalf("remaining input = %q, %v", rest, err)
+			}
+		})
+	}
+}
+
+func TestReadTokenInput_LongJWT(t *testing.T) {
+	token := buildJWT(map[string]any{
+		"edge_system_id": "test-service",
+		"participant_id": "test-participant",
+		"device_domain":  "devices.example.test",
+		"padding":        strings.Repeat("x", 16000),
+	})
+	for _, ending := range []string{"\n", "\r", "\r\n", ""} {
+		t.Run("ending="+ending, func(t *testing.T) {
+			a := &Agent{In: strings.NewReader(token + ending), Out: io.Discard}
+			got, err := a.readTokenInput("Token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != token {
+				t.Fatalf("token changed: got %d bytes, want %d", len(got), len(token))
+			}
+			service, participant, err := ParseCampaignToken(got)
+			if err != nil || service != "test-service" || participant != "test-participant" {
+				t.Fatalf("service=%q participant=%q err=%v", service, participant, err)
+			}
+			if domain := CampaignTokenDeviceDomain(got); domain != "devices.example.test" {
+				t.Fatalf("device domain = %q", domain)
+			}
+		})
+	}
+}
 
 func buildJWT(claims map[string]any) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
