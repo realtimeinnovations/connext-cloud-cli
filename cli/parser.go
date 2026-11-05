@@ -550,10 +550,10 @@ Formatting:
 		c := &cobra.Command{
 			Use:   "list",
 			Short: "List Databuses",
-			Long: `List Databuses.
+			Long: `List Databuses, excluding Observability Services.
 
 Formatting:
-  The default output is the API response formatted as JSON.
+  The default output includes full Databus details formatted as JSON.
   --format json wraps it in a versioned result and disables interaction.
   --short prints compact resource names and kinds; it cannot be combined with JSON.`,
 			Example: `  # List Databuses with full details

@@ -131,7 +131,7 @@ func TestUpdateFiltersConvertsLegacyJSONList(t *testing.T) {
 	}
 }
 
-func TestListDatabusesShortPrintsKindPerResource(t *testing.T) {
+func TestListDatabusesShortExcludesObservability(t *testing.T) {
 	api := &fakeAPI{responses: map[string]*http.Response{"GET /databuses": newJSONResponse(http.StatusOK, map[string]any{"databuses": map[string]any{"db": map[string]any{"kind": "databus"}, "obs": map[string]any{"kind": "telemetry"}}})}}
 	var out bytes.Buffer
 	runner := New(api, &out)
@@ -139,7 +139,7 @@ func TestListDatabusesShortPrintsKindPerResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := out.String()
-	if !strings.Contains(output, "- db (databus)") || !strings.Contains(output, "- obs (telemetry)") {
+	if output != "- db (databus)\n" {
 		t.Fatalf("unexpected output: %s", output)
 	}
 }
