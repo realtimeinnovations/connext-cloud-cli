@@ -645,3 +645,60 @@ printf 'setup-process-ready\n'
 		})
 	}
 }
+
+func TestSkipPreflightLaunchesWithExpiredLicense(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixtures")
+	}
+	for _, command := range []string{"gateway", "collector", "spy"} {
+		t.Run(command, func(t *testing.T) {
+			input, tool := "2\n1\n1\n", "rtiroutingservice"
+			if command == "collector" {
+				input, tool = "3\n1\n1\n", "rticollectorservicelite"
+			} else if command == "spy" {
+				input, tool = "1\n1\n", "rtiddsspy"
+			}
+			f := newSetupFixture(t, input)
+			var err error
+			if command == "spy" {
+				_, err = f.runtime.Spy.ConfigureFirstRun()
+			} else {
+				_, err = f.runtime.Gateway.ConfigureFirstRun()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.assertInputConsumed(t)
+			f.requests = nil
+			f.out.Reset()
+			saved, err := connext.SavedLicensePath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			const expired = "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n"
+			setupWrite(t, saved, expired)
+			record := filepath.Join(t.TempDir(), "license-path.txt")
+			t.Setenv("RTICLOUD_TEST_PROCESS_RECORD", record)
+			setupWrite(t, connext.Executable(f.install, tool), `#!/bin/sh
+if [ "$1" = "-help" ]; then echo 'fixture help'; exit 0; fi
+printf '%s\n' "$RTI_LICENSE_FILE" > "$RTICLOUD_TEST_PROCESS_RECORD"
+`)
+			f.runtime.NonInteractive = true
+			if command == "spy" {
+				err = f.runtime.RunSpy("text", true)
+			} else {
+				err = f.runtime.RunGateway("text", true)
+			}
+			if err != nil {
+				t.Fatalf("run: %v\n%s", err, f.out.String())
+			}
+			local := filepath.Join(f.install, connext.LicenseFileName)
+			if strings.TrimSpace(setupRead(t, record)) != local || setupRead(t, local) != expired {
+				t.Fatal("process did not receive the installation-local license copy")
+			}
+			if len(f.requests) != 0 || strings.Contains(f.out.String(), "license precheck") {
+				t.Fatalf("skipped preflight made requests or checked the license: %s", f.out.String())
+			}
+		})
+	}
+}

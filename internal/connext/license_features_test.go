@@ -7,6 +7,7 @@
 package connext
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func TestLicenseFeatureProblems(t *testing.T) {
 	}
 }
 
-func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
+func TestLicenseReuseRechecksMetadataWithoutRewriting(t *testing.T) {
 	for _, managed := range []bool{true, false} {
 		t.Run(map[bool]string{true: "managed", false: "external"}[managed], func(t *testing.T) {
 			root := managedTestEnvironment(t)
@@ -60,6 +61,9 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			const incomplete = "FEATURE RTIPRO RTI 4. 01-jan-2000 SECRET_LICENSE\n"
 			approvals := 0
 			confirm := ConfirmFunc(func(request Confirmation) (bool, error) {
+				if request.AcceptLabel == "Replace installation license" {
+					return true, nil
+				}
 				approvals++
 				if request.AcceptLabel != ProceedLicensePrecheckLabel {
 					t.Fatalf("unexpected confirmation: %+v", request)
@@ -73,22 +77,19 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := WriteLicenseFile(install, []byte(incomplete), nil); err != nil {
-				t.Fatalf("unchanged license required approval: %v", err)
+			if err := WriteLicenseFile(install, []byte(incomplete), nil); err == nil || clierror.From(err).Code != clierror.CodeInputRequired {
+				t.Fatalf("unchanged expired license escaped precheck: %v", err)
 			}
 			after, err := os.Stat(target)
 			if err != nil || !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
 				t.Fatalf("unchanged license was rewritten: %v", err)
 			}
 			if managed {
-				if err := os.Remove(LicenseFilePath(install)); err != nil {
-					t.Fatal(err)
-				}
-				if available, err := ProvisionManagedLicense(install, nil); err != nil || !available {
-					t.Fatalf("repair of existing license required approval: available=%v err=%v", available, err)
+				if available, err := ProvisionManagedLicense(install, nil, false); err == nil || available {
+					t.Fatalf("expired saved license escaped launch precheck: available=%v err=%v", available, err)
 				}
 				if data, err := os.ReadFile(LicenseFilePath(install)); err != nil || string(data) != incomplete {
-					t.Fatalf("existing license was not repaired: %v", err)
+					t.Fatalf("expired installation copy changed: %v", err)
 				}
 			}
 			changed := []byte(incomplete + "# updated\n")
@@ -104,8 +105,100 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			if approvals != 2 {
 				t.Fatalf("approvals = %d, want one per content change", approvals)
 			}
-			if err := WriteLicenseFile(install, []byte(validTestConnextLicense), nil); err != nil {
+			if err := WriteLicenseFile(install, []byte(validTestConnextLicense), confirm); err != nil {
 				t.Fatalf("complete updated license required approval: %v", err)
+			}
+		})
+	}
+}
+
+func TestManagedLicenseReplacementConsentPreservesBothFiles(t *testing.T) {
+	for _, operation := range []string{"reuse", "download"} {
+		for _, answer := range []string{"noninteractive", "", "\n", "2\n"} {
+			t.Run(operation+"/"+answer, func(t *testing.T) {
+				root := managedTestEnvironment(t)
+				install := Install{Path: writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion), Version: installerVersion}
+				saved, _ := managedLicensePath()
+				local := LicenseFilePath(install)
+				originalSaved := validTestConnextLicense + "# saved\n"
+				originalLocal := validTestConnextLicense + "# user installation\n"
+				if err := os.MkdirAll(filepath.Dir(saved), 0700); err != nil {
+					t.Fatal(err)
+				}
+				for path, contents := range map[string]string{saved: originalSaved, local: originalLocal} {
+					if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var out bytes.Buffer
+				var confirm Confirmer
+				if answer != "noninteractive" {
+					confirm = scriptedConfirmation(answer, &out)
+				}
+				candidate := originalSaved
+				var err error
+				if operation == "reuse" {
+					_, err = ProvisionManagedLicense(install, confirm, false)
+				} else {
+					candidate = validTestConnextLicense + "# new download\n"
+					err = WriteLicenseFile(install, []byte(candidate), confirm)
+				}
+				accepted := answer == "2\n"
+				if (err == nil) != accepted {
+					t.Fatalf("accepted=%v err=%v", accepted, err)
+				}
+				wantSaved, wantLocal := originalSaved, originalLocal
+				if accepted {
+					wantSaved, wantLocal = candidate, candidate
+				}
+				for path, want := range map[string]string{saved: wantSaved, local: wantLocal} {
+					if got, err := os.ReadFile(path); err != nil || string(got) != want {
+						t.Fatalf("unexpected file contents at %s: %v", path, err)
+					}
+				}
+				if accepted {
+					before, _ := os.Stat(local)
+					if available, err := ProvisionManagedLicense(install, nil, false); err != nil || !available {
+						t.Fatalf("matching copy prompted: %v", err)
+					}
+					after, _ := os.Stat(local)
+					if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
+						t.Fatal("matching installation copy rewritten")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRenewalAdviceHonorsAlternativeGrants(t *testing.T) {
+	now := time.Now()
+	soon := now.AddDate(0, 0, 7).Format("02-Jan-2006")
+	later := now.AddDate(0, 0, 40).Format("02-Jan-2006")
+	expiring := "FEATURE CONNEXTPRO RTI 7. " + soon + " SIGN=TEST_ONLY\n"
+	for _, tc := range []struct {
+		name, contents string
+		renew          bool
+	}{
+		{"only-expiring", expiring, true},
+		{"permanent-alternative", expiring + validTestConnextLicense, false},
+		{"later-alternative", expiring + "FEATURE CONNEXTPRO RTI 7. " + later + " SIGN=TEST_ONLY\n", false},
+		{"expired-alternative", expiring + "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n", true},
+		{"optional-feature", validTestConnextLicense + "FEATURE RTICDS RTI 7. " + soon + " SIGN=TEST_ONLY\n", false},
+		{"anywhere-alternative", strings.ReplaceAll(validTestConnextLicense, "RTIRWT RTI 6. permanent", "RTIRWT RTI 6. "+soon) + "FEATURE RTIANYWHERE RTI 7. permanent SIGN=TEST_ONLY\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := []byte(tc.contents)
+			if got := LicenseNeedsRenewal(ParseLicenseFeatures(contents, now)); got != tc.renew {
+				t.Fatalf("renew=%v", got)
+			}
+			var out bytes.Buffer
+			WarnLicenseExpiration(contents, &out)
+			if strings.Contains(out.String(), "rticloud license refresh") != tc.renew {
+				t.Fatalf("unexpected advice: %s", out.String())
+			}
+			if !strings.Contains(out.String(), now.AddDate(0, 0, 7).Format("2006-01-02")) {
+				t.Fatalf("missing record date: %s", out.String())
 			}
 		})
 	}

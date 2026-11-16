@@ -232,14 +232,14 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 			{name: "warnings-approved", source: incomplete, answers: entered + "2\n2\n", want: incomplete, order: []string{"Proceed anyway?", "License feature warnings were accepted.", "Connext license saved to"}},
 			{name: "correct-path", answers: "2\n~/missing.dat\n~/chosen license.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Path to Connext license file", "License feature check passed:", "Connext license saved to"}},
 			{name: "correct-and-replace", source: incomplete, answers: "2\n~/missing.dat\n~/chosen license.dat\n3\n2\n~/replacement.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
-			{name: "discovered-replace-path", installed: expired, answers: "3\n" + entered + "\n", want: runtimeValidConnextLicense, order: []string{"Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
-			{name: "discovered-replace-download", installed: expired, answers: "3\n1\n", want: runtimeValidConnextLicense, calls: 1},
+			{name: "discovered-replace-path", installed: expired, answers: "3\n" + entered + "\n2\n", want: runtimeValidConnextLicense, order: []string{"Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
+			{name: "discovered-replace-download", installed: expired, answers: "3\n1\n2\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "discovered-decline", installed: expired, answers: "\n", errorText: "precheck declined"},
 			{name: "discovered-replacement-eof", installed: expired, answers: "3\n" + entered, errorText: "cancelled"},
 			{name: "download", answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
-			{name: "download-decline-warnings", download: incomplete, answers: "1\n\n", errorText: "precheck declined", calls: 1},
-			{name: "download-replaces-only-after-approval", installed: expired, download: incomplete, answers: "3\n1\n\n", errorText: "precheck declined", calls: 1},
-			{name: "manual", answers: "3\n", errorText: "Copy the license file to", order: []string{"Manually download Connext license", "Step 1", evaluationLicenseURL, "Step 2", "Download the license file.", "Step 3"}},
+			{name: "download-rejects-invalid", download: incomplete, answers: "1\n", errorText: "Replacement license was not saved", calls: 1},
+			{name: "download-preserves-on-invalid-response", installed: expired, download: incomplete, answers: "3\n1\n", errorText: "Replacement license was not saved", calls: 1},
+			{name: "manual", answers: "3\n", errorText: "rticloud license use"},
 			{name: "cancel-before-login", answers: "4\n", errorText: "cancelled"},
 			{name: "external-lm-download", external: true, answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "external-lm-manual", external: true, answers: "3\n", errorText: "Copy the license file to", order: []string{evaluationLicenseURL, "Download the license file.", "Copy the license file to"}},
@@ -286,7 +286,7 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 				api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(status, download)}}
 				runtime.License = commands.New(api, &out)
 				selectFunc, inputFunc := licensePrompts(t, command, scenario.answers, &out)
-				err = runtime.ensureConnextLicense(install, selectFunc, inputFunc)
+				err = runtime.ensureConnextLicense(install, selectFunc, inputFunc, false)
 				if scenario.errorText == "" {
 					if err != nil {
 						t.Fatalf("unexpected failure: %v\n%s", err, out.String())
@@ -342,12 +342,24 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 					t.Fatalf("source license changed: %v", err)
 				}
 				if scenario.want != "" {
-					if !strings.Contains(out.String(), "Connext license saved to "+local) {
+					destination := saved
+					if scenario.external {
+						destination = local
+					}
+					if !strings.Contains(out.String(), "Connext license saved to "+destination) {
 						t.Fatalf("save result omitted destination: %s", out.String())
 					}
 					before := out.Len()
-					if err := runtime.ensureConnextLicense(install, nil, nil); err != nil || out.Len() != before || api.calls != scenario.calls {
-						t.Fatalf("unchanged license required more work: %v", err)
+					err := runtime.ensureConnextLicense(install, nil, nil, false)
+					if scenario.want == incomplete {
+						if err == nil {
+							t.Fatal("unchanged incomplete license skipped precheck")
+						}
+					} else if err != nil {
+						t.Fatalf("unchanged current license required more work: %v", err)
+					}
+					if out.Len() != before || api.calls != scenario.calls {
+						t.Fatal("reuse wrote output or downloaded again")
 					}
 				}
 			})
@@ -415,7 +427,7 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				selectFunc = nil
 			}
 			for attempt := 0; attempt < 2; attempt++ {
-				err := runtime.ensureConnextLicense(selected, selectFunc, nil)
+				err := runtime.ensureConnextLicense(selected, selectFunc, nil, false)
 				wantSuccess := scenario == "complete" || scenario == "external-install" || scenario == "override-incomplete" || scenario == "relative-file" || scenario == "quoted-file" || scenario == "symlink-file"
 				if (err == nil) != wantSuccess {
 					t.Fatalf("unexpected environment precheck: %v", err)
@@ -469,7 +481,7 @@ func TestEnsureConnextLicenseSkipsNonLMInstall(t *testing.T) {
 	if err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
 		t.Fatalf("did not expect prompt for non-LM install: %s %#v", message, choices)
 		return "", nil
-	}, nil); err != nil {
+	}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if api.calls != 0 {
@@ -491,7 +503,7 @@ func TestEnsureConnextLicenseRequiresInteractivePrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{License: commands.New(&runtimeFakeAPI{}, io.Discard)}
-	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, nil, nil)
+	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("unexpected error: %v", err)
 	}

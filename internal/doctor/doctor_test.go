@@ -570,3 +570,75 @@ func TestRequestedTimeoutOverridesInheritedClientTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorRetainsExpiredAndDifferentLicenseDiagnostics(t *testing.T) {
+	options, home, install := fixture(t)
+	shared := filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")
+	writeFile(t, shared, "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=SECRET_LICENSE\n")
+	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), "FEATURE CONNEXTPRO RTI 7. permanent SIGN=SECRET_LICENSE\n")
+	before := snapshot(t, home)
+	c := licenseCheck(install, options)
+	if c.Code != "LICENSE_REQUIRED_FEATURES_UNAVAILABLE" || !c.InstallationLicenseDiffers || c.SourceKind != "saved" {
+		t.Fatalf("missing selection/expiry diagnostics: %+v", c)
+	}
+	if !strings.Contains(c.NextStep, "rticloud license use") || !strings.Contains(c.NextStep, "rticloud license refresh") {
+		t.Fatal(c.NextStep)
+	}
+	data, err := json.Marshal(c)
+	if err != nil || bytes.Contains(data, []byte("SECRET_LICENSE")) {
+		t.Fatalf("unsafe JSON report: %v", err)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, home)) {
+		t.Fatal("doctor mutated files")
+	}
+}
+
+func TestDoctorRecoveryAdviceAccountsForAlternativesAndCopy(t *testing.T) {
+	for _, scenario := range []string{"expired-alternative", "expiring-alternative", "needs-renewal", "different-copy", "missing-copy"} {
+		t.Run(scenario, func(t *testing.T) {
+			options, home, install := fixture(t)
+			saved := filepath.Join(home, ".rti", "rticloud", "licenses", "rti_license.dat")
+			local := filepath.Join(install.Path, "rti_license.dat")
+			permanent := "FEATURE CONNEXTPRO RTI 7. permanent SIGN=TEST_ONLY\n"
+			expiring := "FEATURE CONNEXTPRO RTI 7. " + options.Now.AddDate(0, 0, 7).Format("02-Jan-2006") + " SIGN=TEST_ONLY\n"
+			contents, wantAction := permanent, ""
+			switch scenario {
+			case "expired-alternative":
+				contents += "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n"
+			case "expiring-alternative":
+				contents += expiring
+			case "needs-renewal":
+				contents, wantAction = expiring, "renew_license"
+			case "different-copy":
+				wantAction = "confirm_installation_license_replacement"
+			}
+			writeFile(t, saved, contents)
+			writeFile(t, local, contents)
+			if scenario == "different-copy" {
+				writeFile(t, local, permanent+"# other\n")
+			}
+			if scenario == "missing-copy" {
+				if err := os.Remove(local); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := snapshot(t, home)
+			c := licenseCheck(install, options)
+			if c.RequiredAction != wantAction {
+				t.Fatalf("action=%q next=%q", c.RequiredAction, c.NextStep)
+			}
+			if wantAction == "" && c.NextStep != "" {
+				t.Fatalf("unnecessary recovery advice: %s", c.NextStep)
+			}
+			if scenario == "different-copy" && (!c.InstallationLicenseDiffers || !strings.Contains(c.NextStep, "confirm replacement")) {
+				t.Fatalf("missing copy confirmation: %+v", c)
+			}
+			if scenario == "missing-copy" && c.Code != "LICENSE_COPY_PENDING" {
+				t.Fatalf("missing pending copy diagnostic: %+v", c)
+			}
+			if !reflect.DeepEqual(before, snapshot(t, home)) {
+				t.Fatal("doctor mutated files")
+			}
+		})
+	}
+}

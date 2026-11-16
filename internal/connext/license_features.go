@@ -110,8 +110,7 @@ func LicenseFeatureProblems(features []LicenseFeature) []string {
 		found, current, unknown := false, false, false
 		for _, feature := range features {
 			// Connext also accepts its combined product grants.
-			matches := feature.Feature == required || feature.Feature == "CONNEXTPRO" || (required == "RTIRWT" && feature.Feature == "RTIANYWHERE")
-			if !matches {
+			if !licenseFeatureMatches(feature.Feature, required) {
 				continue
 			}
 			found = true
@@ -135,6 +134,29 @@ func LicenseFeatureProblems(features []LicenseFeature) []string {
 	return problems
 }
 
+func licenseFeatureMatches(feature, required string) bool {
+	return feature == required || feature == "CONNEXTPRO" || (required == "RTIRWT" && feature == "RTIANYWHERE")
+}
+
+// LicenseNeedsRenewal reports required features whose only current grants expire
+// within 14 days. Longer-lived alternative grants avoid unnecessary renewal advice.
+func LicenseNeedsRenewal(features []LicenseFeature) bool {
+	for _, required := range RequiredLicenseFeatures() {
+		expiring, alternative := false, false
+		for _, feature := range features {
+			if !licenseFeatureMatches(feature.Feature, required) {
+				continue
+			}
+			expiring = expiring || feature.Status == LicenseExpiring
+			alternative = alternative || feature.Status == LicenseCurrent || feature.Status == LicensePermanent
+		}
+		if expiring && !alternative {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	DeclineLicensePrecheckLabel = "No, stop"
 	ProceedLicensePrecheckLabel = "Yes, proceed anyway"
@@ -152,6 +174,7 @@ func PrecheckEnvironmentLicense(confirm Confirmer, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("reading license from RTI_LICENSE_FILE (%s): %w\n%s", path, err, unsetHint)
 	}
+	WarnLicenseExpiration(contents, out)
 	problems := LicenseFeatureProblems(ParseLicenseFeatures(contents, time.Now()))
 	if err := confirmLicenseFeatureProblems("RTI_LICENSE_FILE="+path, problems, confirm); err != nil {
 		return fmt.Errorf("%w\n%s", err, unsetHint)
@@ -174,15 +197,14 @@ func environmentLicensePath() string {
 	return path
 }
 
-// Stored licenses are checked only when contents change. An explicit environment
-// override is checked on each launch because it bypasses the saved license.
+// Metadata is checked on every use because unchanged contents can expire.
 func confirmLicenseFeatureProblems(source string, problems []string, confirm Confirmer) error {
 	if len(problems) == 0 {
 		return nil
 	}
 	message := fmt.Sprintf("Connext license precheck found problems:\n  %s\n\n- %s\n\nConnext may fail to start or connect.\nProceed anyway?", source, strings.Join(problems, "\n- "))
 	if confirm == nil {
-		return clierror.InputRequired(message+"\nRun interactively to explicitly approve proceeding, or obtain a license from evaluation.rti.com.", "review_connext_license")
+		return clierror.InputRequired(message+"\nRun interactively to choose another license, or run rticloud license use <path> or rticloud license refresh.", "review_connext_license")
 	}
 	accepted, err := confirm.Confirm(Confirmation{
 		Kind:         ConfirmLicenseFeatures,
@@ -194,7 +216,57 @@ func confirmLicenseFeatureProblems(source string, problems []string, confirm Con
 		return err
 	}
 	if !accepted {
-		return common.UserError{Message: "Connext license precheck declined. Obtain a license from evaluation.rti.com, or provide a license file with RTIPRO, RTISECURITY, and RTIRWT before retrying."}
+		return common.UserError{Message: "Connext license precheck declined. Run rticloud license use <path> with a current license, or rticloud license refresh before retrying."}
+	}
+	return nil
+}
+
+// WarnLicenseExpiration reports approaching dates without network access or writes.
+func WarnLicenseExpiration(contents []byte, out io.Writer) {
+	warnLicenseExpiration(contents, out, " Run rticloud license refresh or rticloud license use <path>.")
+}
+
+func warnLicenseExpiration(contents []byte, out io.Writer, recoveryHint string) {
+	if out == nil {
+		return
+	}
+	features := ParseLicenseFeatures(contents, time.Now())
+	if !LicenseNeedsRenewal(features) {
+		recoveryHint = ""
+	}
+	for _, feature := range features {
+		if feature.Status == LicenseExpiring {
+			fmt.Fprintf(out, "Warning: %s record expires on %s (declared in license file).%s\n", feature.Feature, *feature.ExpiresOn, recoveryHint)
+		}
+	}
+}
+
+// PrecheckLicenseFile checks an external installation without rewriting its file.
+func PrecheckLicenseFile(install Install, out io.Writer) error {
+	contents, err := readCopyableLicense(LicenseFilePath(install))
+	if err != nil {
+		return err
+	}
+	problems := LicenseFeatureProblems(ParseLicenseFeatures(contents, time.Now()))
+	if len(problems) > 0 {
+		onlyExpired := true
+		for _, problem := range problems {
+			onlyExpired = onlyExpired && strings.HasPrefix(problem, "Required feature has only expired records:")
+		}
+		if onlyExpired {
+			return common.UserError{Message: "Connext license expired."}
+		}
+		return common.UserError{Message: "Connext license precheck found problems:\n- " + strings.Join(problems, "\n- ")}
+	}
+	warnLicenseExpiration(contents, out, "")
+	return nil
+}
+
+// ValidateReplacementLicense rejects unusable download/import candidates before saving.
+// This metadata check does not validate signatures or alter runtime enforcement.
+func ValidateReplacementLicense(contents []byte) error {
+	if problems := LicenseFeatureProblems(ParseLicenseFeatures(contents, time.Now())); len(problems) != 0 {
+		return clierror.InputRequired("Replacement license was not saved: "+strings.Join(problems, "; ")+". Obtain a current license from evaluation.rti.com or run rticloud license use <path>. Existing files are unchanged.", "provide_current_license")
 	}
 	return nil
 }
