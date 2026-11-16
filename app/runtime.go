@@ -45,10 +45,10 @@ import (
 )
 
 const (
-	downloadConnextLicenseLabel       = "Yes, download a license from evaluation.rti.com"
+	downloadConnextLicenseLabel       = "Download a license from evaluation.rti.com"
 	enterConnextLicensePathLabel      = "Enter license path"
 	manualDownloadConnextLicenseLabel = "Manually download a license"
-	cancelConnextLicenseLabel         = "No, skip license download"
+	cancelConnextLicenseLabel         = "Cancel"
 	evaluationLicenseURL              = "https://evaluation.rti.com/workspaces/license"
 )
 
