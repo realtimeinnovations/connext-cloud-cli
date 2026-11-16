@@ -270,6 +270,39 @@ func TestExternalLicenseReportsStatusWithoutRecovery(t *testing.T) {
 	}
 }
 
+func TestManagedManualLicenseGuidancePrintedOnce(t *testing.T) {
+	const expired = "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n"
+	for _, command := range []string{"gateway", "spy"} {
+		t.Run(command, func(t *testing.T) {
+			rt, install, shared := managedLicenseRuntime(t)
+			local := internalconnext.LicenseFilePath(install)
+			setupWrite(t, shared, expired)
+			setupWrite(t, local, expired)
+			var out bytes.Buffer
+			rt.Out = &out
+			selectFn, inputFn := licensePrompts(t, command, "3\n3\n", &out)
+			err := rt.ensureConnextLicense(install, selectFn, inputFn, false)
+			if err == nil {
+				t.Fatal("manual recovery allowed launch before a license was provided")
+			}
+			visible := out.String() + "\n" + err.Error()
+			for _, fragment := range []string{evaluationLicenseURL, "rticloud license use <downloaded-license-path>", "Original user files and installation licenses are preserved."} {
+				if count := strings.Count(visible, fragment); count != 1 {
+					t.Fatalf("guidance %q appears %d times:\n%s", fragment, count, visible)
+				}
+			}
+			if !strings.Contains(visible, "rerun this command") {
+				t.Fatal("guidance omitted the retry step")
+			}
+			for _, path := range []string{shared, local} {
+				if setupRead(t, path) != expired {
+					t.Fatal("manual recovery changed a license")
+				}
+			}
+		})
+	}
+}
+
 func TestSkipPreflightLicenseChecks(t *testing.T) {
 	for _, source := range []string{"managed", "environment", "external"} {
 		for _, contents := range []struct {

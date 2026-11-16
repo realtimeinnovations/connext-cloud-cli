@@ -638,8 +638,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 			}
 		case manualDownloadConnextLicenseLabel:
 			if managed {
-				_, _ = fmt.Fprintf(runtime.Out, "Download your license from %s, then run:\n  rticloud license use <downloaded-license-path>\nOriginal user files and installation licenses are preserved.\n", evaluationLicenseURL)
-				return common.UserError{Message: "Run rticloud license use <downloaded-license-path>, then rerun this command."}
+				return common.UserError{Message: fmt.Sprintf("Download your license from %s, then run:\n  rticloud license use <downloaded-license-path>\nThen rerun this command.\nOriginal user files and installation licenses are preserved.", evaluationLicenseURL)}
 			}
 			_, _ = fmt.Fprint(runtime.Out, gateway.RenderKeyValuePanel("• Manually download Connext license:", []gateway.KeyValueRow{
 				{Key: "Step 1", Value: "Open the evaluation license page:"},

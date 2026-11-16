@@ -239,7 +239,7 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 			{name: "download", answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "download-rejects-invalid", download: incomplete, answers: "1\n", errorText: "Replacement license was not saved", calls: 1},
 			{name: "download-preserves-on-invalid-response", installed: expired, download: incomplete, answers: "3\n1\n", errorText: "Replacement license was not saved", calls: 1},
-			{name: "manual", answers: "3\n", errorText: "rticloud license use", order: []string{evaluationLicenseURL, "rticloud license use"}},
+			{name: "manual", answers: "3\n", errorText: "rticloud license use"},
 			{name: "cancel-before-login", answers: "4\n", errorText: "cancelled"},
 			{name: "external-lm-download", external: true, answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "external-lm-manual", external: true, answers: "3\n", errorText: "Copy the license file to", order: []string{evaluationLicenseURL, "Download the license file.", "Copy the license file to"}},
