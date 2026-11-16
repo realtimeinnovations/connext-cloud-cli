@@ -279,7 +279,7 @@ func TestRunSpyWritesRuntimeLogAndStatistics(t *testing.T) {
 		t.Fatal(err)
 	}
 	install := filepath.Join(tmpDir, ".rti", "rticloud", "installations", "7.7.0.1", "linux_x64", "rti_connext_dds-7.7.0")
-	t.Setenv("RTICLOUD_TEST_LICENSE", filepath.Join(install, "rti_license.dat"))
+	t.Setenv("RTICLOUD_TEST_LICENSE", filepath.Join(tmpDir, ".rti", "rticloud", "licenses", "rti_license.dat"))
 	binDir := filepath.Join(install, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)

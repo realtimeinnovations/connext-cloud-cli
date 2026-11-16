@@ -26,7 +26,11 @@ func TestSelectorPTY(t *testing.T) {
 	const childVariable = "RTICLOUD_PROMPT_PTY_CHILD"
 	if os.Getenv(childVariable) == "1" {
 		selector := Selector{In: os.Stdin, Out: os.Stdout}
-		value, err := selector.Select("Choose fixture", []string{"first", "second"}, os.Getenv("RTICLOUD_PROMPT_PTY_DEFAULT"))
+		message := "Choose fixture"
+		if os.Getenv("RTICLOUD_PROMPT_PTY_LONG") == "1" {
+			message += ": " + strings.Repeat("long-installation-path/", 8)
+		}
+		value, err := selector.Select(message, []string{"first", "second"}, os.Getenv("RTICLOUD_PROMPT_PTY_DEFAULT"))
 		if err != nil {
 			fmt.Fprintf(os.Stdout, "PTY_ERROR:%s\n", err)
 		} else {
@@ -37,16 +41,22 @@ func TestSelectorPTY(t *testing.T) {
 
 	for _, scenario := range []struct {
 		name, defaultChoice, keys, want string
+		long                            bool
 	}{
-		{"enter-uses-default", "second", "\r", "PTY_RESULT:second"},
-		{"down-then-enter", "first", "\x1b[B\r", "PTY_RESULT:second"},
-		{"control-c-cancels", "first", "\x03", "PTY_ERROR:Selection cancelled."},
+		{"enter-uses-default", "second", "\r", "PTY_RESULT:second", false},
+		{"down-then-enter", "first", "\x1b[B\r", "PTY_RESULT:second", false},
+		{"control-c-cancels", "first", "\x03", "PTY_ERROR:Selection cancelled.", false},
+		{"long-question-down", "first", "\x1b[B\r", "PTY_RESULT:second", true},
+		{"long-question-up", "second", "\x1b[A\r", "PTY_RESULT:first", true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSelectorPTY$")
 			cmd.Env = append(os.Environ(), childVariable+"=1", "RTICLOUD_PROMPT_PTY_DEFAULT="+scenario.defaultChoice, "TERM=xterm-256color")
+			if scenario.long {
+				cmd.Env = append(cmd.Env, "RTICLOUD_PROMPT_PTY_LONG=1")
+			}
 			terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 			if err != nil {
 				t.Fatal(err)
@@ -111,6 +121,9 @@ func TestSelectorPTY(t *testing.T) {
 			}
 			if waitErr != nil || !sent || !strings.Contains(output.String(), scenario.want) {
 				t.Fatalf("child error=%v, want %q, output=%s", waitErr, scenario.want, output.String())
+			}
+			if scenario.long && strings.Count(output.String(), "Choose fixture") != 1 {
+				t.Fatalf("question was redrawn: %s", output.String())
 			}
 		})
 	}

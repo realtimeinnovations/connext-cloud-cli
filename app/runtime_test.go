@@ -321,7 +321,7 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 					want := scenario.want
 					if path == saved && scenario.external {
 						want = ""
-					} else if path == local && want == "" {
+					} else if path == local && (!scenario.external || want == "") {
 						want = scenario.installed
 					}
 					data, readErr := os.ReadFile(path)
@@ -358,8 +358,11 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 					} else if err != nil {
 						t.Fatalf("unchanged current license required more work: %v", err)
 					}
-					if out.Len() != before || api.calls != scenario.calls {
-						t.Fatal("reuse wrote output or downloaded again")
+					if !scenario.external && scenario.want != incomplete && !strings.Contains(out.String()[before:], "Using saved Connext license: "+saved) {
+						t.Fatal("reuse did not report the saved license")
+					}
+					if api.calls != scenario.calls {
+						t.Fatal("reuse downloaded again")
 					}
 				}
 			})

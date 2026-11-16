@@ -117,11 +117,10 @@ func (selector Selector) cursorSelect(message string, choices []string, inputFil
 	// Keep every rendered row within a single terminal line (see fitItemsToWidth).
 	width, _ := tui.TerminalSize(outputFile, 80, 24)
 	fitItemsToWidth(items, width)
-	prefix, label := splitPromptMessage(message)
-	if prefix != "" {
-		_, _ = fmt.Fprintln(outputFile, prefix)
-		_, _ = fmt.Fprintln(outputFile)
-	}
+	// promptui counts its label as one screen row even when the terminal wraps
+	// it. Print the question outside its redraw buffer so long paths and terminal
+	// resizes cannot put the selection cursor on the wrong row.
+	_, _ = fmt.Fprintln(outputFile, strings.TrimRight(message, "\n"))
 	templates := &promptui.SelectTemplates{
 		Label:    "{{ . }}",
 		Active:   "\x1b[38;5;208m▸ {{ .Label }}\x1b[0m",
@@ -132,7 +131,7 @@ func (selector Selector) cursorSelect(message string, choices []string, inputFil
 		templates.Details = "    \x1b[2m{{ .Detail }}\x1b[0m"
 	}
 	prompt := promptui.Select{
-		Label:     label,
+		Label:     "",
 		Items:     items,
 		Size:      minInt(len(items), 10),
 		CursorPos: selector.defaultCursorPos(choices),

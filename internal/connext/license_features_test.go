@@ -88,9 +88,6 @@ func TestLicenseReuseRechecksMetadataWithoutRewriting(t *testing.T) {
 				if available, err := ProvisionManagedLicense(install, nil, false); err == nil || available {
 					t.Fatalf("expired saved license escaped launch precheck: available=%v err=%v", available, err)
 				}
-				if data, err := os.ReadFile(LicenseFilePath(install)); err != nil || string(data) != incomplete {
-					t.Fatalf("expired installation copy changed: %v", err)
-				}
 			}
 			changed := []byte(incomplete + "# updated\n")
 			if err := WriteLicenseFile(install, changed, nil); err == nil || clierror.From(err).Code != clierror.CodeInputRequired {
@@ -109,65 +106,6 @@ func TestLicenseReuseRechecksMetadataWithoutRewriting(t *testing.T) {
 				t.Fatalf("complete updated license required approval: %v", err)
 			}
 		})
-	}
-}
-
-func TestManagedLicenseReplacementConsentPreservesBothFiles(t *testing.T) {
-	for _, operation := range []string{"reuse", "download"} {
-		for _, answer := range []string{"noninteractive", "", "\n", "2\n"} {
-			t.Run(operation+"/"+answer, func(t *testing.T) {
-				root := managedTestEnvironment(t)
-				install := Install{Path: writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion), Version: installerVersion}
-				saved, _ := managedLicensePath()
-				local := LicenseFilePath(install)
-				originalSaved := validTestConnextLicense + "# saved\n"
-				originalLocal := validTestConnextLicense + "# user installation\n"
-				if err := os.MkdirAll(filepath.Dir(saved), 0700); err != nil {
-					t.Fatal(err)
-				}
-				for path, contents := range map[string]string{saved: originalSaved, local: originalLocal} {
-					if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				var out bytes.Buffer
-				var confirm Confirmer
-				if answer != "noninteractive" {
-					confirm = scriptedConfirmation(answer, &out)
-				}
-				candidate := originalSaved
-				var err error
-				if operation == "reuse" {
-					_, err = ProvisionManagedLicense(install, confirm, false)
-				} else {
-					candidate = validTestConnextLicense + "# new download\n"
-					err = WriteLicenseFile(install, []byte(candidate), confirm)
-				}
-				accepted := answer == "2\n"
-				if (err == nil) != accepted {
-					t.Fatalf("accepted=%v err=%v", accepted, err)
-				}
-				wantSaved, wantLocal := originalSaved, originalLocal
-				if accepted {
-					wantSaved, wantLocal = candidate, candidate
-				}
-				for path, want := range map[string]string{saved: wantSaved, local: wantLocal} {
-					if got, err := os.ReadFile(path); err != nil || string(got) != want {
-						t.Fatalf("unexpected file contents at %s: %v", path, err)
-					}
-				}
-				if accepted {
-					before, _ := os.Stat(local)
-					if available, err := ProvisionManagedLicense(install, nil, false); err != nil || !available {
-						t.Fatalf("matching copy prompted: %v", err)
-					}
-					after, _ := os.Stat(local)
-					if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
-						t.Fatal("matching installation copy rewritten")
-					}
-				}
-			})
-		}
 	}
 }
 

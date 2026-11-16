@@ -114,9 +114,6 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	if err := os.WriteFile(external, []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(LicenseFilePath(install)); err != nil {
-		t.Fatal(err)
-	}
 	if runtime.GOOS != "windows" {
 		if err := os.Symlink(external, LicenseFilePath(install)); err != nil {
 			t.Fatal(err)
@@ -124,7 +121,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	} else if err := os.WriteFile(LicenseFilePath(install), []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, nil, false); err == nil || ok {
+	if ok, err := ProvisionManagedLicense(install, nil, false); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	data, _ = os.ReadFile(LicenseFilePath(install))
@@ -140,7 +137,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 		t.Fatalf("environment license must be used without importing: available=%v err=%v", available, err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", "")
-	if !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+LicenseFilePath(install)) {
+	if !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+canonical) {
 		t.Fatal("managed license not used by subprocess")
 	}
 	if len((Install{Path: t.TempDir()}).EnvironmentOverrides()) != 2 {
@@ -199,7 +196,7 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 			if err != nil || !available {
 				t.Fatalf("approved import failed: available=%v err=%v", available, err)
 			}
-			for _, target := range []string{canonical, LicenseFilePath(install), path} {
+			for _, target := range []string{canonical, path} {
 				if data, err := os.ReadFile(target); err != nil || string(data) != validTestConnextLicense {
 					t.Fatalf("unexpected license at %s: %v", target, err)
 				}

@@ -574,6 +574,11 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 			return err
 		}
 		if available {
+			path, err := internalconnext.SavedLicensePath()
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", path)
 			if skipPreflight {
 				return nil
 			}
@@ -632,6 +637,9 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 				}
 				if imported {
 					_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", licensePath)
+					if managed {
+						_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", licensePath)
+					}
 					return nil
 				}
 				break
@@ -665,6 +673,9 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 				return fmt.Errorf("saving Connext license to %s: %w", licensePath, err)
 			}
 			_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", licensePath)
+			if managed {
+				_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", licensePath)
+			}
 			return nil
 		default:
 			return common.UserError{Message: "Connext license download cancelled."}

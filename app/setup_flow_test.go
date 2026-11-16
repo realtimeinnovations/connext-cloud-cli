@@ -692,9 +692,17 @@ printf '%s\n' "$RTI_LICENSE_FILE" > "$RTICLOUD_TEST_PROCESS_RECORD"
 			if err != nil {
 				t.Fatalf("run: %v\n%s", err, f.out.String())
 			}
-			local := filepath.Join(f.install, connext.LicenseFileName)
-			if strings.TrimSpace(setupRead(t, record)) != local || setupRead(t, local) != expired {
-				t.Fatal("process did not receive the installation-local license copy")
+			if strings.TrimSpace(setupRead(t, record)) != saved || setupRead(t, saved) != expired {
+				t.Fatal("process did not receive the shared license")
+			}
+			logPath := f.runtime.Gateway.RoutingLogPath()
+			if command == "collector" {
+				logPath = f.runtime.Gateway.CollectorLogPath()
+			} else if command == "spy" {
+				logPath = f.runtime.Spy.SpyLogPath()
+			}
+			if !strings.Contains(setupRead(t, logPath), "Using saved Connext license: "+saved) {
+				t.Fatal("runtime log does not identify the shared license")
 			}
 			if len(f.requests) != 0 || strings.Contains(f.out.String(), "license precheck") {
 				t.Fatalf("skipped preflight made requests or checked the license: %s", f.out.String())

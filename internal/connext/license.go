@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 )
 
 const LicenseFileName = "rti_license.dat"
@@ -66,15 +64,13 @@ func LicenseFilePath(install Install) string {
 	return filepath.Join(install.Path, LicenseFileName)
 }
 
-// WriteLicenseFile checks metadata before saving and copying to the installation.
-// Replacing different installation contents requires confirmation.
+// WriteLicenseFile checks metadata before saving the license.
 func WriteLicenseFile(install Install, content []byte, confirm Confirmer) error {
 	_, err := writeLicenseFile(install, content, confirm, "", false)
 	return err
 }
 
 // A nonempty source requests import confirmation before writing either copy.
-// Different installation contents require confirmation even when skipping the precheck.
 func writeLicenseFile(install Install, content []byte, confirm Confirmer, source string, skipPrecheck bool) (bool, error) {
 	managed := IsManagedInstallation(install)
 	target := LicenseFilePath(install)
@@ -126,14 +122,6 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 			return false, err
 		}
 	}
-	copyInstallation := false
-	if managed {
-		var err error
-		copyInstallation, err = prepareInstallationLicenseCopy(install, content, confirm)
-		if err != nil {
-			return false, err
-		}
-	}
 	if changed {
 		if managed {
 			if err := writeVerifiedLicense(target, content); err != nil {
@@ -142,40 +130,6 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 		} else if err := writeAtomicLicense(target, content); err != nil {
 			return false, err
 		}
-	}
-	if copyInstallation {
-		if err := writeVerifiedLicense(LicenseFilePath(install), content); err != nil {
-			return false, err
-		}
-	}
-	return true, nil
-}
-
-// Check and confirm the destination before changing either saved or installed bytes.
-func prepareInstallationLicenseCopy(install Install, content []byte, confirm Confirmer) (bool, error) {
-	path := LicenseFilePath(install)
-	current, err := readCopyableLicense(path)
-	if os.IsNotExist(err) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if bytes.Equal(current, content) {
-		return false, nil
-	}
-	message := fmt.Sprintf("Replace the different installation license at %s with the selected license?", path)
-	if confirm == nil {
-		return false, clierror.InputRequired(message+" Run interactively to confirm replacement, or run rticloud license use <installation-license-path> to save this installation license instead. No license files were changed.", "confirm_installation_license_replacement")
-	}
-	accepted, err := confirm.Confirm(Confirmation{
-		Message: message, AcceptLabel: "Replace installation license", DeclineLabel: "Cancel",
-	})
-	if err != nil {
-		return false, err
-	}
-	if !accepted {
-		return false, clierror.InputRequired("Installation license replacement cancelled; no license files were changed.", "confirm_installation_license_replacement")
 	}
 	return true, nil
 }
