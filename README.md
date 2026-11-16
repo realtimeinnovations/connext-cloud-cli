@@ -191,3 +191,8 @@ authorizes that saved-file replacement, not a later installation-file replacemen
 To keep a different installation license, select it with `license use` before launching.
 External installation licenses report expiry without recovery suggestions. There is no
 need to delete files under `.rti` to change licenses.
+
+Use `gateway --skip-preflight` or `spy --skip-preflight` to skip the CLI's license
+expiry and required-feature checks, including for `RTI_LICENSE_FILE` and external
+installations. License copying and replacement confirmations still apply. Connext
+still validates the license at runtime.

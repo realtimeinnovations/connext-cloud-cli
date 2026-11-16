@@ -92,7 +92,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	t.Setenv("RTI_LICENSE_FILE", "")
 	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	install := Install{Path: directory, Version: installerVersion}
-	if ok, err := ProvisionManagedLicense(install, nil); err != nil || ok {
+	if ok, err := ProvisionManagedLicense(install, nil, false); err != nil || ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	old := filepath.Join(root, "7.6.0.1", platformDirectory(), "rti_connext_dds-7.6.0")
@@ -102,7 +102,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(old, LicenseFileName), []byte(validTestConnextLicense+"# legacy\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", io.Discard)); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", io.Discard), false); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	canonical, _ := managedLicensePath()
@@ -124,7 +124,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	} else if err := os.WriteFile(LicenseFilePath(install), []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, nil); err == nil || ok {
+	if ok, err := ProvisionManagedLicense(install, nil, false); err == nil || ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	data, _ = os.ReadFile(LicenseFilePath(install))
@@ -136,7 +136,7 @@ func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 		t.Fatal("modified external license")
 	}
 	t.Setenv("RTI_LICENSE_FILE", external)
-	if available, err := ProvisionManagedLicense(install, nil); err != nil || !available || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+external) {
+	if available, err := ProvisionManagedLicense(install, nil, false); err != nil || !available || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+external) {
 		t.Fatalf("environment license must be used without importing: available=%v err=%v", available, err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", "")
@@ -171,11 +171,11 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			canonical, _ := managedLicensePath()
-			if available, err := ProvisionManagedLicense(install, nil); available || err == nil {
+			if available, err := ProvisionManagedLicense(install, nil, false); available || err == nil {
 				t.Fatalf("noninteractive import proceeded: available=%v err=%v", available, err)
 			}
 			for _, input := range []string{"2\n", ""} {
-				available, err := ProvisionManagedLicense(install, scriptedConfirmation(input, io.Discard))
+				available, err := ProvisionManagedLicense(install, scriptedConfirmation(input, io.Discard), false)
 				if available || (err != nil) != (input == "") {
 					t.Fatalf("decline/EOF import: input=%q available=%v err=%v", input, available, err)
 				}
@@ -192,7 +192,7 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 				}
 			}
 			var out bytes.Buffer
-			available, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", &out))
+			available, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", &out), false)
 			if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), canonical) || !strings.Contains(out.String(), "License feature check passed:") {
 				t.Fatalf("missing import guidance: %s", out.String())
 			}
@@ -229,7 +229,7 @@ func TestExternalLicenseImportDoesNotWriteThroughLinks(t *testing.T) {
 			if err := os.WriteFile(source, []byte(validTestConnextLicense), 0600); err != nil {
 				t.Fatal(err)
 			}
-			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }))
+			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) { return true, nil }), false)
 			if kind == "symlink" {
 				if err == nil || imported {
 					t.Fatal("symlink destination was accepted")
@@ -259,7 +259,7 @@ func TestEnvironmentLicensePrecedesInvalidNDDSHOME(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", env)
-	if available, err := ProvisionManagedLicense(Install{Path: dir}, nil); err != nil || !available {
+	if available, err := ProvisionManagedLicense(Install{Path: dir}, nil, false); err != nil || !available {
 		t.Fatalf("environment license must precede NDDSHOME: available=%v err=%v", available, err)
 	}
 }

@@ -123,10 +123,10 @@ const (
 
 var ErrLicenseSourceUnreadable = errors.New("license file cannot be read")
 
-// ProvisionManagedLicense checks the saved license on every launch.
+// ProvisionManagedLicense checks the saved license unless skipPrecheck is set.
 // Importing another source or replacing different installation contents requires confirmation.
 // An explicit RTI_LICENSE_FILE is used directly without provisioning.
-func ProvisionManagedLicense(install Install, confirm Confirmer) (bool, error) {
+func ProvisionManagedLicense(install Install, confirm Confirmer, skipPrecheck bool) (bool, error) {
 	inspection, err := InspectManagedLicense(install)
 	if err != nil {
 		return false, err
@@ -138,19 +138,19 @@ func ProvisionManagedLicense(install Install, confirm Confirmer) (bool, error) {
 		return true, nil
 	}
 	if inspection.Source != inspection.CanonicalPath {
-		return writeLicenseFile(install, inspection.Contents, confirm, inspection.Source)
+		return writeLicenseFile(install, inspection.Contents, confirm, inspection.Source, skipPrecheck)
 	}
-	return writeLicenseFile(install, inspection.Contents, confirm, "")
+	return writeLicenseFile(install, inspection.Contents, confirm, "", skipPrecheck)
 }
 
 // ImportLicenseFile imports a user-supplied readable regular file only after
-// confirming the source and destination. Feature metadata is checked on every use.
-func ImportLicenseFile(install Install, source string, confirm Confirmer) (bool, error) {
+// confirming the source and destination. Feature metadata is checked unless skipped.
+func ImportLicenseFile(install Install, source string, confirm Confirmer, skipPrecheck bool) (bool, error) {
 	resolved, contents, err := ReadLicenseSource(source)
 	if err != nil {
 		return false, err
 	}
-	return writeLicenseFile(install, contents, confirm, resolved)
+	return writeLicenseFile(install, contents, confirm, resolved, skipPrecheck)
 }
 
 // ReadLicenseSource resolves a user-selected file without modifying it.

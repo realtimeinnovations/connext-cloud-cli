@@ -286,7 +286,7 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 				api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(status, download)}}
 				runtime.License = commands.New(api, &out)
 				selectFunc, inputFunc := licensePrompts(t, command, scenario.answers, &out)
-				err = runtime.ensureConnextLicense(install, selectFunc, inputFunc)
+				err = runtime.ensureConnextLicense(install, selectFunc, inputFunc, false)
 				if scenario.errorText == "" {
 					if err != nil {
 						t.Fatalf("unexpected failure: %v\n%s", err, out.String())
@@ -350,7 +350,7 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 						t.Fatalf("save result omitted destination: %s", out.String())
 					}
 					before := out.Len()
-					err := runtime.ensureConnextLicense(install, nil, nil)
+					err := runtime.ensureConnextLicense(install, nil, nil, false)
 					if scenario.want == incomplete {
 						if err == nil {
 							t.Fatal("unchanged incomplete license skipped precheck")
@@ -427,7 +427,7 @@ func TestEnsureConnextLicenseUsesEnvironmentDirectly(t *testing.T) {
 				selectFunc = nil
 			}
 			for attempt := 0; attempt < 2; attempt++ {
-				err := runtime.ensureConnextLicense(selected, selectFunc, nil)
+				err := runtime.ensureConnextLicense(selected, selectFunc, nil, false)
 				wantSuccess := scenario == "complete" || scenario == "external-install" || scenario == "override-incomplete" || scenario == "relative-file" || scenario == "quoted-file" || scenario == "symlink-file"
 				if (err == nil) != wantSuccess {
 					t.Fatalf("unexpected environment precheck: %v", err)
@@ -481,7 +481,7 @@ func TestEnsureConnextLicenseSkipsNonLMInstall(t *testing.T) {
 	if err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, func(message string, choices []string, _ string) (string, error) {
 		t.Fatalf("did not expect prompt for non-LM install: %s %#v", message, choices)
 		return "", nil
-	}, nil); err != nil {
+	}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if api.calls != 0 {
@@ -503,7 +503,7 @@ func TestEnsureConnextLicenseRequiresInteractivePrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{License: commands.New(&runtimeFakeAPI{}, io.Discard)}
-	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, nil, nil)
+	err := runtime.ensureConnextLicense(internalconnext.Install{Path: install, Version: "7.7.0"}, nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -85,7 +85,7 @@ func TestLicenseReuseRechecksMetadataWithoutRewriting(t *testing.T) {
 				t.Fatalf("unchanged license was rewritten: %v", err)
 			}
 			if managed {
-				if available, err := ProvisionManagedLicense(install, nil); err == nil || available {
+				if available, err := ProvisionManagedLicense(install, nil, false); err == nil || available {
 					t.Fatalf("expired saved license escaped launch precheck: available=%v err=%v", available, err)
 				}
 				if data, err := os.ReadFile(LicenseFilePath(install)); err != nil || string(data) != incomplete {
@@ -138,7 +138,7 @@ func TestManagedLicenseReplacementConsentPreservesBothFiles(t *testing.T) {
 				candidate := originalSaved
 				var err error
 				if operation == "reuse" {
-					_, err = ProvisionManagedLicense(install, confirm)
+					_, err = ProvisionManagedLicense(install, confirm, false)
 				} else {
 					candidate = validTestConnextLicense + "# new download\n"
 					err = WriteLicenseFile(install, []byte(candidate), confirm)
@@ -158,7 +158,7 @@ func TestManagedLicenseReplacementConsentPreservesBothFiles(t *testing.T) {
 				}
 				if accepted {
 					before, _ := os.Stat(local)
-					if available, err := ProvisionManagedLicense(install, nil); err != nil || !available {
+					if available, err := ProvisionManagedLicense(install, nil, false); err != nil || !available {
 						t.Fatalf("matching copy prompted: %v", err)
 					}
 					after, _ := os.Stat(local)

@@ -404,7 +404,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc, runtime.Spy.InputFunc); err != nil {
+	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc, runtime.Spy.InputFunc, skipPreflight); err != nil {
 		return err
 	}
 	if err := spy.EnsureEnhancedDDSSpy(connext, runtime.Spy.SelectFunc, runtime.Out); err != nil {
@@ -470,7 +470,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc, skipPreflight); err != nil {
 			return err
 		}
 		if gateway.HasObservability(configValues) {
@@ -502,7 +502,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc, skipPreflight); err != nil {
 			return err
 		}
 		if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
@@ -543,9 +543,12 @@ func (runtime *Runtime) liveTextOutput(format string) bool {
 
 var errChooseAnotherConnextLicense = errors.New("choose another Connext license")
 
-func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc prompt.SelectFunc, inputFunc func(string) (string, error)) error {
+func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc prompt.SelectFunc, inputFunc func(string) (string, error), skipPreflight bool) error {
 	confirm := internalconnext.ConfirmationFromSelector(selectFunc)
 	if os.Getenv("RTI_LICENSE_FILE") != "" {
+		if skipPreflight {
+			return nil
+		}
 		return internalconnext.PrecheckEnvironmentLicense(confirm, runtime.Out)
 	}
 	// An explicit environment override must be unset to choose another license.
@@ -566,11 +569,14 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	}
 	managed := internalconnext.IsManagedInstallation(install)
 	if managed {
-		available, err := internalconnext.ProvisionManagedLicense(install, confirm)
+		available, err := internalconnext.ProvisionManagedLicense(install, confirm, skipPreflight)
 		if err != nil && !errors.Is(err, errChooseAnotherConnextLicense) {
 			return err
 		}
 		if available {
+			if skipPreflight {
+				return nil
+			}
 			inspection, err := internalconnext.InspectManagedLicense(install)
 			if err != nil {
 				return err
@@ -581,6 +587,9 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	} else if !internalconnext.IsLicenseManaged(install) {
 		return nil
 	} else if internalconnext.HasLicenseAvailable(install) {
+		if skipPreflight {
+			return nil
+		}
 		return internalconnext.PrecheckLicenseFile(install, runtime.Out)
 	}
 	if selectFunc == nil {
@@ -610,7 +619,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 				if err != nil {
 					return err
 				}
-				imported, err := internalconnext.ImportLicenseFile(install, path, confirm)
+				imported, err := internalconnext.ImportLicenseFile(install, path, confirm, skipPreflight)
 				if errors.Is(err, internalconnext.ErrLicenseSourceUnreadable) {
 					_, _ = fmt.Fprintln(runtime.Out, err)
 					continue

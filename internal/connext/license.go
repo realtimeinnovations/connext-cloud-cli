@@ -69,13 +69,13 @@ func LicenseFilePath(install Install) string {
 // WriteLicenseFile checks metadata before saving and copying to the installation.
 // Replacing different installation contents requires confirmation.
 func WriteLicenseFile(install Install, content []byte, confirm Confirmer) error {
-	_, err := writeLicenseFile(install, content, confirm, "")
+	_, err := writeLicenseFile(install, content, confirm, "", false)
 	return err
 }
 
-// A nonempty source requests import confirmation after checking feature metadata
-// and before writing either copy. Different installation contents require confirmation.
-func writeLicenseFile(install Install, content []byte, confirm Confirmer, source string) (bool, error) {
+// A nonempty source requests import confirmation before writing either copy.
+// Different installation contents require confirmation even when skipping the precheck.
+func writeLicenseFile(install Install, content []byte, confirm Confirmer, source string, skipPrecheck bool) (bool, error) {
 	managed := IsManagedInstallation(install)
 	target := LicenseFilePath(install)
 	if managed {
@@ -94,17 +94,22 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 	}
 	current, err := readCopyableLicense(target)
 	changed := err != nil || !bytes.Equal(current, content)
-	problems := LicenseFeatureProblems(ParseLicenseFeatures(content, time.Now()))
-	checkedPath := target
-	if source != "" {
-		checkedPath = source
-	}
-	if err := confirmLicenseFeatureProblems(checkedPath, problems, confirm); err != nil {
-		return false, err
-	}
-	checkStatus := "License feature check passed: RTIPRO, RTISECURITY, RTIRWT."
-	if len(problems) > 0 {
-		checkStatus = "License feature warnings were accepted."
+	checkStatus := "License feature check skipped."
+	defaultAccept := false
+	if !skipPrecheck {
+		problems := LicenseFeatureProblems(ParseLicenseFeatures(content, time.Now()))
+		checkedPath := target
+		if source != "" {
+			checkedPath = source
+		}
+		if err := confirmLicenseFeatureProblems(checkedPath, problems, confirm); err != nil {
+			return false, err
+		}
+		defaultAccept = len(problems) == 0
+		checkStatus = "License feature check passed: RTIPRO, RTISECURITY, RTIRWT."
+		if len(problems) > 0 {
+			checkStatus = "License feature warnings were accepted."
+		}
 	}
 
 	if source != "" {
@@ -115,7 +120,7 @@ func writeLicenseFile(install Install, content []byte, confirm Confirmer, source
 			Message:       fmt.Sprintf("Found an existing Connext license:\n  %s\n\n%s\n\nThis license file will be copied to:\n  %s\n\nThis license will be used when rticloud needs to run Connext Professional components.", source, checkStatus, target),
 			AcceptLabel:   ImportManagedLicenseLabel,
 			DeclineLabel:  DeclineManagedLicenseLabel,
-			DefaultAccept: len(problems) == 0,
+			DefaultAccept: defaultAccept,
 		})
 		if err != nil || !accepted {
 			return false, err

@@ -1267,7 +1267,7 @@ Formatting:
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API and license expiry/feature preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",
@@ -1329,7 +1329,7 @@ Formatting:
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "Output format: text")
-	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip API and license expiry/feature preflight checks, use existing local .connext artifacts, and accept NDDSHOME without confirmation")
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "status",

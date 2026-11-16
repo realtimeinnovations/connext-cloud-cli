@@ -134,7 +134,7 @@ func TestExpiredSavedLicenseRecoveryConfirmsInstallationReplacement(t *testing.T
 			if err := os.WriteFile(local, []byte(own), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := rt.ensureConnextLicense(install, nil, nil); err == nil {
+			if err := rt.ensureConnextLicense(install, nil, nil, false); err == nil {
 				t.Fatal("expired saved license bypassed precheck")
 			}
 			if data, _ := os.ReadFile(local); string(data) != own {
@@ -145,7 +145,7 @@ func TestExpiredSavedLicenseRecoveryConfirmsInstallationReplacement(t *testing.T
 			api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(200, runtimeValidConnextLicense)}}
 			rt.License = commands.New(api, &out)
 			selectFn, inputFn := licensePrompts(t, command, "3\n1\n2\n", &out)
-			if err := rt.ensureConnextLicense(install, selectFn, inputFn); err != nil {
+			if err := rt.ensureConnextLicense(install, selectFn, inputFn, false); err != nil {
 				t.Fatal(err)
 			}
 			if api.calls != 1 {
@@ -157,7 +157,7 @@ func TestExpiredSavedLicenseRecoveryConfirmsInstallationReplacement(t *testing.T
 					t.Fatalf("unexpected bytes at %s: %v", file, err)
 				}
 			}
-			if err := rt.ensureConnextLicense(install, nil, nil); err != nil {
+			if err := rt.ensureConnextLicense(install, nil, nil, false); err != nil {
 				t.Fatal(err)
 			}
 			if api.calls != 1 {
@@ -246,9 +246,9 @@ func TestExternalLicenseReportsStatusWithoutRecovery(t *testing.T) {
 				out.Reset()
 				var err error
 				if interactive {
-					err = rt.ensureConnextLicense(install, selectFn, nil)
+					err = rt.ensureConnextLicense(install, selectFn, nil, false)
 				} else {
-					err = rt.ensureConnextLicense(install, nil, nil)
+					err = rt.ensureConnextLicense(install, nil, nil, false)
 				}
 				if tc.errorText == "" && err != nil || tc.errorText != "" && (err == nil || !strings.Contains(err.Error(), tc.errorText)) {
 					t.Fatalf("unexpected error: %v", err)
@@ -267,5 +267,99 @@ func TestExternalLicenseReportsStatusWithoutRecovery(t *testing.T) {
 				t.Fatalf("shared license was created: %v", err)
 			}
 		})
+	}
+}
+
+func TestSkipPreflightLicenseChecks(t *testing.T) {
+	for _, source := range []string{"managed", "environment", "external"} {
+		for _, contents := range []struct {
+			name, data string
+			warn       bool
+		}{
+			{name: "expired", data: "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n"},
+			{name: "missing-features", data: "# no required grants\n"},
+			{name: "expiring", data: "FEATURE CONNEXTPRO RTI 7. " + time.Now().AddDate(0, 0, 7).Format("02-Jan-2006") + " SIGN=TEST_ONLY\n", warn: true},
+		} {
+			t.Run(source+"/"+contents.name, func(t *testing.T) {
+				rt, install, shared := managedLicenseRuntime(t)
+				path := shared
+				switch source {
+				case "environment":
+					path = filepath.Join(t.TempDir(), "override.dat")
+					t.Setenv("RTI_LICENSE_FILE", path)
+				case "external":
+					install = internalconnext.Install{Path: t.TempDir(), Version: "7.7.0"}
+					setupWrite(t, filepath.Join(install.Path, "rti_versions.xml"), "<rti><host><installation_type>LM</installation_type></host></rti>")
+					path = internalconnext.LicenseFilePath(install)
+				}
+				setupWrite(t, path, contents.data)
+				var out bytes.Buffer
+				rt.Out = &out
+				for _, skip := range []bool{false, true} {
+					out.Reset()
+					err := rt.ensureConnextLicense(install, nil, nil, skip)
+					if (err == nil) != (skip || contents.warn) {
+						t.Fatalf("skip=%v err=%v", skip, err)
+					}
+					if skip && out.Len() != 0 {
+						t.Fatalf("skipped precheck printed output: %s", out.String())
+					}
+					if !skip && contents.warn && !strings.Contains(out.String(), "expires on") {
+						t.Fatal("normal launch omitted expiry warning")
+					}
+				}
+				if got := setupRead(t, path); got != contents.data {
+					t.Fatal("source license changed")
+				}
+				if source == "managed" && setupRead(t, internalconnext.LicenseFilePath(install)) != contents.data {
+					t.Fatal("skipping preflight did not provision the installation copy")
+				}
+			})
+		}
+	}
+}
+
+func TestSkipPreflightPreservesLicenseCopyConsent(t *testing.T) {
+	const expired = "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n"
+	for _, operation := range []string{"import", "replace-installation"} {
+		for _, answer := range []string{"noninteractive", "\n", "2\n"} {
+			t.Run(operation+"/"+answer, func(t *testing.T) {
+				rt, install, shared := managedLicenseRuntime(t)
+				local := internalconnext.LicenseFilePath(install)
+				original := expired
+				if operation == "replace-installation" {
+					setupWrite(t, shared, expired)
+					original = runtimeValidConnextLicense
+				}
+				setupWrite(t, local, original)
+				var out bytes.Buffer
+				selectFn, inputFn := licensePrompts(t, "gateway", answer, &out)
+				if answer == "noninteractive" {
+					selectFn, inputFn = nil, nil
+				}
+				err := rt.ensureConnextLicense(install, selectFn, inputFn, true)
+				accepted := answer == "2\n"
+				if (err == nil) != accepted {
+					t.Fatalf("accepted=%v err=%v", accepted, err)
+				}
+				if strings.Contains(out.String(), "Proceed anyway?") || strings.Contains(out.String(), "check passed") {
+					t.Fatalf("skipped check prompted or claimed success: %s", out.String())
+				}
+				wantLocal := original
+				if accepted {
+					wantLocal = expired
+				}
+				if setupRead(t, local) != wantLocal {
+					t.Fatal("installation license changed without consent")
+				}
+				if operation == "import" && !accepted {
+					if _, err := os.Stat(shared); !os.IsNotExist(err) {
+						t.Fatalf("saved license created without import consent: %v", err)
+					}
+				} else if setupRead(t, shared) != expired {
+					t.Fatal("unexpected saved license")
+				}
+			})
+		}
 	}
 }
