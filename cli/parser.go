@@ -1172,7 +1172,7 @@ func newNetworkCommand(runtime *app.Runtime) *cobra.Command {
 }
 
 func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
-	cmd := jsonParentCommand("license", "Download your RTI license file")
+	cmd := jsonParentCommand("license", "Download or select your RTI license file")
 	cmd.Long += "\n  get writes the license file and reports its absolute artifact_path in JSON mode."
 	cmd.Example = "  rticloud license get --output rti_license.dat --format json"
 
@@ -1199,6 +1199,39 @@ func newLicenseCommand(runtime *app.Runtime) *cobra.Command {
 		cmd.AddCommand(c)
 	}
 
+	for _, action := range []string{"use", "refresh"} {
+		action := action
+		var yes bool
+		c := &cobra.Command{
+			Use:   action,
+			Short: "Refresh the saved Connext license through evaluation.rti.com",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				var path string
+				var err error
+				if action == "use" {
+					path, err = runtime.UseConnextLicense(args[0], yes)
+				} else {
+					path, err = runtime.RefreshConnextLicense(yes)
+				}
+				if err != nil {
+					return err
+				}
+				format, _ := cmd.Flags().GetString("format")
+				if format == "json" {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"schema_version": "1", "data": map[string]any{"artifact_path": path, "status": "saved"}})
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Connext license saved to %s\nOriginal user files and installation licenses preserved.\n", path)
+				return err
+			},
+		}
+		if action == "use" {
+			c.Use, c.Short, c.Args = "use <path>", "Copy a current license into the managed store; preserve the original file", cobra.ExactArgs(1)
+		}
+		c.Long = c.Short + ". RTI_LICENSE_FILE must be unset. Existing saved licenses require confirmation; --yes authorizes replacement but never skips feature checks. Connext validates signatures and entitlements at runtime."
+		c.Flags().BoolVar(&yes, "yes", false, "Authorize replacing an existing saved license")
+		cmd.AddCommand(c)
+	}
 	return cmd
 }
 

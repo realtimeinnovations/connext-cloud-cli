@@ -162,3 +162,32 @@ Cloud application downloads require the structured bundle response. Missing or
 unsupported bundles fail before files are written or credentials are issued.
 There is no fallback to the old flat layout. Update both manager and CLI to use
 this feature; older CLIs fail their existing artifact checks against the new API.
+
+## Recovering a Connext license
+
+`rticloud doctor` reports the selected license and its declared feature expiry dates.
+Connext still validates signatures and entitlements at runtime.
+
+```sh
+rticloud doctor
+rticloud license use "/path/to/current-license.dat"
+rticloud license refresh
+```
+
+`license use` copies a current license into the shared managed store, preserving the
+original. `license refresh` requests a license through evaluation.rti.com and replaces
+the saved license only after checking the response. Both commands ask before replacing
+an existing saved license; add `--yes` to authorize replacement in scripts, including
+with `--format json`. Failed downloads and invalid replacement metadata leave the saved
+license unchanged. `license get --output <path>` remains a download/export command.
+
+An explicit `RTI_LICENSE_FILE` overrides the shared store and is read directly. Unset it
+before running `license use` or `license refresh`; these commands do not change your
+selected external file. Managed Gateway/Collector/Spy launches recheck the saved license
+and copy it into the selected installation. They use that installation copy, asking
+before replacing different installation contents. Matching copies need no replacement
+confirmation. `license use` and `license refresh` update the shared store; `--yes`
+authorizes that saved-file replacement, not a later installation-file replacement.
+To keep a different installation license, select it with `license use` before launching.
+External installation licenses report expiry without recovery suggestions. There is no
+need to delete files under `.rti` to change licenses.

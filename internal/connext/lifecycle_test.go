@@ -86,7 +86,7 @@ func TestDownloadCancellationCleansPartial(t *testing.T) {
 	}
 }
 
-func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
+func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	root := managedTestEnvironment(t)
 	t.Setenv("NDDSHOME", "")
 	t.Setenv("RTI_LICENSE_FILE", "")
@@ -121,15 +121,14 @@ func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 		if err := os.Symlink(external, LicenseFilePath(install)); err != nil {
 			t.Fatal(err)
 		}
+	} else if err := os.WriteFile(LicenseFilePath(install), []byte("external"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, ConfirmFunc(func(Confirmation) (bool, error) {
-		t.Fatal("existing shared license required another import confirmation")
-		return false, nil
-	})); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, nil); err == nil || ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	data, _ = os.ReadFile(LicenseFilePath(install))
-	if string(data) != validTestConnextLicense+"# legacy\n" {
+	if string(data) != "external" {
 		t.Fatal(string(data))
 	}
 	data, _ = os.ReadFile(external)

@@ -232,14 +232,14 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 			{name: "warnings-approved", source: incomplete, answers: entered + "2\n2\n", want: incomplete, order: []string{"Proceed anyway?", "License feature warnings were accepted.", "Connext license saved to"}},
 			{name: "correct-path", answers: "2\n~/missing.dat\n~/chosen license.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Path to Connext license file", "License feature check passed:", "Connext license saved to"}},
 			{name: "correct-and-replace", source: incomplete, answers: "2\n~/missing.dat\n~/chosen license.dat\n3\n2\n~/replacement.dat\n\n", want: runtimeValidConnextLicense, order: []string{"license file cannot be read", "Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
-			{name: "discovered-replace-path", installed: expired, answers: "3\n" + entered + "\n", want: runtimeValidConnextLicense, order: []string{"Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
-			{name: "discovered-replace-download", installed: expired, answers: "3\n1\n", want: runtimeValidConnextLicense, calls: 1},
+			{name: "discovered-replace-path", installed: expired, answers: "3\n" + entered + "\n2\n", want: runtimeValidConnextLicense, order: []string{"Proceed anyway?", "Choose how to provide a Connext license:", "License feature check passed:", "Connext license saved to"}},
+			{name: "discovered-replace-download", installed: expired, answers: "3\n1\n2\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "discovered-decline", installed: expired, answers: "\n", errorText: "precheck declined"},
 			{name: "discovered-replacement-eof", installed: expired, answers: "3\n" + entered, errorText: "cancelled"},
 			{name: "download", answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
-			{name: "download-decline-warnings", download: incomplete, answers: "1\n\n", errorText: "precheck declined", calls: 1},
-			{name: "download-replaces-only-after-approval", installed: expired, download: incomplete, answers: "3\n1\n\n", errorText: "precheck declined", calls: 1},
-			{name: "manual", answers: "3\n", errorText: "Copy the license file to", order: []string{"Manually download Connext license", "Step 1", evaluationLicenseURL, "Step 2", "Download the license file.", "Step 3"}},
+			{name: "download-rejects-invalid", download: incomplete, answers: "1\n", errorText: "Replacement license was not saved", calls: 1},
+			{name: "download-preserves-on-invalid-response", installed: expired, download: incomplete, answers: "3\n1\n", errorText: "Replacement license was not saved", calls: 1},
+			{name: "manual", answers: "3\n", errorText: "rticloud license use", order: []string{evaluationLicenseURL, "rticloud license use"}},
 			{name: "cancel-before-login", answers: "4\n", errorText: "cancelled"},
 			{name: "external-lm-download", external: true, answers: "1\n", want: runtimeValidConnextLicense, calls: 1},
 			{name: "external-lm-manual", external: true, answers: "3\n", errorText: "Copy the license file to", order: []string{evaluationLicenseURL, "Download the license file.", "Copy the license file to"}},
@@ -342,12 +342,24 @@ func TestLicenseAcquisitionWithPipedAnswers(t *testing.T) {
 					t.Fatalf("source license changed: %v", err)
 				}
 				if scenario.want != "" {
-					if !strings.Contains(out.String(), "Connext license saved to "+local) {
+					destination := saved
+					if scenario.external {
+						destination = local
+					}
+					if !strings.Contains(out.String(), "Connext license saved to "+destination) {
 						t.Fatalf("save result omitted destination: %s", out.String())
 					}
 					before := out.Len()
-					if err := runtime.ensureConnextLicense(install, nil, nil); err != nil || out.Len() != before || api.calls != scenario.calls {
-						t.Fatalf("unchanged license required more work: %v", err)
+					err := runtime.ensureConnextLicense(install, nil, nil)
+					if scenario.want == incomplete {
+						if err == nil {
+							t.Fatal("unchanged incomplete license skipped precheck")
+						}
+					} else if err != nil {
+						t.Fatalf("unchanged current license required more work: %v", err)
+					}
+					if out.Len() != before || api.calls != scenario.calls {
+						t.Fatal("reuse wrote output or downloaded again")
 					}
 				}
 			})
