@@ -102,18 +102,7 @@ func licenseCheck(install connext.Install, options Options) Check {
 		c.Details = append(c.Details, detail("Copy destination", inspection.CanonicalPath), detail("Copy", "Explicit confirmation required; license file has not been copied"))
 		c.RequiredAction, c.NextStep = "confirm_license_import", "Run rticloud gateway or rticloud spy interactively to copy and use this license file, or download a license from evaluation.rti.com."
 	} else {
-		c.Details = append(c.Details, detail("Selection", "Saved managed license; managed launches use the installation copy"))
-		if inspection.CopyMatches {
-			c.Details = append(c.Details, detail("Installation", "License copy matches source"))
-		} else if inspection.InstallationExists {
-			c.Status, c.Code = CheckWarn, "LICENSE_DIFFERENT_INSTALLATION_FILE"
-			c.InstallationLicenseDiffers = true
-			c.Details = append(c.Details, detail("Different file", inspection.InstallationPath), detail("Copy", "Replacing the different installation license requires confirmation"))
-			c.RequiredAction, c.NextStep = "confirm_installation_license_replacement", "Run Gateway/Spy interactively to confirm replacement, or run rticloud license use <installation-license-path> to save the installation license instead."
-		} else {
-			c.Status, c.Code = CheckWarn, "LICENSE_COPY_PENDING"
-			c.Details = append(c.Details, detail("Installation", "License copy will be created after the saved license passes its launch precheck"))
-		}
+		c.Details = append(c.Details, detail("Selection", "Saved managed license; managed launches use this file directly"))
 	}
 	c.Features = connext.ParseLicenseFeatures(inspection.Contents, options.Now)
 	unknown, expiring, expired := len(c.Features) == 0, false, false

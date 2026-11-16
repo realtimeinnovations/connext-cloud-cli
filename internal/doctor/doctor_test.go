@@ -578,7 +578,7 @@ func TestDoctorRetainsExpiredAndDifferentLicenseDiagnostics(t *testing.T) {
 	writeFile(t, filepath.Join(install.Path, "rti_license.dat"), "FEATURE CONNEXTPRO RTI 7. permanent SIGN=SECRET_LICENSE\n")
 	before := snapshot(t, home)
 	c := licenseCheck(install, options)
-	if c.Code != "LICENSE_REQUIRED_FEATURES_UNAVAILABLE" || !c.InstallationLicenseDiffers || c.SourceKind != "saved" {
+	if c.Code != "LICENSE_REQUIRED_FEATURES_UNAVAILABLE" || c.InstallationLicenseDiffers || c.SourceKind != "saved" {
 		t.Fatalf("missing selection/expiry diagnostics: %+v", c)
 	}
 	if !strings.Contains(c.NextStep, "rticloud license use") || !strings.Contains(c.NextStep, "rticloud license refresh") {
@@ -609,8 +609,6 @@ func TestDoctorRecoveryAdviceAccountsForAlternativesAndCopy(t *testing.T) {
 				contents += expiring
 			case "needs-renewal":
 				contents, wantAction = expiring, "renew_license"
-			case "different-copy":
-				wantAction = "confirm_installation_license_replacement"
 			}
 			writeFile(t, saved, contents)
 			writeFile(t, local, contents)
@@ -629,12 +627,6 @@ func TestDoctorRecoveryAdviceAccountsForAlternativesAndCopy(t *testing.T) {
 			}
 			if wantAction == "" && c.NextStep != "" {
 				t.Fatalf("unnecessary recovery advice: %s", c.NextStep)
-			}
-			if scenario == "different-copy" && (!c.InstallationLicenseDiffers || !strings.Contains(c.NextStep, "confirm replacement")) {
-				t.Fatalf("missing copy confirmation: %+v", c)
-			}
-			if scenario == "missing-copy" && c.Code != "LICENSE_COPY_PENDING" {
-				t.Fatalf("missing pending copy diagnostic: %+v", c)
 			}
 			if !reflect.DeepEqual(before, snapshot(t, home)) {
 				t.Fatal("doctor mutated files")

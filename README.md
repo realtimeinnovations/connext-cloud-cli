@@ -183,16 +183,15 @@ license unchanged. `license get --output <path>` remains a download/export comma
 
 An explicit `RTI_LICENSE_FILE` overrides the shared store and is read directly. Unset it
 before running `license use` or `license refresh`; these commands do not change your
-selected external file. Managed Gateway/Collector/Spy launches recheck the saved license
-and copy it into the selected installation. They use that installation copy, asking
-before replacing different installation contents. Matching copies need no replacement
-confirmation. `license use` and `license refresh` update the shared store; `--yes`
-authorizes that saved-file replacement, not a later installation-file replacement.
-To keep a different installation license, select it with `license use` before launching.
+selected external file. Managed Gateway/Collector/Spy launches recheck and use the
+shared saved license directly, reporting its path. They leave installation licenses
+unchanged. To use an installation license, select it with `license use` before launching.
+The license path is also recorded in the component log under `.connext/gateway/logs/`
+or `.connext/spy/logs/`.
 External installation licenses report expiry without recovery suggestions. There is no
 need to delete files under `.rti` to change licenses.
 
 Use `gateway --skip-preflight` or `spy --skip-preflight` to skip the CLI's license
 expiry and required-feature checks, including for `RTI_LICENSE_FILE` and external
-installations. License copying and replacement confirmations still apply. Connext
+installations. Importing a discovered license still requires confirmation. Connext
 still validates the license at runtime.

@@ -77,6 +77,29 @@ func TestLicenseRecoveryPreservesFilesOnFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshLicenseIsUsedWithoutReplacingInstallationLicense(t *testing.T) {
+	rt, install, shared := managedLicenseRuntime(t)
+	local := internalconnext.LicenseFilePath(install)
+	setupWrite(t, shared, runtimeValidConnextLicense+"# old shared\n")
+	setupWrite(t, local, runtimeValidConnextLicense+"# installation\n")
+	var out bytes.Buffer
+	rt.Out = &out
+	api := &runtimeFakeAPI{responses: map[string]*http.Response{"POST /licenses": runtimeTextResponse(200, runtimeValidConnextLicense)}}
+	rt.License = commands.New(api, &out)
+	if _, err := rt.RefreshConnextLicense(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.ensureConnextLicense(install, nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Using saved Connext license: "+shared) || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+shared) {
+		t.Fatalf("shared license not used or reported: %s", out.String())
+	}
+	if setupRead(t, local) != runtimeValidConnextLicense+"# installation\n" || setupRead(t, shared) != runtimeValidConnextLicense {
+		t.Fatal("unexpected license contents after refresh")
+	}
+}
+
 func TestUseLicensePreservesOriginalAndRequiresReplacementConsent(t *testing.T) {
 	for _, answers := range []string{"\n", "2\n", ""} {
 		t.Run("answer="+answers, func(t *testing.T) {
@@ -118,7 +141,7 @@ func TestUseLicensePreservesOriginalAndRequiresReplacementConsent(t *testing.T) 
 	}
 }
 
-func TestExpiredSavedLicenseRecoveryConfirmsInstallationReplacement(t *testing.T) {
+func TestExpiredSavedLicenseRecoveryUsesSharedLicense(t *testing.T) {
 	for _, command := range []string{"gateway", "spy"} {
 		t.Run(command, func(t *testing.T) {
 			rt, install, shared := managedLicenseRuntime(t)
@@ -151,7 +174,7 @@ func TestExpiredSavedLicenseRecoveryConfirmsInstallationReplacement(t *testing.T
 			if api.calls != 1 {
 				t.Fatalf("downloads=%d", api.calls)
 			}
-			for file, want := range map[string]string{shared: runtimeValidConnextLicense, local: runtimeValidConnextLicense} {
+			for file, want := range map[string]string{shared: runtimeValidConnextLicense, local: own} {
 				data, err := os.ReadFile(file)
 				if err != nil || string(data) != want {
 					t.Fatalf("unexpected bytes at %s: %v", file, err)
@@ -334,7 +357,7 @@ func TestSkipPreflightLicenseChecks(t *testing.T) {
 					if (err == nil) != (skip || contents.warn) {
 						t.Fatalf("skip=%v err=%v", skip, err)
 					}
-					if skip && out.Len() != 0 {
+					if skip && source != "managed" && out.Len() != 0 {
 						t.Fatalf("skipped precheck printed output: %s", out.String())
 					}
 					if !skip && contents.warn && !strings.Contains(out.String(), "expires on") {
@@ -344,8 +367,8 @@ func TestSkipPreflightLicenseChecks(t *testing.T) {
 				if got := setupRead(t, path); got != contents.data {
 					t.Fatal("source license changed")
 				}
-				if source == "managed" && setupRead(t, internalconnext.LicenseFilePath(install)) != contents.data {
-					t.Fatal("skipping preflight did not provision the installation copy")
+				if source == "managed" && !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+shared) {
+					t.Fatal("managed process does not use the shared license")
 				}
 			})
 		}
@@ -371,7 +394,7 @@ func TestSkipPreflightPreservesLicenseCopyConsent(t *testing.T) {
 					selectFn, inputFn = nil, nil
 				}
 				err := rt.ensureConnextLicense(install, selectFn, inputFn, true)
-				accepted := answer == "2\n"
+				accepted := answer == "2\n" || operation == "replace-installation"
 				if (err == nil) != accepted {
 					t.Fatalf("accepted=%v err=%v", accepted, err)
 				}
@@ -379,9 +402,6 @@ func TestSkipPreflightPreservesLicenseCopyConsent(t *testing.T) {
 					t.Fatalf("skipped check prompted or claimed success: %s", out.String())
 				}
 				wantLocal := original
-				if accepted {
-					wantLocal = expired
-				}
 				if setupRead(t, local) != wantLocal {
 					t.Fatal("installation license changed without consent")
 				}

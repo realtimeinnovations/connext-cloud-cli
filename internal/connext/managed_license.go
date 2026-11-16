@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,7 +125,7 @@ const (
 var ErrLicenseSourceUnreadable = errors.New("license file cannot be read")
 
 // ProvisionManagedLicense checks the saved license unless skipPrecheck is set.
-// Importing another source or replacing different installation contents requires confirmation.
+// Importing another source requires confirmation.
 // An explicit RTI_LICENSE_FILE is used directly without provisioning.
 func ProvisionManagedLicense(install Install, confirm Confirmer, skipPrecheck bool) (bool, error) {
 	inspection, err := InspectManagedLicense(install)
@@ -307,13 +308,25 @@ func previousManagedLicenseSource(current Install) (string, []byte) {
 
 // EnvironmentOverrides keeps subprocesses on the selected installation. An
 // explicit RTI_LICENSE_FILE retains its selected file across working directories;
-// otherwise managed Connext reads its installation copy.
+// otherwise managed Connext reads the shared saved license.
 func (install Install) EnvironmentOverrides() []string {
 	overrides := []string{"NDDSHOME=" + install.Path, "CONNEXTDDS_DIR=" + install.Path}
 	if os.Getenv("RTI_LICENSE_FILE") != "" {
 		overrides = append(overrides, "RTI_LICENSE_FILE="+environmentLicensePath())
 	} else if IsManagedInstallation(install) {
-		overrides = append(overrides, "RTI_LICENSE_FILE="+LicenseFilePath(install))
+		if path, err := managedLicensePath(); err == nil {
+			overrides = append(overrides, "RTI_LICENSE_FILE="+path)
+		}
 	}
 	return overrides
+}
+
+// LogSharedLicense records the shared license used by a managed subprocess.
+func (install Install) LogSharedLicense(out io.Writer) {
+	if os.Getenv("RTI_LICENSE_FILE") != "" || !IsManagedInstallation(install) {
+		return
+	}
+	if path, err := managedLicensePath(); err == nil {
+		_, _ = fmt.Fprintf(out, "Using saved Connext license: %s\n", path)
+	}
 }
