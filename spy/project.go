@@ -503,6 +503,7 @@ func (app *App) RunWithOptions(config map[string]any, connext ConnextInstall, da
 	}
 	defer logFile.Close()
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
+	connext.LogSharedLicense(logFile)
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.AppDir()

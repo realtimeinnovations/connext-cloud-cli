@@ -96,13 +96,13 @@ func TestDownloadCancellationCleansPartial(t *testing.T) {
 	}
 }
 
-func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
+func TestManagedLicenseCopiesAndPreservesEnvironment(t *testing.T) {
 	root := managedTestEnvironment(t)
 	t.Setenv("NDDSHOME", "")
 	t.Setenv("RTI_LICENSE_FILE", "")
 	directory := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	install := Install{Path: directory, Version: installerVersion}
-	if ok, err := ProvisionManagedLicense(install, nil); err != nil || ok {
+	if ok, err := ProvisionManagedLicense(install, nil, false); err != nil || ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	old := filepath.Join(root, "7.6.0.1", platformDirectory(), "rti_connext_dds-7.6.0")
@@ -112,7 +112,7 @@ func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(old, LicenseFileName), []byte(validTestConnextLicense+"# legacy\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", io.Discard)); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", io.Discard), false); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	canonical, _ := managedLicensePath()
@@ -124,22 +124,18 @@ func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 	if err := os.WriteFile(external, []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(LicenseFilePath(install)); err != nil {
-		t.Fatal(err)
-	}
 	if runtime.GOOS != "windows" {
 		if err := os.Symlink(external, LicenseFilePath(install)); err != nil {
 			t.Fatal(err)
 		}
+	} else if err := os.WriteFile(LicenseFilePath(install), []byte("external"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if ok, err := ProvisionManagedLicense(install, ConfirmFunc(func(Confirmation) (bool, error) {
-		t.Fatal("existing shared license required another import confirmation")
-		return false, nil
-	})); err != nil || !ok {
+	if ok, err := ProvisionManagedLicense(install, nil, false); err != nil || !ok {
 		t.Fatalf("%v %v", ok, err)
 	}
 	data, _ = os.ReadFile(LicenseFilePath(install))
-	if string(data) != validTestConnextLicense+"# legacy\n" {
+	if string(data) != "external" {
 		t.Fatal(string(data))
 	}
 	data, _ = os.ReadFile(external)
@@ -147,11 +143,11 @@ func TestManagedLicensePersistsRepairsAndPreservesEnvironment(t *testing.T) {
 		t.Fatal("modified external license")
 	}
 	t.Setenv("RTI_LICENSE_FILE", external)
-	if available, err := ProvisionManagedLicense(install, nil); err != nil || !available || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+external) {
+	if available, err := ProvisionManagedLicense(install, nil, false); err != nil || !available || !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+external) {
 		t.Fatalf("environment license must be used without importing: available=%v err=%v", available, err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", "")
-	if !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+LicenseFilePath(install)) {
+	if !strings.Contains(strings.Join(install.EnvironmentOverrides(), "\n"), "RTI_LICENSE_FILE="+canonical) {
 		t.Fatal("managed license not used by subprocess")
 	}
 	if len((Install{Path: t.TempDir()}).EnvironmentOverrides()) != 2 {
@@ -182,11 +178,11 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			canonical, _ := managedLicensePath()
-			if available, err := ProvisionManagedLicense(install, nil); available || err == nil {
+			if available, err := ProvisionManagedLicense(install, nil, false); available || err == nil {
 				t.Fatalf("noninteractive import proceeded: available=%v err=%v", available, err)
 			}
 			for _, input := range []string{"2\n", ""} {
-				available, err := ProvisionManagedLicense(install, scriptedConfirmation(input, io.Discard))
+				available, err := ProvisionManagedLicense(install, scriptedConfirmation(input, io.Discard), false)
 				if available || (err != nil) != (input == "") {
 					t.Fatalf("decline/EOF import: input=%q available=%v err=%v", input, available, err)
 				}
@@ -203,14 +199,14 @@ func TestManagedLicenseImportRequiresConfirmation(t *testing.T) {
 				}
 			}
 			var out bytes.Buffer
-			available, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", &out))
+			available, err := ProvisionManagedLicense(install, scriptedConfirmation("\n", &out), false)
 			if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), canonical) || !strings.Contains(out.String(), "License feature check passed:") {
 				t.Fatalf("missing import guidance: %s", out.String())
 			}
 			if err != nil || !available {
 				t.Fatalf("approved import failed: available=%v err=%v", available, err)
 			}
-			for _, target := range []string{canonical, LicenseFilePath(install), path} {
+			for _, target := range []string{canonical, path} {
 				if data, err := os.ReadFile(target); err != nil || string(data) != validTestConnextLicense {
 					t.Fatalf("unexpected license at %s: %v", target, err)
 				}
@@ -257,7 +253,7 @@ func TestExternalLicenseImportDoesNotWriteThroughLinks(t *testing.T) {
 			imported, err := ImportLicenseFile(install, source, ConfirmFunc(func(Confirmation) (bool, error) {
 				confirmed = true
 				return true, nil
-			}))
+			}), false)
 			if kind != "hardlink" {
 				if !errors.Is(err, os.ErrInvalid) || imported || confirmed {
 					t.Fatalf("expected rejection before import confirmation: imported=%v confirmed=%v err=%v", imported, confirmed, err)
@@ -287,7 +283,7 @@ func TestEnvironmentLicensePrecedesInvalidNDDSHOME(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RTI_LICENSE_FILE", env)
-	if available, err := ProvisionManagedLicense(Install{Path: dir}, nil); err != nil || !available {
+	if available, err := ProvisionManagedLicense(Install{Path: dir}, nil, false); err != nil || !available {
 		t.Fatalf("environment license must precede NDDSHOME: available=%v err=%v", available, err)
 	}
 }

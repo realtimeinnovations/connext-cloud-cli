@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
@@ -219,7 +220,16 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
 	}
-	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RTI_LICENSE_FILE", "")
+	oldHome, oldPlatform := connext.UserHomeDir, connext.Platform
+	connext.UserHomeDir = func() (string, error) { return tmpDir, nil }
+	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	t.Cleanup(func() { connext.UserHomeDir, connext.Platform = oldHome, oldPlatform })
+
 	collectorDir := filepath.Join(tmpDir, ".connext", "gateway", "collector")
 	if err := os.MkdirAll(collectorDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -227,16 +237,17 @@ func TestStartCollectorLaunchesProcess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(collectorDir, "coll1.xml"), []byte("<collector/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	install := filepath.Join(tmpDir, ".rti", "rticloud", "installations", "7.7.0.1", "linux_x64", "rti_connext_dds-7.7.0")
+	t.Setenv("RTICLOUD_TEST_LICENSE", filepath.Join(tmpDir, ".rti", "rticloud", "licenses", "rti_license.dat"))
 	binDir := filepath.Join(install, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	scriptPath := filepath.Join(binDir, "rticollectorservicelite")
 	collectorLine := "MonitorEventWriter_on_publication_matched:MATCH | Monitoring Participant to DDS Exporter with: total_matched = 1"
-	ttyCheck := ""
+	ttyCheck := "if [ \"$RTI_LICENSE_FILE\" != \"$RTICLOUD_TEST_LICENSE\" ]; then exit 9; fi\n"
 	if supportsRoutingPTY() {
-		ttyCheck = "if [ ! -t 1 ]; then exit 3; fi\n"
+		ttyCheck += "if [ ! -t 1 ]; then exit 3; fi\n"
 	}
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+ttyCheck+"trap '' INT TERM\nprintf '%s\\n' 'collector started' '"+collectorLine+"'\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -548,7 +559,16 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
 	}
 	t.Setenv("RTI_MONITORING2_ENABLE", "true")
-	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RTI_LICENSE_FILE", "")
+	oldHome, oldPlatform := connext.UserHomeDir, connext.Platform
+	connext.UserHomeDir = func() (string, error) { return tmpDir, nil }
+	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	t.Cleanup(func() { connext.UserHomeDir, connext.Platform = oldHome, oldPlatform })
+
 	routingDir := filepath.Join(tmpDir, ".connext", "gateway", "routing")
 	if err := os.MkdirAll(routingDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -556,13 +576,14 @@ func TestRunRoutingServiceWritesRuntimeStateAndLogs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(routingDir, "my-gw.xml"), []byte("<routing/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	install := filepath.Join(tmpDir, ".rti", "rticloud", "installations", "7.7.0.1", "linux_x64", "rti_connext_dds-7.7.0")
+	t.Setenv("RTICLOUD_TEST_LICENSE", filepath.Join(tmpDir, ".rti", "rticloud", "licenses", "rti_license.dat"))
 	binDir := filepath.Join(install, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	scriptPath := filepath.Join(binDir, "rtiroutingservice")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ready\necho monitoring=$RTI_MONITORING2_ENABLE\n"), 0o755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nif [ \"$RTI_LICENSE_FILE\" != \"$RTICLOUD_TEST_LICENSE\" ]; then exit 9; fi\necho ready\necho monitoring=$RTI_MONITORING2_ENABLE\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

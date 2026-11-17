@@ -430,6 +430,7 @@ func (app *GatewayApp) StartCollector(config map[string]any, connext ConnextInst
 		return nil, err
 	}
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
+	connext.LogSharedLicense(logFile)
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.CollectorDir()
@@ -548,6 +549,7 @@ func (app *GatewayApp) RunCollectorServiceWithOptions(config map[string]any, con
 	}
 	defer logFile.Close()
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
+	connext.LogSharedLicense(logFile)
 	liveView := NewRoutingLiveView(config)
 	liveView.CollectorStatus = "running"
 	liveView.CollectorSecure = collectorSecure
@@ -727,6 +729,7 @@ func (app *GatewayApp) RunRoutingServiceWithOptions(config map[string]any, conne
 	}
 	defer logFile.Close()
 	_, _ = fmt.Fprintf(logFile, "Running %s\n", formatCommandLine(command))
+	connext.LogSharedLicense(logFile)
 	wrapped := terminal.PrepareCommand(command)
 	cmd := exec.CommandContext(context.Background(), wrapped[0], wrapped[1:]...)
 	cmd.Dir = app.RoutingDir()

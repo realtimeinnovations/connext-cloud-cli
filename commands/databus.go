@@ -118,6 +118,12 @@ func (runner *Runner) ListDatabuses(short bool) error {
 	if !ok {
 		return &clierror.Error{Code: clierror.CodeInvalidResponse, Message: "API response is missing the databuses object"}
 	}
+	for name, rawInfo := range resources {
+		info, _ := rawInfo.(map[string]any)
+		if kind, _ := info["kind"].(string); kind == "telemetry" {
+			delete(resources, name)
+		}
+	}
 	if !short {
 		return runner.writeResult(payload)
 	}

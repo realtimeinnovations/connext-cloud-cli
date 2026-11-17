@@ -46,10 +46,10 @@ import (
 )
 
 const (
-	downloadConnextLicenseLabel       = "Yes, download a license from evaluation.rti.com"
+	downloadConnextLicenseLabel       = "Download a license from evaluation.rti.com"
 	enterConnextLicensePathLabel      = "Enter license path"
 	manualDownloadConnextLicenseLabel = "Manually download a license"
-	cancelConnextLicenseLabel         = "No, skip license download"
+	cancelConnextLicenseLabel         = "Cancel"
 	evaluationLicenseURL              = "https://evaluation.rti.com/workspaces/license"
 )
 
@@ -421,7 +421,7 @@ func (runtime *Runtime) RunSpy(format string, skipPreflight bool) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc, runtime.Spy.InputFunc); err != nil {
+	if err := runtime.ensureConnextLicense(connext, runtime.Spy.SelectFunc, runtime.Spy.InputFunc, skipPreflight); err != nil {
 		return err
 	}
 	if err := spy.EnsureEnhancedDDSSpy(connext, runtime.Spy.SelectFunc, runtime.Out); err != nil {
@@ -487,7 +487,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc, skipPreflight); err != nil {
 			return err
 		}
 		if gateway.HasObservability(configValues) {
@@ -519,7 +519,7 @@ func (runtime *Runtime) RunGateway(format string, skipPreflight bool) error {
 		if err != nil {
 			return err
 		}
-		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc); err != nil {
+		if err := runtime.ensureConnextLicense(connext, runtime.Gateway.SelectFunc, runtime.Gateway.InputFunc, skipPreflight); err != nil {
 			return err
 		}
 		if err := gateway.EnsureCollectorServiceLite(connext, runtime.Gateway.SelectFunc, runtime.Out); err != nil {
@@ -564,9 +564,12 @@ func (runtime *Runtime) liveTextOutput(format string) bool {
 
 var errChooseAnotherConnextLicense = errors.New("choose another Connext license")
 
-func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc prompt.SelectFunc, inputFunc func(string) (string, error)) error {
+func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, selectFunc prompt.SelectFunc, inputFunc func(string) (string, error), skipPreflight bool) error {
 	confirm := internalconnext.ConfirmationFromSelector(selectFunc)
 	if os.Getenv("RTI_LICENSE_FILE") != "" {
+		if skipPreflight {
+			return nil
+		}
 		return internalconnext.PrecheckEnvironmentLicense(confirm, runtime.Out)
 	}
 	// An explicit environment override must be unset to choose another license.
@@ -587,22 +590,45 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 	}
 	managed := internalconnext.IsManagedInstallation(install)
 	if managed {
-		available, err := internalconnext.ProvisionManagedLicense(install, confirm)
+		available, err := internalconnext.ProvisionManagedLicense(install, confirm, skipPreflight)
 		if err != nil && !errors.Is(err, errChooseAnotherConnextLicense) {
 			return err
 		}
 		if available {
+			path, err := internalconnext.SavedLicensePath()
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", path)
+			if skipPreflight {
+				return nil
+			}
+			inspection, err := internalconnext.InspectManagedLicense(install)
+			if err != nil {
+				return err
+			}
+			internalconnext.WarnLicenseExpiration(inspection.Contents, runtime.Out)
 			return nil
 		}
-	} else if !internalconnext.IsLicenseManaged(install) || internalconnext.HasLicenseAvailable(install) {
+	} else if !internalconnext.IsLicenseManaged(install) {
 		return nil
+	} else if internalconnext.HasLicenseAvailable(install) {
+		if skipPreflight {
+			return nil
+		}
+		return internalconnext.PrecheckLicenseFile(install, runtime.Out)
 	}
 	if selectFunc == nil {
-		return common.UserError{Message: fmt.Sprintf("Connext Pro at %s is license-managed and no license file was found. Run rticloud in an interactive terminal to download a license from evaluation.rti.com.", install.Path)}
+		return common.UserError{Message: fmt.Sprintf("Connext Pro at %s is license-managed and no license file was found. Run rticloud in an interactive terminal, or run rticloud license use <path> or rticloud license refresh.", install.Path)}
 	}
-	message := fmt.Sprintf("Connext Pro at %s is license-managed, but no license file was found.\n\nChoose how to provide a Connext license:", install.Path)
+	message := fmt.Sprintf("Choose a Connext license for %s.\n\nChoose how to provide a Connext license:", install.Path)
+	licensePath := internalconnext.LicenseFilePath(install)
 	if managed {
-		message = fmt.Sprintf("No Connext license is available for %s.\n\nChoose how to provide a Connext license:", install.Path)
+		var err error
+		licensePath, err = internalconnext.SavedLicensePath()
+		if err != nil {
+			return err
+		}
 	}
 	for {
 		selected, err := selectFunc(message, []string{downloadConnextLicenseLabel, enterConnextLicensePathLabel, manualDownloadConnextLicenseLabel, cancelConnextLicenseLabel}, "")
@@ -619,7 +645,7 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 				if err != nil {
 					return err
 				}
-				imported, err := internalconnext.ImportLicenseFile(install, path, confirm)
+				imported, err := internalconnext.ImportLicenseFile(install, path, confirm, skipPreflight)
 				if errors.Is(err, internalconnext.ErrLicenseSourceUnreadable) {
 					_, _ = fmt.Fprintln(runtime.Out, err)
 					continue
@@ -631,13 +657,18 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 					return err
 				}
 				if imported {
-					_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
+					_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", licensePath)
+					if managed {
+						_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", licensePath)
+					}
 					return nil
 				}
 				break
 			}
 		case manualDownloadConnextLicenseLabel:
-			licensePath := internalconnext.LicenseFilePath(install)
+			if managed {
+				return common.UserError{Message: fmt.Sprintf("Download your license from %s, then run:\n  rticloud license use <downloaded-license-path>\nThen rerun this command.\nOriginal user files and installation licenses are preserved.", evaluationLicenseURL)}
+			}
 			_, _ = fmt.Fprint(runtime.Out, gateway.RenderKeyValuePanel("• Manually download Connext license:", []gateway.KeyValueRow{
 				{Key: "Step 1", Value: "Open the evaluation license page:"},
 				{Value: tui.StyleLink(evaluationLicenseURL)},
@@ -653,13 +684,19 @@ func (runtime *Runtime) ensureConnextLicense(install internalconnext.Install, se
 			if err != nil {
 				return common.UserError{Message: fmt.Sprintf("Connext license download failed: %v", err), Cause: err}
 			}
+			if err := internalconnext.ValidateReplacementLicense(licenseContent); err != nil {
+				return err
+			}
 			if err := internalconnext.WriteLicenseFile(install, licenseContent, confirm); err != nil {
 				if errors.Is(err, errChooseAnotherConnextLicense) {
 					continue
 				}
-				return fmt.Errorf("saving Connext license to %s: %w", internalconnext.LicenseFilePath(install), err)
+				return fmt.Errorf("saving Connext license to %s: %w", licensePath, err)
 			}
-			_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", internalconnext.LicenseFilePath(install))
+			_, _ = fmt.Fprintf(runtime.Out, "Connext license saved to %s\n", licensePath)
+			if managed {
+				_, _ = fmt.Fprintf(runtime.Out, "Using saved Connext license: %s\n", licensePath)
+			}
 			return nil
 		default:
 			return common.UserError{Message: "Connext license download cancelled."}

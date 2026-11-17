@@ -34,18 +34,20 @@ type Detail struct {
 }
 
 type Check struct {
-	ID             string                   `json:"id"`
-	Label          string                   `json:"label"`
-	Status         CheckStatus              `json:"status"`
-	Message        string                   `json:"message"`
-	Code           string                   `json:"code,omitempty"`
-	RequiredAction string                   `json:"required_action,omitempty"`
-	NextStep       string                   `json:"next_step,omitempty"`
-	BlockedBy      []string                 `json:"blocked_by,omitempty"`
-	Details        []Detail                 `json:"details,omitempty"`
-	HTTPStatus     int                      `json:"http_status,omitempty"`
-	DurationMS     int64                    `json:"duration_ms,omitempty"`
-	Features       []connext.LicenseFeature `json:"features,omitempty"`
+	SourceKind                 string                   `json:"source_kind,omitempty"`
+	InstallationLicenseDiffers bool                     `json:"installation_license_differs,omitempty"`
+	ID                         string                   `json:"id"`
+	Label                      string                   `json:"label"`
+	Status                     CheckStatus              `json:"status"`
+	Message                    string                   `json:"message"`
+	Code                       string                   `json:"code,omitempty"`
+	RequiredAction             string                   `json:"required_action,omitempty"`
+	NextStep                   string                   `json:"next_step,omitempty"`
+	BlockedBy                  []string                 `json:"blocked_by,omitempty"`
+	Details                    []Detail                 `json:"details,omitempty"`
+	HTTPStatus                 int                      `json:"http_status,omitempty"`
+	DurationMS                 int64                    `json:"duration_ms,omitempty"`
+	Features                   []connext.LicenseFeature `json:"features,omitempty"`
 }
 
 type Summary struct {

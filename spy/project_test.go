@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/connext"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/diagnostics"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/tui"
 )
@@ -270,7 +271,16 @@ func TestRunSpyWritesRuntimeLogAndStatistics(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture; exercised by the Linux CI job")
 	}
-	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RTI_LICENSE_FILE", "")
+	oldHome, oldPlatform := connext.UserHomeDir, connext.Platform
+	connext.UserHomeDir = func() (string, error) { return tmpDir, nil }
+	connext.Platform = func() (string, string) { return "linux", "amd64" }
+	t.Cleanup(func() { connext.UserHomeDir, connext.Platform = oldHome, oldPlatform })
+
 	appDir := filepath.Join(tmpDir, ".connext", "spy", "app")
 	if err := os.MkdirAll(filepath.Join(appDir, "generated"), 0o755); err != nil {
 		t.Fatal(err)
@@ -279,13 +289,15 @@ func TestRunSpyWritesRuntimeLogAndStatistics(t *testing.T) {
 <dds><qos_library name="app_1_qos_lib"><qos_profile name="app_1_qos_profile" is_default_qos="true"/></qos_library></dds>`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	install := filepath.Join(tmpDir, "rti_connext_dds-7.7.0")
+	install := filepath.Join(tmpDir, ".rti", "rticloud", "installations", "7.7.0.1", "linux_x64", "rti_connext_dds-7.7.0")
+	t.Setenv("RTICLOUD_TEST_LICENSE", filepath.Join(tmpDir, ".rti", "rticloud", "licenses", "rti_license.dat"))
 	binDir := filepath.Join(install, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	scriptPath := filepath.Join(binDir, "rtiddsspy")
 	script := `#!/bin/sh
+if [ "$RTI_LICENSE_FILE" != "$RTICLOUD_TEST_LICENSE" ]; then exit 9; fi
 echo "rtiddsspy is listening for data, press CTRL+C to stop it."
 echo "2026-05-05 14:55:51.771722 New writer        from 10.0.0.114     : topic=\"Square\" type=\"ShapeType\""
 echo "2026-05-08 00:06:58.475269 New data          from 10.0.0.114     : topic=\"Square\" type=\"ShapeType\" sample={\"color\":\"BLUE\"}"

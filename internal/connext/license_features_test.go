@@ -7,6 +7,7 @@
 package connext
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func TestLicenseFeatureProblems(t *testing.T) {
 	}
 }
 
-func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
+func TestLicenseReuseRechecksMetadataWithoutRewriting(t *testing.T) {
 	for _, managed := range []bool{true, false} {
 		t.Run(map[bool]string{true: "managed", false: "external"}[managed], func(t *testing.T) {
 			root := managedTestEnvironment(t)
@@ -60,6 +61,9 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			const incomplete = "FEATURE RTIPRO RTI 4. 01-jan-2000 SECRET_LICENSE\n"
 			approvals := 0
 			confirm := ConfirmFunc(func(request Confirmation) (bool, error) {
+				if request.AcceptLabel == "Replace installation license" {
+					return true, nil
+				}
 				approvals++
 				if request.AcceptLabel != ProceedLicensePrecheckLabel {
 					t.Fatalf("unexpected confirmation: %+v", request)
@@ -73,22 +77,16 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := WriteLicenseFile(install, []byte(incomplete), nil); err != nil {
-				t.Fatalf("unchanged license required approval: %v", err)
+			if err := WriteLicenseFile(install, []byte(incomplete), nil); err == nil || clierror.From(err).Code != clierror.CodeInputRequired {
+				t.Fatalf("unchanged expired license escaped precheck: %v", err)
 			}
 			after, err := os.Stat(target)
 			if err != nil || !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
 				t.Fatalf("unchanged license was rewritten: %v", err)
 			}
 			if managed {
-				if err := os.Remove(LicenseFilePath(install)); err != nil {
-					t.Fatal(err)
-				}
-				if available, err := ProvisionManagedLicense(install, nil); err != nil || !available {
-					t.Fatalf("repair of existing license required approval: available=%v err=%v", available, err)
-				}
-				if data, err := os.ReadFile(LicenseFilePath(install)); err != nil || string(data) != incomplete {
-					t.Fatalf("existing license was not repaired: %v", err)
+				if available, err := ProvisionManagedLicense(install, nil, false); err == nil || available {
+					t.Fatalf("expired saved license escaped launch precheck: available=%v err=%v", available, err)
 				}
 			}
 			changed := []byte(incomplete + "# updated\n")
@@ -104,8 +102,41 @@ func TestLicenseUpdatesValidateOnlyChangedContents(t *testing.T) {
 			if approvals != 2 {
 				t.Fatalf("approvals = %d, want one per content change", approvals)
 			}
-			if err := WriteLicenseFile(install, []byte(validTestConnextLicense), nil); err != nil {
+			if err := WriteLicenseFile(install, []byte(validTestConnextLicense), confirm); err != nil {
 				t.Fatalf("complete updated license required approval: %v", err)
+			}
+		})
+	}
+}
+
+func TestRenewalAdviceHonorsAlternativeGrants(t *testing.T) {
+	now := time.Now()
+	soon := now.AddDate(0, 0, 7).Format("02-Jan-2006")
+	later := now.AddDate(0, 0, 40).Format("02-Jan-2006")
+	expiring := "FEATURE CONNEXTPRO RTI 7. " + soon + " SIGN=TEST_ONLY\n"
+	for _, tc := range []struct {
+		name, contents string
+		renew          bool
+	}{
+		{"only-expiring", expiring, true},
+		{"permanent-alternative", expiring + validTestConnextLicense, false},
+		{"later-alternative", expiring + "FEATURE CONNEXTPRO RTI 7. " + later + " SIGN=TEST_ONLY\n", false},
+		{"expired-alternative", expiring + "FEATURE CONNEXTPRO RTI 7. 01-jan-2000 SIGN=TEST_ONLY\n", true},
+		{"optional-feature", validTestConnextLicense + "FEATURE RTICDS RTI 7. " + soon + " SIGN=TEST_ONLY\n", false},
+		{"anywhere-alternative", strings.ReplaceAll(validTestConnextLicense, "RTIRWT RTI 6. permanent", "RTIRWT RTI 6. "+soon) + "FEATURE RTIANYWHERE RTI 7. permanent SIGN=TEST_ONLY\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := []byte(tc.contents)
+			if got := LicenseNeedsRenewal(ParseLicenseFeatures(contents, now)); got != tc.renew {
+				t.Fatalf("renew=%v", got)
+			}
+			var out bytes.Buffer
+			WarnLicenseExpiration(contents, &out)
+			if strings.Contains(out.String(), "rticloud license refresh") != tc.renew {
+				t.Fatalf("unexpected advice: %s", out.String())
+			}
+			if !strings.Contains(out.String(), now.AddDate(0, 0, 7).Format("2006-01-02")) {
+				t.Fatalf("missing record date: %s", out.String())
 			}
 		})
 	}

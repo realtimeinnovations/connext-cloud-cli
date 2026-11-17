@@ -90,9 +90,10 @@ func licenseCheck(install connext.Install, options Options) Check {
 	}
 	if inspection.Contents == nil {
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_MISSING", "No readable license found"
-		c.RequiredAction, c.NextStep = "setup_license", "Run rticloud gateway or rticloud spy interactively to download a license or provide a license file."
+		c.RequiredAction, c.NextStep = "setup_license", "Run rticloud license use <path> or rticloud license refresh, then rerun Gateway/Spy."
 		return c
 	}
+	c.SourceKind = inspection.SourceKind
 	c.Details = append(c.Details, detail("Source", inspection.Source))
 	if environmentLicense {
 		c.Details = append(c.Details, detail("Selection", "Found via RTI_LICENSE_FILE; used directly without copying"), detail("Override", "Unset RTI_LICENSE_FILE to use a different license."))
@@ -100,11 +101,8 @@ func licenseCheck(install connext.Install, options Options) Check {
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_IMPORT_CONFIRMATION_REQUIRED", "Confirmation is required to copy and use this license file for Connext Professional components"
 		c.Details = append(c.Details, detail("Copy destination", inspection.CanonicalPath), detail("Copy", "Explicit confirmation required; license file has not been copied"))
 		c.RequiredAction, c.NextStep = "confirm_license_import", "Run rticloud gateway or rticloud spy interactively to copy and use this license file, or download a license from evaluation.rti.com."
-	} else if inspection.CopyMatches {
-		c.Details = append(c.Details, detail("Installation", "License copy matches source"))
 	} else {
-		c.Status, c.Code = CheckWarn, "LICENSE_COPY_PENDING"
-		c.Details = append(c.Details, detail("Installation", "License copy will be updated when rticloud runs Connext Professional components"))
+		c.Details = append(c.Details, detail("Selection", "Saved managed license; managed launches use this file directly"))
 	}
 	c.Features = connext.ParseLicenseFeatures(inspection.Contents, options.Now)
 	unknown, expiring, expired := len(c.Features) == 0, false, false
@@ -118,12 +116,13 @@ func licenseCheck(install connext.Install, options Options) Check {
 	switch {
 	case expired:
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRED_RECORDS", "License contains expired feature records; runtime acceptance is not verified"
-		c.RequiredAction, c.NextStep = "review_license", "If using Gateway/Spy, review or renew expired license records before running them."
 	case unknown:
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRATION_UNKNOWN", "Some license expiration metadata is unrecognized"
 	case expiring:
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_EXPIRING", "License feature records expire within 14 days"
-		c.RequiredAction, c.NextStep = "renew_license", "If using Gateway/Spy, renew the Connext license before the reported expiration date."
+	}
+	if connext.LicenseNeedsRenewal(c.Features) {
+		c.RequiredAction, c.NextStep = "renew_license", "Before the required feature grants expire, run rticloud license refresh or rticloud license use <path>."
 	}
 	if problems := connext.LicenseFeatureProblems(c.Features); len(problems) != 0 {
 		c.Status, c.Code, c.Message = CheckWarn, "LICENSE_REQUIRED_FEATURES_UNAVAILABLE", "Required license features are missing, expired, or unverified"
@@ -131,10 +130,10 @@ func licenseCheck(install connext.Install, options Options) Check {
 		for _, problem := range problems {
 			c.Details = append(c.Details, detail("Precheck", problem))
 		}
-		c.RequiredAction, c.NextStep = "review_connext_license", "Obtain a license from evaluation.rti.com, or provide a license file with RTIPRO, RTISECURITY, and RTIRWT."
+		c.RequiredAction, c.NextStep = "review_connext_license", "Run rticloud license use <path> with a current license, or rticloud license refresh. Required metadata: RTIPRO, RTISECURITY, RTIRWT."
 	}
-	if environmentLicense {
-		c.NextStep = strings.TrimSpace(c.NextStep + " Unset RTI_LICENSE_FILE to use a different license.")
+	if environmentLicense && c.RequiredAction != "" {
+		c.NextStep = "Check or replace the file selected by RTI_LICENSE_FILE, or unset RTI_LICENSE_FILE before running rticloud license use <path> or rticloud license refresh."
 	}
 	return c
 }
