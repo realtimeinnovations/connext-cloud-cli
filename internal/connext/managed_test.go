@@ -30,7 +30,13 @@ func managedTestEnvironment(t *testing.T) string {
 	home := t.TempDir()
 	oldHome, oldPlatform := UserHomeDir, Platform
 	UserHomeDir = func() (string, error) { return home, nil }
-	Platform = func() (string, string) { return "linux", "amd64" }
+	Platform = func() (string, string) {
+		if runtime.GOOS == "windows" {
+			return "windows", "amd64"
+		}
+		return "linux", "amd64"
+	}
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
 	t.Cleanup(func() { UserHomeDir, Platform = oldHome, oldPlatform })
 	root, err := managedRoot()
 	if err != nil {
@@ -66,8 +72,8 @@ func TestRtiRoot(t *testing.T) {
 
 func TestManagedDiscoveryValidatesMetadataAndPlatform(t *testing.T) {
 	root := managedTestEnvironment(t)
-	expected := writeManagedFixture(t, filepath.Join(root, "7.7.0.1", "linux_x64"), "7.7.0.1")
-	writeManagedFixture(t, filepath.Join(root, "9.0.0.1", "linux_x64"), "7.7.0.1")
+	expected := writeManagedFixture(t, filepath.Join(root, "7.7.0.1", platformDirectory()), "7.7.0.1")
+	writeManagedFixture(t, filepath.Join(root, "9.0.0.1", platformDirectory()), "7.7.0.1")
 	writeManagedFixture(t, filepath.Join(root, "7.7.0.2", "darwin_arm64"), "7.7.0.2")
 	install, err := DiscoverInstall(map[string]string{}, DiscoveryOptions{})
 	if err != nil || install.Path != expected || install.Version != "7.7.0.1" {
@@ -101,7 +107,7 @@ func TestManagedRejectsSymlink(t *testing.T) {
 
 func TestManagedReusesValidInstallWithoutNetwork(t *testing.T) {
 	root := managedTestEnvironment(t)
-	expected := writeManagedFixture(t, filepath.Join(root, installerVersion, "linux_x64"), installerVersion)
+	expected := writeManagedFixture(t, filepath.Join(root, installerVersion, platformDirectory()), installerVersion)
 	var out bytes.Buffer
 	install, err := installManaged(DiscoveryOptions{HTTPClient: rejectDownloadClient(t), Confirmations: scriptedConfirmation("", &out)})
 	if err != nil || install.Path != expected || out.Len() != 0 {
@@ -299,7 +305,7 @@ func TestPlatformInstallerCommands(t *testing.T) {
 
 func TestPendingInstallationNeedsConfirmationBeforeRepair(t *testing.T) {
 	root := managedTestEnvironment(t)
-	prefix := filepath.Join(root, installerVersion, "linux_x64")
+	prefix := filepath.Join(root, installerVersion, platformDirectory())
 	writeManagedFixture(t, prefix, installerVersion)
 	if err := os.WriteFile(filepath.Join(prefix, installationPendingFile), nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -374,7 +380,12 @@ func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
 	const childHome = "RTICLOUD_TEST_REPAIR_HOME"
 	if home := os.Getenv(childHome); home != "" {
 		UserHomeDir = func() (string, error) { return home, nil }
-		Platform = func() (string, string) { return "linux", "amd64" }
+		Platform = func() (string, string) {
+			if runtime.GOOS == "windows" {
+				return "windows", "amd64"
+			}
+			return "linux", "amd64"
+		}
 	} else {
 		managedTestEnvironment(t)
 	}
@@ -384,7 +395,7 @@ func TestManagedRepairRecoversLicenseAfterAbruptExit(t *testing.T) {
 	}
 	prefix := filepath.Join(root, installerVersion, platformDirectory())
 	script := "#!/bin/sh\nexit 1\n"
-	artifact, err := bundledInstaller("linux", "amd64")
+	artifact, err := bundledInstaller(Platform())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
@@ -46,8 +47,8 @@ func NewRunner(out io.Writer) *Runner {
 	return &Runner{
 		Out:           out,
 		ReadFile:      os.ReadFile,
-		WriteFile:     os.WriteFile,
-		MkdirAll:      os.MkdirAll,
+		WriteFile:     fileoutput.WriteFile,
+		MkdirAll:      fileoutput.MkdirAll,
 		NewClient:     NewClient,
 		NewMTLSClient: NewMTLSClient,
 	}

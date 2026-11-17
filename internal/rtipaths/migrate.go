@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 var migrationMu sync.Mutex
@@ -59,10 +61,10 @@ func migrateLegacy(legacy, root string) error {
 			return fmt.Errorf("migrate legacy CLI file %s: %w", source, err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(marker, []byte("Legacy migration complete; existing destination files took precedence.\n"), 0o600); err != nil {
+	if err := fileoutput.WriteFile(marker, []byte("Legacy migration complete; existing destination files took precedence.\n"), 0o600); err != nil {
 		return err
 	}
 	// Remove only an empty legacy directory; unknown files and conflicts remain.
@@ -86,7 +88,7 @@ func migrateFile(source, target string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
 	input, err := os.Open(source)
@@ -143,9 +145,9 @@ func ClearCredentials(target string) error {
 	}
 	var errs []error
 	marker := credentialMigrationMarker(root, name)
-	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+	if err := fileoutput.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		errs = append(errs, err)
-	} else if err := os.WriteFile(marker, []byte("Legacy credential migration disabled by logout.\n"), 0o600); err != nil {
+	} else if err := fileoutput.WriteFile(marker, []byte("Legacy credential migration disabled by logout.\n"), 0o600); err != nil {
 		errs = append(errs, err)
 	}
 	paths := []string{target, filepath.Join(home, ".rticloud", name)}

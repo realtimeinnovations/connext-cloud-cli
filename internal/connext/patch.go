@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/prompt"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/terminal"
 )
@@ -213,6 +214,11 @@ func DownloadCloudExtrasPackage(out io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	workDir, err = fileoutput.ResolveDirectory(workDir)
+	if err != nil {
+		return "", err
+	}
+
 	fileName := pathpkg.Base(url)
 	targetPath := uniqueDownloadPath(filepath.Join(workDir, fileName))
 	if out == nil {

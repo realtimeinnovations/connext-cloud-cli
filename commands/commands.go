@@ -22,6 +22,7 @@ import (
 
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/clierror"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/edgestore"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 	"github.com/realtimeinnovations/connext-cloud-cli/internal/httputil"
 )
 
@@ -60,10 +61,10 @@ func New(api API, out io.Writer) *Runner {
 		Out:       out,
 		Sleep:     time.Sleep,
 		ReadFile:  os.ReadFile,
-		WriteFile: os.WriteFile,
+		WriteFile: fileoutput.WriteFile,
 		Chmod:     os.Chmod,
-		MkdirAll:  os.MkdirAll,
-		Stat:      os.Stat,
+		MkdirAll:  fileoutput.MkdirAll,
+		Stat:      fileoutput.StatFile,
 	}
 }
 
@@ -81,6 +82,9 @@ func (runner *Runner) printResponseBody(body []byte) error {
 }
 
 func (runner *Runner) writeOutputFile(filePath string, data []byte, sensitive bool) error {
+	if err := fileoutput.Validate(filePath, fileoutput.File); err != nil {
+		return err
+	}
 	fileMode := os.FileMode(0o644)
 	dirMode := os.FileMode(0o755)
 	if sensitive {
@@ -354,7 +358,11 @@ func (runner *Runner) GetLicense(expirationDays *int, output string) error {
 		}
 		return runner.mutationResult(map[string]any{"license": string(body), "status": "downloaded"}, string(body))
 	}
-	if err := runner.writeOutputFile(output, body, false); err != nil {
+	resolved, err := fileoutput.ResolveFile(output)
+	if err != nil {
+		return err
+	}
+	if err := runner.writeOutputFile(resolved, body, false); err != nil {
 		return err
 	}
 	absolutePath, err := filepath.Abs(output)
@@ -979,6 +987,16 @@ func enrollmentSecurityMode(result map[string]any) (string, error) {
 // endpoint URL (nodeUrl) from the enrollment response, so callers such as the
 // edge-sync agent can route subsequent mTLS calls without a campaign token.
 func (runner *Runner) EnrollDeviceDirect(edgeSystemID, domainTemplateID, participantTemplateID, serial string, macs []string, deviceName, csrFile, keyFile string, genKey bool) (string, string, error) {
+	if genKey && keyFile != "" {
+		resolved, err := fileoutput.ResolveFile(keyFile)
+		if err != nil {
+			return "", "", err
+		}
+		if err := fileoutput.Validate(resolved, fileoutput.File); err != nil {
+			return "", "", err
+		}
+		keyFile = resolved
+	}
 	var csrPEM string
 	var generatedKey []byte
 	if genKey {

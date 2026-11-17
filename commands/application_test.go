@@ -276,7 +276,7 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 	bundle, err := applicationBundle("demo", "shapes", "client-1", applicationArtifacts{
 		Bundle:   testApplicationBundle(`<dds path="./generated/security/identity.pem"/>`, "# example\n"),
 		Manifest: json.RawMessage(`{"version":1,"topics":[]}`),
-	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate"))}, []byte("private key"))
+	}, map[string]string{"identity.pem": base64.StdEncoding.EncodeToString([]byte("certificate")), "CLIENT.KEY": "ignored-invalid-server-copy", "client.key. ": "ignored-invalid-windows-alias"}, []byte("private key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,12 +289,24 @@ func TestApplicationBundlePlacesSecureFilesAndProtectsPrivateKey(t *testing.T) {
 		files[file.Name] = file
 	}
 	root := "demo-shapes-client-1/"
+	if files[root+"generated/security/CLIENT.KEY"] != nil || files[root+"generated/security/client.key. "] != nil {
+		t.Fatal("archive contains the conflicting server key")
+	}
 	if files[root+"shapes.xml"] == nil || files[root+"manifest.json"] == nil || files[root+"generated/security/identity.pem"] == nil {
 		t.Fatalf("unexpected secure bundle: %#v", files)
 	}
 	key := files[root+"generated/security/client.key"]
 	if key == nil || key.Mode().Perm() != 0o600 {
 		t.Fatalf("private key mode = %v, want 0600", key)
+	}
+	reader, err := key.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil || string(data) != "private key" {
+		t.Fatalf("archived key=%q, %v", data, err)
 	}
 }
 
@@ -309,12 +321,20 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 		{"relative zip", "nested/custom bundle", true},
 		{"absolute directory", "absolute", false},
 		{"absolute zip", "absolute", true},
+		{"symlink directory", "symlink", false},
+		{"symlink zip", "symlink", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			targetDir := test.targetDir
 			if targetDir == "absolute" {
 				targetDir = filepath.Join(t.TempDir(), "custom bundle")
+			}
+			if targetDir == "symlink" {
+				targetDir = filepath.Join(t.TempDir(), "selected")
+				if err := os.Symlink(t.TempDir(), targetDir); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
 			}
 			api := &fakeAPI{responses: map[string]*http.Response{
 				"POST /databuses/demo/applications/shapes/clients": newJSONResponse(http.StatusCreated, map[string]any{
@@ -330,7 +350,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}}
 			runner := New(api, io.Discard)
 			runner.CSRGenerator = mgcrypto.GeneratePrivateKeyAndCSR
-			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", ApplicationRegistrationOptions{TargetDir: targetDir, GeneratePrivateKey: true, ZIP: test.zip}); err != nil {
+			if err := runner.RegisterAppClientWithOptions("demo", "shapes", "client-1", ApplicationRegistrationOptions{TargetDir: targetDir, GeneratePrivateKey: true, ZIP: test.zip, ForceOverwrite: test.targetDir == "symlink"}); err != nil {
 				t.Fatal(err)
 			}
 			root := "demo-shapes-client-1"
@@ -355,7 +375,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			}
 			if test.zip {
 				info, err := os.Stat(archivePath)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("private ZIP info = %v, error = %v; want mode 0600", info, err)
 				}
 				if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -424,7 +444,7 @@ func TestRegisterAppClientWritesCompleteDirectoryOrSecureZIP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyInfo.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && keyInfo.Mode().Perm() != 0o600 {
 				t.Fatalf("private key mode = %#o, want 0600", keyInfo.Mode().Perm())
 			}
 		})
@@ -439,12 +459,12 @@ func TestSecureFilesRejectUnsafeNamesBeforeWriting(t *testing.T) {
 				name:           base64.StdEncoding.EncodeToString([]byte("outside")),
 			}
 			runner := New(&fakeAPI{}, io.Discard)
-			runner.WriteFile = func(string, []byte, os.FileMode) error {
-				t.Fatal("unsafe response must not write any secure files")
-				return nil
-			}
-			if err := runner.SaveSecureFiles(files, nil, false, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid secure filename") {
+			dir := t.TempDir()
+			if err := runner.SaveSecureFiles(files, nil, false, dir); err == nil || !strings.Contains(err.Error(), "invalid secure filename") {
 				t.Fatalf("unexpected directory error: %v", err)
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Fatalf("invalid response wrote files: %v, %v", entries, err)
 			}
 			for _, config := range []string{"<dds/>", `<dds path="./generated/security/identity.pem"/>`} {
 				bundle, err := applicationBundle("db", "app", "client", applicationArtifacts{
@@ -510,59 +530,44 @@ func TestRegisterAppClientRejectsIncompleteArtifactsInBothModes(t *testing.T) {
 	}
 }
 
-func TestRegisterAppClientZIPPermissions(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		generateKey bool
-		overwrite   bool
-	}{
-		{"generated key", true, false},
-		{"generated key overwrites public archive", true, true},
-		{"external CSR", false, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Chdir(t.TempDir())
-			const output = "db-app-client.zip"
-			if test.overwrite {
-				if err := os.WriteFile(output, []byte("old archive"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(output, 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			runner := New(registrationTestAPI(map[string]any{
-				"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}},
-			}), io.Discard)
-			runner.CSRGenerator = func(string, string, string) ([]byte, string, error) { return []byte("private key"), "csr", nil }
-			runner.ReadFile = func(string) ([]byte, error) { return []byte("external csr"), nil }
-			runner.WriteFile = func(name string, data []byte, mode os.FileMode) error {
-				want := os.FileMode(0o644)
-				if test.generateKey {
-					want = 0o600
-				}
-				if name != output || mode != want {
-					t.Fatalf("write %q mode %#o; want %q mode %#o", name, mode, output, want)
-				}
-				if test.overwrite {
-					info, err := os.Stat(name)
-					if err != nil || info.Mode().Perm() != 0o600 {
-						t.Fatalf("archive must be private before writing key: %v, %v", info, err)
-					}
-				}
-				return os.WriteFile(name, data, mode)
-			}
-			if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{CSRFile: "client.csr", GeneratePrivateKey: test.generateKey, ForceOverwrite: test.overwrite, ZIP: true}); err != nil {
-				t.Fatal(err)
-			}
-			if test.generateKey {
-				info, err := os.Stat(output)
-				if err != nil || info.Mode().Perm() != 0o600 {
-					t.Fatalf("private archive info = %v, error = %v", info, err)
-				}
-			}
-		})
+// The complete bundle test covers new archives; this case checks replacement
+// of an existing public archive when the replacement contains a private key.
+func TestRegistrationZIPOverwriteProtectsGeneratedKey(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "db-app-client.zip")
+	if err := os.WriteFile(output, []byte("old archive"), 0644); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.Chmod(output, 0644); err != nil {
+		t.Fatal(err)
+	}
+	api := registrationTestAPI(map[string]any{
+		"bundle": testApplicationBundle("<dds/>", "# example"), "manifest": map[string]any{"topics": []any{}},
+	})
+	runner := New(api, io.Discard)
+	runner.CSRGenerator = mgcrypto.GeneratePrivateKeyAndCSR
+	if err := runner.RegisterAppClientWithOptions("db", "app", "client", ApplicationRegistrationOptions{TargetDir: dir, GeneratePrivateKey: true, ForceOverwrite: true, ZIP: true}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(output)
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
+		t.Fatalf("private archive info=%v, %v", info, err)
+	}
+	archive, err := zip.OpenReader(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	key, err := archive.Open("db-app-client/generated/security/client.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	data, err := io.ReadAll(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertApplicationKeyMatchesCSR(t, data, api.lastPayload.(map[string]any)["csr"].(string), "db.app.client")
 }
 
 func applicationInputFile(t *testing.T, name, content string) string {

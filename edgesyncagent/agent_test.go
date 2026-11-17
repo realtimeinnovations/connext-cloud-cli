@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ func newFakeFS() *fakeFS {
 }
 
 func (f *fakeFS) ReadFile(path string) ([]byte, error) {
+	path = filepath.Clean(path)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if data, ok := f.files[path]; ok {
@@ -59,6 +61,7 @@ func (f *fakeFS) ReadFile(path string) ([]byte, error) {
 }
 
 func (f *fakeFS) WriteFile(path string, data []byte, _ os.FileMode) error {
+	path = filepath.Clean(path)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.files[path] = append([]byte(nil), data...)
@@ -67,6 +70,7 @@ func (f *fakeFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 }
 
 func (f *fakeFS) MkdirAll(path string, _ os.FileMode) error {
+	path = filepath.Clean(path)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addDirsLocked(path)
@@ -82,6 +86,7 @@ func (f *fakeFS) addDirsLocked(dir string) {
 }
 
 func (f *fakeFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	path = filepath.Clean(path)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	seen := map[string]bool{}
@@ -160,6 +165,7 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 		WriteFile: ffs.WriteFile,
 		MkdirAll:  ffs.MkdirAll,
 		Stat: func(p string) (os.FileInfo, error) {
+			p = filepath.Clean(p)
 			ffs.mu.RLock()
 			defer ffs.mu.RUnlock()
 			if _, ok := ffs.files[p]; ok {
@@ -215,6 +221,7 @@ func buildTestAgent(t *testing.T, ffs *fakeFS) *Agent {
 	a.MkdirAll = ffs.MkdirAll
 	a.ReadDir = ffs.ReadDir
 	a.RemoveFile = func(path string) error {
+		path = filepath.Clean(path)
 		ffs.mu.Lock()
 		defer ffs.mu.Unlock()
 		delete(ffs.files, path)
@@ -517,7 +524,7 @@ func TestDrainInbox_ProcessesValidRequest(t *testing.T) {
 // contains reports whether s is present in xs.
 func contains(xs []string, s string) bool {
 	for _, x := range xs {
-		if x == s {
+		if filepath.Clean(x) == filepath.Clean(s) {
 			return true
 		}
 	}
@@ -605,8 +612,7 @@ func TestDrainInbox_EnrollmentFailureMovesToFailed(t *testing.T) {
 // ─── State persistence ────────────────────────────────────────────────────────
 
 func TestPersistState_WritesAgentStateJSON(t *testing.T) {
-	ffs := newFakeFS()
-	a := buildTestAgent(t, ffs)
+	a := NewAgent(edgestore.New(t.TempDir()), io.Discard)
 
 	now := time.Now().Truncate(time.Second)
 	p := a.getOrCreateProfile("svc", "part", "SN-001", "dev")
@@ -622,7 +628,7 @@ func TestPersistState_WritesAgentStateJSON(t *testing.T) {
 		t.Fatalf("persistState: %v", err)
 	}
 
-	data, err := ffs.ReadFile(a.Store.NodeStatePath("svc", "dom", "part", "SN-001"))
+	data, err := os.ReadFile(a.Store.NodeStatePath("svc", "dom", "part", "SN-001"))
 	if err != nil {
 		t.Fatalf("state file not written: %v", err)
 	}
@@ -1562,19 +1568,26 @@ func TestRenewPSK_IssuedAtAnchoredToLeaseNotBefore(t *testing.T) {
 // renewal timer — so the TUI never shows a false "needs renewal" for the freshly
 // rotated-in key.
 func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
-	ffs := newFakeFS()
-	a := buildTestAgent(t, ffs)
+	a := NewAgent(edgestore.New(t.TempDir()), io.Discard)
 
 	now := time.Unix(50000, 0)
 	a.Now = func() time.Time { return now }
 	a.AfterFunc = func(_ time.Duration, f func()) *time.Timer {
-		return time.AfterFunc(10*time.Hour, f)
+		timer := time.AfterFunc(10*time.Hour, f)
+		t.Cleanup(func() { timer.Stop() })
+		return timer
 	}
 
 	// PSK is domain-scoped.
 	outDir := a.Store.DomainDir("svc", "dom")
-	ffs.WriteFile(filepath.Join(outDir, "psk_secret.key"), []byte("sA"), 0o644)
-	ffs.WriteFile(filepath.Join(outDir, "psk_secret_temp.key"), []byte("sB"), 0o644)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"psk_secret.key": "sA", "psk_secret_temp.key": "sB"} {
+		if err := os.WriteFile(filepath.Join(outDir, name), []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	baseTTL := 100 * time.Second
 	pskBNotBefore := now // sB starts exactly as sA expires
@@ -1592,6 +1605,21 @@ func TestPSKRotate_AdvancesWindowToSB(t *testing.T) {
 	p.mu.Unlock()
 
 	a.pskRotate(p)
+
+	for name, want := range map[string]string{"psk_secret.key": "sB", "psk_secret_extra.key": "sA"} {
+		path := filepath.Join(outDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q, want %q: %v", name, data, want, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0644 {
+			t.Errorf("%s permissions = %o, want 644", name, info.Mode().Perm())
+		}
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

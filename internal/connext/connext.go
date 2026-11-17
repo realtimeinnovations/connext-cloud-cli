@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/realtimeinnovations/connext-cloud-cli/common"
+	"github.com/realtimeinnovations/connext-cloud-cli/internal/fileoutput"
 )
 
 type Install struct {
@@ -164,7 +165,11 @@ func DiscoverInstall(env map[string]string, options DiscoveryOptions) (Install, 
 				useOverride = answer
 			}
 			if useOverride {
-				install, err := ValidateInstall(home, options)
+				resolved, err := fileoutput.ResolveDirectory(home)
+				if err != nil {
+					return Install{}, err
+				}
+				install, err := ValidateInstall(resolved, options)
 				if err == nil {
 					install.Reason = "selected via $NDDSHOME"
 				}
@@ -242,15 +247,7 @@ func downloadFileWithDescription(url string, targetPath string, description stri
 	if response.StatusCode != http.StatusOK {
 		return common.UserError{Message: fmt.Sprintf("%s download failed: %s", description, response.Status)}
 	}
-	file, err := os.Create(targetPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := io.Copy(file, response.Body); err != nil {
-		return err
-	}
-	return nil
+	return fileoutput.Copy(targetPath, response.Body, 0o666)
 }
 
 func normalizeOptions(options DiscoveryOptions) DiscoveryOptions {
